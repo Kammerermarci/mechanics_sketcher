@@ -243,7 +243,7 @@ describe("new annotations", () => {
   it("reports the tips of a pair of axes", () => {
     const sk = fixed();
     const f = addFrame(sk, 1, 2);
-    f.xSize = 12;
+    f.xSize = 1.2; // model units
     f.ySize = 0;
     const tips = frameTips(sk, f, 10);
     expect(tips.x![0]).toBeCloseTo(22);

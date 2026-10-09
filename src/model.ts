@@ -146,7 +146,7 @@ export interface Frame {
   /** TeX labels of the two axes; empty for none. */
   xLabel: string;
   yLabel: string;
-  /** Length of each axis in annotation mm (see Sketch.dimScale). 0 leaves that axis out. */
+  /** Length of each axis in model units, like the geometry it sits in. 0 leaves that axis out. */
   xSize: number;
   ySize: number;
 }
@@ -241,14 +241,14 @@ export function symbolRefs(s: Sym): Id[] {
 }
 
 /**
- * Sizes come in two kinds. Geometry, and where a dimension or balloon sits,
- * is in model units. The size of what annotates it (text, arrowheads,
+ * Sizes come in two kinds. Geometry, where a dimension or balloon sits, and
+ * how long a pair of axes is, are in model units. The size of what annotates it (text, arrowheads,
  * supports, the gaps of a dimension) is in "annotation mm": the size it has
  * on paper when dimScale is 1. While editing, annotations keep one size on
  * screen however far the view is zoomed; in print they are scaled by dimScale.
  */
 export interface Sketch {
-  version: 2;
+  version: 3;
   nextId: number;
   entities: Entity[];
   constraints: Constraint[];
@@ -273,7 +273,7 @@ function originPoint(): Point {
 
 export function emptySketch(): Sketch {
   return {
-    version: 2, nextId: 1, entities: [originPoint()], constraints: [], symbols: [],
+    version: 3, nextId: 1, entities: [originPoint()], constraints: [], symbols: [],
     figureWidthMm: 80, dimScale: 1, showOrigin: true,
   };
 }
@@ -438,8 +438,8 @@ export function addSupport(sk: Sketch, kind: SupportKind, at: Id, angle = 0): Su
   sk.symbols.push(s);
   return s;
 }
-export function addFrame(sk: Sketch, x: number, y: number, at?: Id): Frame {
-  const f: Frame = { id: newId(sk, "symbol"), type: "frame", x, y, angle: 0, xLabel: "x", yLabel: "y", xSize: 10, ySize: 10 };
+export function addFrame(sk: Sketch, x: number, y: number, at?: Id, size = 1): Frame {
+  const f: Frame = { id: newId(sk, "symbol"), type: "frame", x, y, angle: 0, xLabel: "x", yLabel: "y", xSize: size, ySize: size };
   if (at) f.at = at;
   sk.symbols.push(f);
   return f;
@@ -528,11 +528,16 @@ interface SketchV1 {
   showOrigin?: boolean;
 }
 
+/** Axis lengths were kept in annotation mm up to version 2; they become model units at `mm` per unit. */
+function axesToModel(symbols: Sym[], mm: number): Sym[] {
+  return symbols.map((s): Sym => (s.type === "frame" ? { ...s, xSize: s.xSize / mm, ySize: s.ySize / mm } : s));
+}
+
 /**
  * Brings a version 1 sketch up to date. It kept where dimensions and
- * balloons sit in paper millimetres, at a paper scale that was either set
- * or followed from a figure width. Those placements become model units, at
- * the scale the sketch had, so the figure prints as it did.
+ * balloons sit, and how long axes are, in paper millimetres, at a paper
+ * scale that was either set or followed from a figure width. Those become
+ * model units, at the scale the sketch had, so the figure prints as it did.
  */
 function upgradeV1(raw: SketchV1, entities: Entity[]): Pick<Sketch, "constraints" | "symbols" | "figureWidthMm"> {
   const extent = geometryExtent({ entities });
@@ -548,33 +553,36 @@ function upgradeV1(raw: SketchV1, entities: Entity[]): Pick<Sketch, "constraints
     if (c.type === "radius" && c.len !== undefined) return { ...c, len: c.len / mm };
     return c;
   });
-  const symbols = (Array.isArray(raw.symbols) ? raw.symbols : []).map((s): Sym =>
+  const symbols = (Array.isArray(raw.symbols) ? raw.symbols : []).map(upgradeSymbol).map((s): Sym =>
     s.type === "balloon" ? { ...s, dx: s.dx / mm, dy: s.dy / mm } : s);
-  return { constraints, symbols, figureWidthMm: width };
+  return { constraints, symbols: axesToModel(symbols, mm), figureWidthMm: width };
 }
 
 export function deserialize(text: string): Sketch {
-  const raw = JSON.parse(text) as Partial<Sketch> | SketchV1;
-  if ((raw.version !== 1 && raw.version !== 2) || !Array.isArray(raw.entities) || !Array.isArray(raw.constraints)) {
+  const raw = JSON.parse(text) as (Omit<Partial<Sketch>, "version"> & { version: 2 | 3 }) | SketchV1;
+  if (![1, 2, 3].includes(raw.version) || !Array.isArray(raw.entities) || !Array.isArray(raw.constraints)) {
     throw new Error("This file is not a sketch saved by this tool.");
   }
   // Files from before the origin existed get one.
   const entities = raw.entities.some((e) => e.id === ORIGIN) ? raw.entities : [originPoint(), ...raw.entities];
-  const body = raw.version === 1
-    ? upgradeV1(raw, entities)
-    : {
-      constraints: raw.constraints,
-      symbols: Array.isArray(raw.symbols) ? raw.symbols : [],
-      figureWidthMm: raw.figureWidthMm && raw.figureWidthMm > 0 ? raw.figureWidthMm : 80,
-    };
-  const dimScale = raw.version === 2 && raw.dimScale && raw.dimScale > 0 ? raw.dimScale : 1;
+  if (raw.version === 1) {
+    return { version: 3, nextId: raw.nextId ?? 1, entities, ...upgradeV1(raw, entities), dimScale: 1, showOrigin: raw.showOrigin ?? true };
+  }
+  const figureWidthMm = raw.figureWidthMm && raw.figureWidthMm > 0 ? raw.figureWidthMm : 80;
+  const dimScale = raw.dimScale && raw.dimScale > 0 ? raw.dimScale : 1;
+  let symbols = (Array.isArray(raw.symbols) ? raw.symbols : []).map(upgradeSymbol);
+  if (raw.version === 2) {
+    // At the scale the figure printed at, so the axes print as long as they did.
+    const extent = geometryExtent({ entities });
+    symbols = axesToModel(symbols, extent > 1e-9 ? figureWidthMm / dimScale / extent : 10);
+  }
   return {
-    version: 2,
+    version: 3,
     nextId: raw.nextId ?? 1,
     entities,
-    constraints: body.constraints,
-    symbols: body.symbols.map(upgradeSymbol),
-    figureWidthMm: body.figureWidthMm,
+    constraints: raw.constraints,
+    symbols,
+    figureWidthMm,
     dimScale,
     showOrigin: raw.showOrigin ?? true,
   };

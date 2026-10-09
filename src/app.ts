@@ -895,7 +895,9 @@ export class App {
 
     if (tool === "frame") {
       const snap = this.snapAt(sp);
-      const f = addFrame(this.sk, snap.pos[0], snap.pos[1], snap.pointId);
+      // A handy length on screen to start with; from then on it belongs to the drawing.
+      const size = this.preview ? 10 / printMm(this.sk) : 56 / this.view.scale;
+      const f = addFrame(this.sk, snap.pos[0], snap.pos[1], snap.pointId, size);
       this.commit();
       this.setTool("select");
       this.selection = new Set([f.id]);
@@ -1050,11 +1052,11 @@ export class App {
     const o = mul(symbolPosition(this.sk, s), mm);
     const q = mul(toModel(this.view, sp), mm);
     const ang = s.angle + (d.axis === "y" ? Math.PI / 2 : 0);
-    let size = dot(sub(q, o), [Math.cos(ang), Math.sin(ang)]) - d.slack;
-    if (!this.altKey) size = Math.round(size * 2) / 2; // half millimetres, unless Alt is held
-    size = Math.max(2, Math.min(200, size));
-    if (d.axis === "x") s.xSize = size;
-    else s.ySize = size;
+    const size = dot(sub(q, o), [Math.cos(ang), Math.sin(ang)]) - d.slack;
+    // Kept in the drawing's units, and never shorter than the arrowhead it carries.
+    const length = Math.max(2 * PAPER.arrowLen, size) / mm;
+    if (d.axis === "x") s.xSize = length;
+    else s.ySize = length;
   }
 
   /** True when a screen position is on one of the four ends of a centre mark. */
@@ -2141,7 +2143,7 @@ export class App {
       const b = geometryBox(this.sk);
       // Axes and balloons placed away from the geometry belong in view too.
       for (const s of this.sk.symbols) {
-        if (s.type === "frame") grow(b, symbolPosition(this.sk, s), boxIsEmpty(b) ? 0 : Math.max(s.xSize, s.ySize) / mm);
+        if (s.type === "frame") grow(b, symbolPosition(this.sk, s), boxIsEmpty(b) ? 0 : Math.max(s.xSize, s.ySize));
         if (s.type === "balloon") grow(b, add(balloonAnchor(this.sk, s), [s.dx, s.dy]));
       }
       if (boxIsEmpty(b) || (b.x1 - b.x0 < 1e-9 && b.y1 - b.y0 < 1e-9)) {
@@ -2346,8 +2348,8 @@ export class App {
         html += `<h2>Coordinate axes</h2>`;
         html += text("First axis label", "sym-xlabel", s.xLabel);
         html += text("Second axis label", "sym-ylabel", s.yLabel, "Written as TeX math. Leave empty for no label. Clicking a label on the drawing edits it there.");
-        html += number("First axis length (mm in print at 100%)", "sym-xsize", mm(s.xSize));
-        html += number("Second axis length (mm in print at 100%)", "sym-ysize", mm(s.ySize), "Set a length to 0 to leave that axis out.");
+        html += number("First axis length (in the drawing's units)", "sym-xsize", formatNumber(Number(s.xSize.toPrecision(4))));
+        html += number("Second axis length (in the drawing's units)", "sym-ysize", formatNumber(Number(s.ySize.toPrecision(4))), "Set a length to 0 to leave that axis out. The lengths belong to the drawing: neither size slider changes them.");
         html += number("Rotation (degrees)", "sym-angle", degrees(s.angle));
         html += rotate;
         html += `<p class="muted note-block">Drag an arrow tip to make that axis longer or shorter. ${s.at ? "The axes are pinned to a joint and move with it; drag them away to free them." : "Drag the axes anywhere. Dropped on a joint, they stay pinned there."}</p>`;
@@ -2802,10 +2804,9 @@ export class App {
         if (Math.abs(v - 1) < 1e-9) delete s.scale;
         else s.scale = v;
       } else if (s.type === "frame" && (field === "sym-xsize" || field === "sym-ysize")) {
-        const size = length(0, 200, "Axis length");
-        if (size === null) return this.touch();
-        if (field === "sym-xsize") s.xSize = size;
-        else s.ySize = size;
+        if (!Number.isFinite(v) || v < 0) { this.toast("An axis length must be zero or more."); return this.touch(); }
+        if (field === "sym-xsize") s.xSize = v;
+        else s.ySize = v;
       } else if (s.type === "frame" && field === "sym-xlabel") s.xLabel = label;
       else if (s.type === "frame" && field === "sym-ylabel") s.yLabel = label;
       else if (s.type === "balloon" && field === "sym-text") s.text = label;

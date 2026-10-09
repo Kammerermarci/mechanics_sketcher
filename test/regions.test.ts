@@ -222,8 +222,8 @@ describe("annotations", () => {
   it("gives each coordinate axis its own length", () => {
     const sk = emptySketch();
     const f = addFrame(sk, 0, 0);
-    f.xSize = 20;
-    f.ySize = 5;
+    f.xSize = 2; // model units, drawn here at 10 mm each
+    f.ySize = 0.5;
     let arrows = of(buildPrims(sk, 10, { editor: false }), f.id).filter((p) => p.k === "line");
     expect(arrows[0]).toMatchObject({ b: [20, 0] });
     expect(arrows[1].k === "line" && arrows[1].b[1]).toBeCloseTo(5);
@@ -267,16 +267,31 @@ describe("print scale", () => {
       { id: "k1", type: "distance", a: a.id, b: b.id, mode: "aligned", value: 4, offset: -8 },
       { id: "k2", type: "radius", target: "c9", value: 1, angle: 0, len: 5 },
     ];
-    v1.symbols = [{ id: "s1", type: "balloon", text: "1", x: 0, y: 0, dx: 10, dy: 20, end: "dot" }];
+    v1.symbols = [
+      { id: "s1", type: "balloon", text: "1", x: 0, y: 0, dx: 10, dy: 20, end: "dot" },
+      { id: "s2", type: "frame", x: 0, y: 0, angle: 0, xLabel: "x", yLabel: "y", xSize: 10, ySize: 14 },
+    ];
     // 80 mm for 4 units: 20 mm per unit.
     const up = deserialize(JSON.stringify(v1));
-    expect(up.version).toBe(2);
+    expect(up.version).toBe(3);
     expect(up.dimScale).toBe(1);
     expect(up.figureWidthMm).toBe(80);
     expect(up.constraints[0]).toMatchObject({ offset: -0.4 });
     expect(up.constraints[1]).toMatchObject({ len: 0.25 });
     expect(up.symbols[0]).toMatchObject({ dx: 0.5, dy: 1 });
+    expect(up.symbols[1]).toMatchObject({ xSize: 0.5, ySize: 0.7 });
     expect(printMm(up)).toBeCloseTo(20); // so it prints as it did
+
+    // Version 2 already kept placements in model units, but axis lengths still in mm.
+    const v2 = JSON.parse(JSON.stringify(up));
+    v2.version = 2;
+    v2.dimScale = 2; // laid out at 10 mm per unit
+    v2.symbols[1].xSize = 10;
+    v2.symbols[1].ySize = 14;
+    const up2 = deserialize(JSON.stringify(v2));
+    expect(up2.symbols[1]).toMatchObject({ xSize: 1, ySize: 1.4 });
+    expect(up2.constraints[0]).toMatchObject({ offset: -0.4 }); // left as it was
+    expect(up2.dimScale).toBe(2);
 
     // A set paper scale becomes the figure width it gave.
     v1.scaleMode = "fixed";

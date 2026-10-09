@@ -426,7 +426,7 @@ function framePrims(sk: Sketch, f: Frame, mm: number): Prim[] {
   for (const [ang, label, size, part] of axes) {
     if (size <= 0) continue;
     const dir: V = [Math.cos(ang), Math.sin(ang)];
-    const tip = add(o, mul(dir, size));
+    const tip = add(o, mul(dir, size * mm));
     out.push({ ...base, k: "line", a: o, b: tip, stroke: "symbol", arrowB: true, part });
     if (label.trim()) out.push({ ...base, k: "text", at: tip, tex: labelTex(label), anchor: anchorFor(dir), part });
   }
@@ -436,7 +436,7 @@ function framePrims(sk: Sketch, f: Frame, mm: number): Prim[] {
 /** The arrow tips of a pair of axes, in paper mm; null for an axis that is left out. */
 export function frameTips(sk: Sketch, f: Frame, mm: number): { x: V | null; y: V | null } {
   const o = mul(symbolPosition(sk, f), mm);
-  const tip = (ang: number, size: number): V | null => (size > 0 ? polar(o, size, ang) : null);
+  const tip = (ang: number, size: number): V | null => (size > 0 ? polar(o, size * mm, ang) : null);
   return { x: tip(f.angle, f.xSize), y: tip(f.angle + Math.PI / 2, f.ySize) };
 }
 

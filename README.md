@@ -56,7 +56,8 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
      around its joint, or press R, to turn it.
    - *Axes:* placed anywhere; dropped on a joint they stay pinned to it. Each
      axis has its own length and label; drag an arrow tip to change the
-     length.
+     length. The lengths are in the drawing's units, so neither size slider
+     changes them; only the arrowheads and labels follow the sliders.
    - *Arrow:* drawn with two clicks like a line, and constrained and
      dimensioned like one. A box for its name (TeX) opens as soon as it is
      drawn; type it, or carry on clicking to leave it without one. The name
@@ -194,8 +195,9 @@ text, symbols) are in annotation millimetres: their size on paper at a
 dimension size of 100%. The editor lays the list out at a scale that follows
 the zoom, which keeps annotations one size on screen; the exporters lay it
 out at the scale that fits the figure width and then enlarge everything by
-the dimension size. Sketches saved before this (file version 1) kept
-placements in paper millimetres and are converted when they are opened.
+the dimension size. Sketches saved in earlier file versions kept placements
+(version 1) and axis lengths (versions 1 and 2) in millimetres and are
+converted when they are opened.
 
 ## Installing it as an app
 
