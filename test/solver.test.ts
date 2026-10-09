@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { make_gcs_wrapper } from "@salusoft89/planegcs";
 import { SketchSolver } from "../src/solver";
 import {
-  emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, point, remove,
-  serialize, deserialize, type Sketch, type Line, type Circle,
+  ORIGIN, emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, addSupport, addFrame,
+  point, remove, isFixed, serialize, deserialize, type Sketch, type Line, type Circle,
 } from "../src/model";
 
 let solver: SketchSolver;
@@ -227,10 +227,10 @@ describe("model", () => {
     const { sk, A, B, C, ab } = triangle(4, 3);
     remove(sk, [ab.id]);
     // A, B and C are still used by the other two members.
-    expect(sk.entities.filter((e) => e.type === "point").map((e) => e.id)).toEqual([A.id, B.id, C.id]);
+    expect(sk.entities.filter((e) => e.type === "point").map((e) => e.id)).toEqual([ORIGIN, A.id, B.id, C.id]);
     remove(sk, [C.id]);
-    // Deleting C takes both remaining members, then the bare endpoints.
-    expect(sk.entities).toEqual([]);
+    // Deleting C takes both remaining members, then the bare endpoints. Only the origin is left.
+    expect(sk.entities.map((e) => e.id)).toEqual([ORIGIN]);
     expect(sk.constraints).toEqual([]);
   });
 
@@ -239,7 +239,50 @@ describe("model", () => {
     const a = addPoint(sk, 0, 0, true), b = addPoint(sk, 1, 0);
     const l = addLine(sk, a.id, b.id);
     remove(sk, [l.id]);
-    expect(sk.entities.map((e) => e.id)).toEqual([a.id]);
+    expect(sk.entities.map((e) => e.id)).toEqual([ORIGIN, a.id]);
+  });
+
+  it("always has a fixed origin that cannot be deleted or dragged", () => {
+    const sk = emptySketch();
+    expect(isFixed(sk, ORIGIN)).toBe(true);
+    remove(sk, [ORIGIN]);
+    expect(sk.entities.map((e) => e.id)).toEqual([ORIGIN]);
+    expect(solver.solve(sk, [{ kind: "point", id: ORIGIN, x: 5, y: 5 }]).ok).toBe(true);
+    close(xy(sk, ORIGIN), [0, 0]);
+    expect(solver.solve(sk).dof).toBe(0); // the origin adds no freedom
+  });
+
+  it("lets geometry be dimensioned against the origin", () => {
+    const sk = emptySketch();
+    const a = addPoint(sk, 2.2, 0.3, true);
+    addConstraint(sk, { type: "horizontal", a: ORIGIN, b: a.id });
+    addConstraint(sk, { type: "distance", a: ORIGIN, b: a.id, mode: "aligned", value: 3, offset: 8 });
+    const r = solver.solve(sk);
+    expect(r.ok).toBe(true);
+    expect(r.dof).toBe(0);
+    close(xy(sk, a.id), [3, 0]);
+  });
+
+  it("drops a support with its joint, and keeps free-standing axes", () => {
+    const sk = emptySketch();
+    const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
+    const l = addLine(sk, a.id, b.id);
+    const pin = addSupport(sk, "pin", a.id);
+    const roller = addSupport(sk, "roller", b.id);
+    const axes = addFrame(sk, 1, 1);
+    remove(sk, [roller.id]);
+    expect(sk.symbols.map((x) => x.id)).toEqual([pin.id, axes.id]);
+    remove(sk, [l.id]); // takes both endpoints, and the pin with its joint
+    expect(sk.symbols.map((x) => x.id)).toEqual([axes.id]);
+  });
+
+  it("opens files saved before the origin and symbols existed", () => {
+    const old = JSON.stringify({ version: 1, nextId: 2, entities: [{ id: "p1", type: "point", x: 1, y: 2 }], constraints: [], figureWidthMm: 60 });
+    const sk = deserialize(old);
+    expect(sk.entities.map((e) => e.id)).toEqual([ORIGIN, "p1"]);
+    expect(sk.symbols).toEqual([]);
+    expect(sk.showOrigin).toBe(true);
+    expect(sk.figureWidthMm).toBe(60);
   });
 
   it("round-trips through JSON", () => {

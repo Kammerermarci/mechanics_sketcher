@@ -1,4 +1,4 @@
-// The sketch document: geometry, constraints and dimensions.
+// The sketch document: geometry, constraints, dimensions and symbols.
 // Coordinates are y-up, in unitless model units.
 
 export type Id = string;
@@ -89,24 +89,70 @@ export type Relation =
   | Perpendicular | Equal | Tangent | Fixed;
 export type Constraint = Relation | Dimension;
 
+// Symbols are drawn on the figure but take no part in solving.
+
+export type SupportKind = "pin" | "roller" | "fixed";
+export interface Support {
+  id: Id;
+  type: "support";
+  kind: SupportKind;
+  /** The joint it carries. */
+  at: Id;
+  /** Rotation in radians, counter-clockwise. At 0 the ground is below the joint. */
+  angle: number;
+}
+/** A pair of coordinate axes, placed anywhere as an annotation. */
+export interface Frame {
+  id: Id;
+  type: "frame";
+  /** A point it is pinned to. When absent it sits at x, y. */
+  at?: Id;
+  x: number;
+  y: number;
+  /** Direction of the first axis, in radians. */
+  angle: number;
+  /** TeX labels of the two axes; empty for none. */
+  xLabel: string;
+  yLabel: string;
+  /** Axis length on paper, in mm. */
+  size: number;
+}
+export type Sym = Support | Frame;
+
 export interface Sketch {
   version: 1;
   nextId: number;
   entities: Entity[];
   constraints: Constraint[];
+  symbols: Sym[];
   /** Width of the drawn geometry on paper, in mm. */
   figureWidthMm: number;
+  /** Whether the editor draws axes at the origin. They are never exported. */
+  showOrigin: boolean;
+}
+
+/**
+ * The origin: a point at (0, 0) that every sketch has. It cannot move or be
+ * deleted, so geometry can be constrained and dimensioned against it.
+ */
+export const ORIGIN: Id = "origin";
+
+function originPoint(): Point {
+  return { id: ORIGIN, type: "point", x: 0, y: 0, standalone: true };
 }
 
 export function emptySketch(): Sketch {
-  return { version: 1, nextId: 1, entities: [], constraints: [], figureWidthMm: 80 };
+  return {
+    version: 1, nextId: 1, entities: [originPoint()], constraints: [], symbols: [],
+    figureWidthMm: 80, showOrigin: true,
+  };
 }
 
 export function isDimension(c: Constraint): c is Dimension {
   return c.type === "distance" || c.type === "angle" || c.type === "radius";
 }
 
-const PREFIX: Record<string, string> = { point: "p", line: "l", circle: "c", arc: "a" };
+const PREFIX: Record<string, string> = { point: "p", line: "l", circle: "c", arc: "a", symbol: "s" };
 
 export function newId(sk: Sketch, kind: string): Id {
   return `${PREFIX[kind] ?? "k"}${sk.nextId++}`;
@@ -124,6 +170,9 @@ export function point(sk: Sketch, id: Id): Point {
 }
 export function constraint(sk: Sketch, id: Id): Constraint | undefined {
   return sk.constraints.find((c) => c.id === id);
+}
+export function symbol(sk: Sketch, id: Id): Sym | undefined {
+  return sk.symbols.find((s) => s.id === id);
 }
 export function points(sk: Sketch): Point[] {
   return sk.entities.filter((e): e is Point => e.type === "point");
@@ -161,7 +210,12 @@ export function constraintRefs(c: Constraint): Id[] {
 }
 
 export function isFixed(sk: Sketch, pointId: Id): boolean {
-  return sk.constraints.some((c) => c.type === "fixed" && c.p === pointId);
+  return pointId === ORIGIN || sk.constraints.some((c) => c.type === "fixed" && c.p === pointId);
+}
+
+/** True when a line, circle or arc is built on the point. */
+export function pointInUse(sk: Sketch, pointId: Id): boolean {
+  return curves(sk).some((e) => curvePoints(e).includes(pointId));
 }
 
 export function arcRadius(sk: Sketch, a: Arc): number {
@@ -193,6 +247,18 @@ export function addArc(sk: Sketch, c: Id, p1: Id, p2: Id): Arc {
   return e;
 }
 
+export function addSupport(sk: Sketch, kind: SupportKind, at: Id, angle = 0): Support {
+  const s: Support = { id: newId(sk, "symbol"), type: "support", kind, at, angle };
+  sk.symbols.push(s);
+  return s;
+}
+export function addFrame(sk: Sketch, x: number, y: number, at?: Id): Frame {
+  const f: Frame = { id: newId(sk, "symbol"), type: "frame", x, y, angle: 0, xLabel: "x", yLabel: "y", size: 10 };
+  if (at) f.at = at;
+  sk.symbols.push(f);
+  return f;
+}
+
 type Draft<T> = T extends unknown ? Omit<T, "id"> : never;
 /** A constraint before it has been given an id. */
 export type ConstraintDraft = Draft<Constraint>;
@@ -204,13 +270,16 @@ export function addConstraint<T extends ConstraintDraft>(sk: Sketch, c: T): Extr
 }
 
 /**
- * Removes entities and constraints by id. Curves built on a removed point go
- * with it, points left with nothing attached are cleaned up, and constraints
- * that lost something they refer to are dropped.
+ * Removes entities, constraints and symbols by id. Curves built on a removed
+ * point go with it, points left with nothing attached are cleaned up, and
+ * constraints and symbols that lost something they refer to are dropped. The
+ * origin always stays.
  */
 export function remove(sk: Sketch, ids: Iterable<Id>): void {
   const gone = new Set(ids);
+  gone.delete(ORIGIN);
   sk.constraints = sk.constraints.filter((c) => !gone.has(c.id));
+  sk.symbols = sk.symbols.filter((s) => !gone.has(s.id));
 
   // Points that curves were using before this delete; candidates for cleanup.
   const candidates = new Set<Id>();
@@ -234,6 +303,7 @@ export function remove(sk: Sketch, ids: Iterable<Id>): void {
 
   const alive = new Set(sk.entities.map((e) => e.id));
   sk.constraints = sk.constraints.filter((c) => constraintRefs(c).every((r) => alive.has(r)));
+  sk.symbols = sk.symbols.filter((s) => s.at === undefined || alive.has(s.at));
 }
 
 // ---- files --------------------------------------------------------------
@@ -247,12 +317,16 @@ export function deserialize(text: string): Sketch {
   if (raw.version !== 1 || !Array.isArray(raw.entities) || !Array.isArray(raw.constraints)) {
     throw new Error("This file is not a sketch saved by this tool.");
   }
+  // Files from before the origin existed get one.
+  const entities = raw.entities.some((e) => e.id === ORIGIN) ? raw.entities : [originPoint(), ...raw.entities];
   return {
     version: 1,
     nextId: raw.nextId ?? 1,
-    entities: raw.entities,
+    entities,
     constraints: raw.constraints,
+    symbols: Array.isArray(raw.symbols) ? raw.symbols : [],
     figureWidthMm: raw.figureWidthMm ?? 80,
+    showOrigin: raw.showOrigin ?? true,
   };
 }
 

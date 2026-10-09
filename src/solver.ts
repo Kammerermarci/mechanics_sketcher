@@ -1,9 +1,9 @@
 // Bridge between the sketch model and FreeCAD's planegcs solver.
 
-import { GcsWrapper, SolveStatus, type SketchPrimitive } from "@salusoft89/planegcs";
+import { GcsWrapper, SolveStatus, DebugMode, type SketchPrimitive } from "@salusoft89/planegcs";
 import {
   type Sketch, type Id, type Constraint, type Entity,
-  entity, point, isFixed, arcRadius,
+  ORIGIN, entity, point, isFixed, arcRadius,
 } from "./model";
 
 /** Something the pointer is pulling on while the sketch is solved. */
@@ -26,7 +26,7 @@ type Prim = SketchPrimitive;
 
 function geometryPrims(sk: Sketch): Prim[] {
   const out: Prim[] = [];
-  const fixed = new Set<Id>();
+  const fixed = new Set<Id>([ORIGIN]);
   for (const c of sk.constraints) if (c.type === "fixed") fixed.add(c.p);
 
   // planegcs needs every point pushed before the curves that use it.
@@ -163,7 +163,10 @@ function modelId(gcsId: string): Id {
 }
 
 export class SketchSolver {
-  constructor(private gcs: GcsWrapper) {}
+  constructor(private gcs: GcsWrapper) {
+    // By default the solver logs every diagnosis to the console.
+    gcs.debug_mode = DebugMode.NoDebug;
+  }
 
   /**
    * Solves the sketch. On success the solved positions are written back into

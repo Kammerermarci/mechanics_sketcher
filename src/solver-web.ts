@@ -16,8 +16,6 @@ export async function createSolver(): Promise<SketchSolver> {
   const bytes = decode(wasmBase64);
   // Emscripten calls this hook instead of fetching the .wasm itself.
   const config = {
-    // The solver reports each diagnosis on stdout; keep that out of the console.
-    print: () => {},
     instantiateWasm(imports: WebAssembly.Imports, done: (instance: WebAssembly.Instance) => void) {
       WebAssembly.instantiate(bytes, imports).then((r) => done(r.instance));
       return {};

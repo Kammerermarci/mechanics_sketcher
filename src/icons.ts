@@ -22,6 +22,11 @@ export const ICONS: Record<string, string> = {
   fixed: `<rect x="5" y="9" width="10" height="8" rx="1.5" fill="currentColor" stroke="none"/><path d="M7 9V7a3 3 0 0 1 6 0v2"/>`,
   dimension: `<path d="M3.5 5v10M16.5 5v10" stroke-width="1.2"/><path d="M4.5 10h11"/><path d="M7 8l-2.6 2L7 12M13 8l2.6 2L13 12" stroke-width="1.2"/>`,
 
+  pin: `<path d="M10 4l-5 8.5h10z"/><path d="M3 12.5h14"/><path d="M5.5 12.5l-2 3M9.5 12.5l-2 3M13.5 12.5l-2 3M17 13.2l-1.5 2.3" stroke-width="1.1"/>`,
+  roller: `<path d="M10 3.5l-4.5 7h9z"/><circle cx="7.6" cy="12.6" r="1.5" stroke-width="1.2"/><circle cx="12.4" cy="12.6" r="1.5" stroke-width="1.2"/><path d="M3 15h14"/><path d="M6 15l-1.6 2.5M10.5 15l-1.6 2.5M15 15l-1.6 2.5" stroke-width="1.1"/>`,
+  wall: `<path d="M6.5 3v14"/><path d="M6.5 5l-3 2.5M6.5 9l-3 2.5M6.5 13l-3 2.5" stroke-width="1.1"/><path d="M6.5 10h11" stroke-width="2.2"/>`,
+  frame: `<path d="M5 15.5V4M5 15.5h11.5"/><path d="M3 6.2l2-2.4 2 2.4M14.3 13.5l2.4 2-2.4 2" stroke-width="1.3"/>`,
+
   undo: `<path d="M7.5 4.5l-4 4 4 4"/><path d="M3.5 8.5h8a4.3 4.3 0 0 1 0 8.6H9"/>`,
   redo: `<path d="M12.5 4.5l4 4-4 4"/><path d="M16.5 8.5h-8a4.3 4.3 0 0 0 0 8.6H11"/>`,
   fit: `<path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/><rect x="7" y="7" width="6" height="6" stroke-width="1.2"/>`,

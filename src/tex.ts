@@ -136,3 +136,41 @@ export function runsToTspans(runs: Run[], em: number): string {
   }
   return out;
 }
+
+// ---- the label engine -------------------------------------------------------
+
+/** Size of a typeset label, in em. */
+export interface TexMetrics {
+  w: number;
+  /** Height above the baseline. */
+  asc: number;
+  /** Depth below the baseline. */
+  desc: number;
+}
+
+/** Whatever typesets labels: MathJax in the app, the stand-in above otherwise. */
+export interface TexEngine {
+  measure(tex: string): TexMetrics;
+  /**
+   * SVG markup for the label, with the top-left corner of its box at (x, y) in
+   * a y-down coordinate system. `em` is the font size in the same units.
+   */
+  svg(tex: string, x: number, y: number, em: number, cls: string): string;
+}
+
+const PLAIN_ASCENT = 0.68;
+
+export const plainEngine: TexEngine = {
+  measure: (tex) => ({ w: runsWidthEm(texRuns(tex)), asc: PLAIN_ASCENT, desc: 0 }),
+  svg: (tex, x, y, em, cls) =>
+    `<text class="${cls}" x="${x.toFixed(2)}" y="${(y + PLAIN_ASCENT * em).toFixed(2)}" font-size="${em.toFixed(2)}">${runsToTspans(texRuns(tex), em)}</text>`,
+};
+
+let engine: TexEngine = plainEngine;
+
+export function texEngine(): TexEngine {
+  return engine;
+}
+export function setTexEngine(e: TexEngine): void {
+  engine = e;
+}

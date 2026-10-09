@@ -2,11 +2,11 @@
 // aids (point handles, constraint markers, previews) that never get exported.
 
 import {
-  type Sketch, type Id, type Constraint, type Curve, entity, point, isDimension, arcRadius, isFixed,
+  type Sketch, type Id, type Constraint, type Curve, ORIGIN, entity, point, isDimension, arcRadius, isFixed,
 } from "./model";
 import { type V, add, sub, mul, norm, perp, mid, polar, projectOnSegment, TWO_PI } from "./geom";
-import { type Prim, type LinePrim, type ArcPrim, PAPER, arrowHeads, textBox } from "./prims";
-import { texRuns, runsToTspans } from "./tex";
+import { type Prim, type StrokeStyle, PAPER, STROKE_MM, arrowHeads, textBox } from "./prims";
+import { texEngine } from "./tex";
 import { ICONS } from "./icons";
 
 export interface View {
@@ -91,7 +91,15 @@ export function layoutGlyphs(sk: Sketch, view: View): Glyph[] {
     const pos = add(add(base, mul(away, 15)), mul(along, k * (GLYPH_SIZE + 2)));
     out.push({ id: c.id, icon: GLYPH_ICON[c.type], x: pos[0], y: pos[1] });
   };
-  const atPoint = (c: Constraint, id: Id) => place(c, S(id), [0.75, 0.75], [1, 0]);
+  const atPoint = (c: Constraint, id: Id) => {
+    // Below and to the right of the point, unless a support is drawn there:
+    // then on the side facing away from the support's ground.
+    const support = sk.symbols.find((s) => s.type === "support" && s.at === id);
+    if (!support) return place(c, S(id), [0.75, 0.75], [1, 0]);
+    const k = Math.cos(support.angle), n = Math.sin(support.angle);
+    const up: V = [-0.75 * k - 0.75 * n, -0.75 * n + 0.75 * k]; // (-0.75, 0.75) turned with the support
+    place(c, S(id), [up[0], -up[1]], [-1, 0]);
+  };
   const atSpan = (c: Constraint, a: V, b: V) => {
     const u = norm(sub(b, a));
     place(c, mid(a, b), upward(perp(u)), u);
@@ -158,29 +166,38 @@ function gridStep(scale: number): number {
   return 10 * pow;
 }
 
-function background(view: View): string {
+function background(view: View, showOrigin: boolean): string {
   const step = gridStep(view.scale) * view.scale;
   const o = toScreen(view, [0, 0]);
   const ox = ((o[0] % step) + step) % step - step / 2;
   const oy = ((o[1] % step) + step) % step - step / 2;
   const L = 34;
-  return (
+  let out =
     `<defs><pattern id="grid" width="${n2(step)}" height="${n2(step)}" patternUnits="userSpaceOnUse" x="${n2(ox)}" y="${n2(oy)}">` +
     `<circle class="grid-dot" cx="${n2(step / 2)}" cy="${n2(step / 2)}" r="0.9"/></pattern></defs>` +
-    `<rect width="${view.w}" height="${view.h}" fill="url(#grid)"/>` +
-    `<g class="origin"><path d="M${n2(o[0])} ${n2(o[1] - L)}V${n2(o[1])}H${n2(o[0] + L)}"/>` +
-    `<path class="tip" d="M${n2(o[0] + L)} ${n2(o[1])}l-6-3v6zM${n2(o[0])} ${n2(o[1] - L)}l-3 6h6z"/>` +
-    `<text x="${n2(o[0] + L + 5)}" y="${n2(o[1] + 4)}">x</text><text x="${n2(o[0] - 3)}" y="${n2(o[1] - L - 6)}">y</text></g>`
-  );
+    `<rect width="${view.w}" height="${view.h}" fill="url(#grid)"/>`;
+  if (showOrigin) {
+    out +=
+      `<g class="origin"><path d="M${n2(o[0])} ${n2(o[1] - L)}V${n2(o[1])}H${n2(o[0] + L)}"/>` +
+      `<path class="tip" d="M${n2(o[0] + L)} ${n2(o[1])}l-6-3v6zM${n2(o[0])} ${n2(o[1] - L)}l-3 6h6z"/>` +
+      `<text x="${n2(o[0] + L + 5)}" y="${n2(o[1] + 4)}">x</text><text x="${n2(o[0] - 3)}" y="${n2(o[1] - L - 6)}">y</text></g>`;
+  }
+  return out;
 }
 
+/** Marks the dimension a tool is about to place; never part of the sketch. */
+export const PREVIEW_REF = "__preview";
+
 function primClass(s: Scene, p: Prim): string {
-  const cls = ["prim", p.layer];
-  if (p.k !== "text") cls.push(p.stroke);
+  // Typeset text is a nested <svg>; it gets its own base class so the stroke
+  // rules for drawn shapes do not leak into it.
+  const cls = p.k === "text" ? ["tex", p.layer] : ["prim", p.layer, p.stroke];
+  if ((p.k === "circle" || p.k === "poly") && p.fill) cls.push("filled");
   if (p.ghost) cls.push("ghost");
   if (p.layer === "geom") cls.push(s.free ? "free" : "defined");
   const id = p.ref;
-  if (id) {
+  if (id === PREVIEW_REF) cls.push("pv");
+  else if (id) {
     if (s.conflicting.has(id)) cls.push("bad");
     else if (s.redundant.has(id)) cls.push("extra");
     if (s.related.has(id)) cls.push("rel");
@@ -190,10 +207,8 @@ function primClass(s: Scene, p: Prim): string {
   return cls.join(" ");
 }
 
-function strokePx(p: LinePrim | ArcPrim | Extract<Prim, { k: "circle" }>, pxPerMm: number): number {
-  const mm = p.stroke === "member" ? PAPER.member : p.stroke === "construction" ? PAPER.construction : PAPER.dim;
-  const floor = p.stroke === "member" ? 1.5 : 0.9;
-  return Math.max(floor, mm * pxPerMm);
+function strokePx(stroke: StrokeStyle, pxPerMm: number): number {
+  return Math.max(stroke === "member" ? 1.5 : 0.9, STROKE_MM[stroke] * pxPerMm);
 }
 
 function arcPath(view: View, c: V, r: number, a0: number, a1: number): string {
@@ -208,27 +223,29 @@ function drawPrims(s: Scene): string {
   const { view, mm } = s;
   const pxPerMm = view.scale / mm;
   const M = (p: V): V => toScreen(view, [p[0] / mm, p[1] / mm]);
+  const engine = texEngine();
   let out = "";
   for (const p of s.prims) {
     const cls = primClass(s, p);
     if (p.k === "text") {
-      const em = PAPER.em * pxPerMm;
       const b = textBox(p);
-      const at = M([b.x0, b.y0]);
-      out += `<text class="${cls}" x="${n2(at[0])}" y="${n2(at[1])}" font-size="${n2(em)}">${runsToTspans(texRuns(p.tex), em)}</text>`;
+      const topLeft = M([b.x0, b.y1]);
+      out += engine.svg(p.tex, topLeft[0], topLeft[1], PAPER.em * pxPerMm, cls);
       continue;
     }
-    const sw = n2(strokePx(p, pxPerMm));
+    const sw = n2(strokePx(p.stroke, pxPerMm));
     if (p.k === "line") {
       const a = M(p.a), b = M(p.b);
       out += `<line class="${cls}" x1="${n2(a[0])}" y1="${n2(a[1])}" x2="${n2(b[0])}" y2="${n2(b[1])}" stroke-width="${sw}"/>`;
     } else if (p.k === "circle") {
       const c = M(p.c);
       out += `<circle class="${cls}" cx="${n2(c[0])}" cy="${n2(c[1])}" r="${n2(p.r * pxPerMm)}" stroke-width="${sw}"/>`;
+    } else if (p.k === "poly") {
+      out += `<polygon class="${cls}" points="${p.pts.map((q) => M(q).map(n2).join(",")).join(" ")}" stroke-width="${sw}"/>`;
     } else {
       out += `<path class="${cls}" d="${arcPath(view, [p.c[0] / mm, p.c[1] / mm], p.r / mm, p.a0, p.a1)}" stroke-width="${sw}"/>`;
     }
-    if (p.k !== "circle") {
+    if (p.k === "line" || p.k === "arc") {
       for (const head of arrowHeads(p)) {
         out += `<polygon class="${cls} head" points="${head.map((q) => M(q).map(n2).join(",")).join(" ")}"/>`;
       }
@@ -243,13 +260,20 @@ function drawHandles(s: Scene): string {
     if (e.type !== "point") continue;
     const p = toScreen(s.view, [e.x, e.y]);
     const cls = ["pt"];
-    if (isFixed(s.sk, e.id)) cls.push("fixed");
-    if (!s.free) cls.push("defined");
+    const lit = s.selection.has(e.id) || s.hover === e.id;
     if (s.related.has(e.id)) cls.push("rel");
     if (s.hover === e.id) cls.push("hov");
     if (s.selection.has(e.id)) cls.push("sel");
-    const r = s.selection.has(e.id) || s.hover === e.id ? 4.6 : 3.4;
-    out += `<circle class="${cls.join(" ")}" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${r}"/>`;
+    if (e.id === ORIGIN) {
+      // The origin: a ring with a cross through it, as on a drawing's datum.
+      const r = lit ? 6.5 : 5.5;
+      out += `<g class="${cls.join(" ")} origin-pt"><circle cx="${n2(p[0])}" cy="${n2(p[1])}" r="${r}"/>` +
+        `<path d="M${n2(p[0] - r - 3)} ${n2(p[1])}h${2 * r + 6}M${n2(p[0])} ${n2(p[1] - r - 3)}v${2 * r + 6}"/></g>`;
+      continue;
+    }
+    if (isFixed(s.sk, e.id)) cls.push("fixed");
+    if (!s.free) cls.push("defined");
+    out += `<circle class="${cls.join(" ")}" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${lit ? 4.6 : 3.4}"/>`;
   }
   return out;
 }
@@ -315,5 +339,5 @@ export function renderScene(s: Scene): string {
     const x = Math.min(s.box.a[0], s.box.b[0]), y = Math.min(s.box.a[1], s.box.b[1]);
     box = `<rect class="marquee" x="${n2(x)}" y="${n2(y)}" width="${n2(Math.abs(s.box.a[0] - s.box.b[0]))}" height="${n2(Math.abs(s.box.a[1] - s.box.b[1]))}"/>`;
   }
-  return background(s.view) + drawPrims(s) + drawHandles(s) + drawGlyphs(s) + drawPreview(s) + drawSnap(s) + box;
+  return background(s.view, s.sk.showOrigin) + drawPrims(s) + drawHandles(s) + drawGlyphs(s) + drawPreview(s) + drawSnap(s) + box;
 }

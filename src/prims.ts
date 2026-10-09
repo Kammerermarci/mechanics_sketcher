@@ -4,13 +4,14 @@
 
 import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
-  type Arc, type Line, entity, point, arcRadius, isDimension,
+  type Arc, type Line, type Sym, type Support, type Frame,
+  ORIGIN, entity, point, arcRadius, isDimension, curves, curvePoints,
 } from "./model";
 import {
   type V, type Box, add, sub, mul, dot, norm, perp, mid, polar, dist, len, angleOf, wrap, inSweep,
   distToSegment, intersectLines, emptyBox, grow, boxIsEmpty, TWO_PI,
 } from "./geom";
-import { texRuns, runsWidthEm } from "./tex";
+import { texEngine } from "./tex";
 
 /** Sizes on paper, in mm. 1 pt = 0.3515 mm. */
 export const PAPER = {
@@ -24,25 +25,45 @@ export const PAPER = {
   extGap: 1.0,         // extension line starts this far from the geometry
   extOver: 1.5,        // and runs this far past the dimension line
   dimOffset: 8,        // default distance of a dimension line from the geometry
+  // Supports
+  symbol: 0.14,        // 0.4 pt outline
+  hatch: 0.105,        // 0.3 pt ground hatching
+  supportHalfWidth: 2.4,
+  pinHeight: 4.0,
+  rollerHeight: 3.4,
+  wheelRadius: 0.6,
+  hingeRadius: 0.55,
+  groundHalfWidth: 4.0,
+  hatchStep: 1.15,
+  hatchDepth: 1.25,
 };
 
 export type Anchor = "c" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
-export type StrokeStyle = "member" | "construction" | "dim";
+export type StrokeStyle = "member" | "construction" | "dim" | "symbol" | "hatch";
+/** Line width of each stroke style, in mm. */
+export const STROKE_MM: Record<StrokeStyle, number> = {
+  member: PAPER.member, construction: PAPER.construction, dim: PAPER.dim,
+  symbol: PAPER.symbol, hatch: PAPER.hatch,
+};
+/** "paper" fills a shape with the background, hiding what lies under it. */
+export type Fill = "paper";
 
 interface Base {
-  /** The entity or dimension this primitive belongs to. */
+  /** The entity, symbol or dimension this primitive belongs to. */
   ref?: Id;
-  layer: "geom" | "dim";
+  layer: "geom" | "sym" | "dim";
   /** Shown faded in the editor and left out of exports (hidden dimensions). */
   ghost?: boolean;
 }
 export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeStyle; arrowA?: boolean; arrowB?: boolean }
-export interface CirclePrim extends Base { k: "circle"; c: V; r: number; stroke: StrokeStyle }
+export interface CirclePrim extends Base { k: "circle"; c: V; r: number; stroke: StrokeStyle; fill?: Fill }
+/** A closed outline. */
+export interface PolyPrim extends Base { k: "poly"; pts: V[]; stroke: StrokeStyle; fill?: Fill }
 /** Counter-clockwise from a0 to a1, with a1 > a0. */
 export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a1: number; stroke: StrokeStyle; arrowA?: boolean; arrowB?: boolean }
 /** `anchor` names the side of the text box that sits at `at`, as in TikZ. */
 export interface TextPrim extends Base { k: "text"; at: V; tex: string; anchor: Anchor }
-export type Prim = LinePrim | CirclePrim | ArcPrim | TextPrim;
+export type Prim = LinePrim | CirclePrim | PolyPrim | ArcPrim | TextPrim;
 
 // ---- paper scale ----------------------------------------------------------
 
@@ -57,8 +78,12 @@ function arcAngles(sk: Sketch, a: Arc): { a0: number; a1: number } {
 /** Bounding box of the geometry in model units. Dimensions are not included. */
 export function geometryBox(sk: Sketch): Box {
   const b = emptyBox();
+  // The origin counts only when something is drawn from it.
+  const originUsed = curves(sk).some((c) => curvePoints(c).includes(ORIGIN));
   for (const e of sk.entities) {
-    if (e.type === "point") grow(b, [e.x, e.y]);
+    if (e.type === "point") {
+      if (e.id !== ORIGIN || originUsed) grow(b, [e.x, e.y]);
+    }
     else if (e.type === "circle") {
       const c = point(sk, e.c);
       grow(b, [c.x, c.y], e.r);
@@ -211,6 +236,75 @@ export function dimensionPrims(sk: Sketch, d: Dimension, mm: number): Prim[] {
   return prims;
 }
 
+// ---- symbols ----------------------------------------------------------------
+
+/** Where a symbol sits, in model units. */
+export function symbolPosition(sk: Sketch, s: Sym): V {
+  if (s.at !== undefined) {
+    const p = point(sk, s.at);
+    return [p.x, p.y];
+  }
+  return s.type === "frame" ? [s.x, s.y] : [0, 0];
+}
+
+/** Maps a symbol's own coordinates (mm, joint at the origin) onto the paper. */
+function placer(at: V, angle: number): (p: V) => V {
+  const c = Math.cos(angle), k = Math.sin(angle);
+  return ([x, y]) => [at[0] + x * c - y * k, at[1] + x * k + y * c];
+}
+
+function supportPrims(sk: Sketch, s: Support, mm: number): Prim[] {
+  const base = { ref: s.id, layer: "sym" as const };
+  const T = placer(mul(symbolPosition(sk, s), mm), s.angle);
+  const out: Prim[] = [];
+  const line = (a: V, b: V, stroke: StrokeStyle) => out.push({ ...base, k: "line", a: T(a), b: T(b), stroke });
+
+  // Drawn with the ground below the joint; `ground` is how far below.
+  let ground = 0;
+  if (s.kind !== "fixed") {
+    const h = s.kind === "pin" ? PAPER.pinHeight : PAPER.rollerHeight;
+    const w = PAPER.supportHalfWidth;
+    out.push({ ...base, k: "poly", pts: [T([0, 0]), T([-w, -h]), T([w, -h])], stroke: "symbol", fill: "paper" });
+    ground = h;
+    if (s.kind === "roller") {
+      const r = PAPER.wheelRadius;
+      for (const x of [-w * 0.55, w * 0.55]) {
+        out.push({ ...base, k: "circle", c: T([x, -h - r]), r, stroke: "symbol", fill: "paper" });
+      }
+      ground = h + 2 * r;
+    }
+  }
+  const g = PAPER.groundHalfWidth;
+  const n = Math.floor((2 * g) / PAPER.hatchStep);
+  for (let i = 1; i <= n; i++) {
+    const x = -g + i * PAPER.hatchStep;
+    line([x, -ground], [x - PAPER.hatchDepth * 0.85, -ground - PAPER.hatchDepth], "hatch");
+  }
+  line([-g, -ground], [g, -ground], s.kind === "fixed" ? "member" : "symbol");
+  if (s.kind !== "fixed") {
+    out.push({ ...base, k: "circle", c: T([0, 0]), r: PAPER.hingeRadius, stroke: "symbol", fill: "paper" });
+  }
+  return out;
+}
+
+function framePrims(sk: Sketch, f: Frame, mm: number): Prim[] {
+  const base = { ref: f.id, layer: "sym" as const };
+  const o = mul(symbolPosition(sk, f), mm);
+  const out: Prim[] = [];
+  const axes: [number, string][] = [[f.angle, f.xLabel], [f.angle + Math.PI / 2, f.yLabel]];
+  for (const [ang, label] of axes) {
+    const dir: V = [Math.cos(ang), Math.sin(ang)];
+    const tip = add(o, mul(dir, f.size));
+    out.push({ ...base, k: "line", a: o, b: tip, stroke: "symbol", arrowB: true });
+    if (label.trim()) out.push({ ...base, k: "text", at: tip, tex: label.trim(), anchor: anchorFor(dir) });
+  }
+  return out;
+}
+
+export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
+  return s.type === "support" ? supportPrims(sk, s, mm) : framePrims(sk, s, mm);
+}
+
 // ---- the list -------------------------------------------------------------
 
 export interface BuildOptions {
@@ -233,6 +327,7 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
       out.push({ ...base, k: "arc", c: P(sk, e.c, mm), r: arcRadius(sk, e) * mm, a0, a1 });
     }
   }
+  for (const sym of sk.symbols) out.push(...symbolPrims(sk, sym, mm));
   for (const c of sk.constraints) {
     if (!isDimension(c)) continue;
     if (c.hidden && !opts.editor) continue;
@@ -277,10 +372,14 @@ export function arrowHeads(p: LinePrim | ArcPrim): V[][] {
   return heads;
 }
 
-/** Approximate box of a text primitive in paper mm (y-up). */
+/**
+ * Box of a text primitive in paper mm (y-up), including the part of the text
+ * that hangs below its baseline.
+ */
 export function textBox(p: TextPrim, em = PAPER.em): Box {
-  const w = runsWidthEm(texRuns(p.tex)) * em;
-  const h = 0.68 * em;
+  const m = texEngine().measure(p.tex);
+  const w = m.w * em;
+  const h = (m.asc + m.desc) * em;
   const sep = PAPER.textSep;
   const a = p.anchor;
   const x0 = a.includes("w") ? p.at[0] + sep : a.includes("e") ? p.at[0] - sep - w : p.at[0] - w / 2;
@@ -288,11 +387,29 @@ export function textBox(p: TextPrim, em = PAPER.em): Box {
   return { x0, y0, x1: x0 + w, y1: y0 + h };
 }
 
-/** Distance in mm from q to a primitive; 0 inside a text box. */
+function insidePolygon(q: V, pts: V[]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if (yi > q[1] !== yj > q[1] && q[0] < ((xj - xi) * (q[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Distance in mm from q to a primitive; 0 inside a text box or a filled shape. */
 export function primDistance(p: Prim, q: V): number {
   switch (p.k) {
     case "line": return distToSegment(q, p.a, p.b);
-    case "circle": return Math.abs(dist(q, p.c) - p.r);
+    case "circle": {
+      const d = dist(q, p.c);
+      return p.fill && d < p.r ? 0 : Math.abs(d - p.r);
+    }
+    case "poly": {
+      if (p.fill && insidePolygon(q, p.pts)) return 0;
+      let best = Infinity;
+      p.pts.forEach((a, i) => { best = Math.min(best, distToSegment(q, a, p.pts[(i + 1) % p.pts.length])); });
+      return best;
+    }
     case "arc": {
       const ang = angleOf(sub(q, p.c));
       if (inSweep(ang, p.a0, p.a1)) return Math.abs(dist(q, p.c) - p.r);

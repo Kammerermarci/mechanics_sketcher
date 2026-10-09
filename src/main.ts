@@ -1,6 +1,15 @@
 import "./style.css";
 import { App } from "./app";
 import { createSolver } from "./solver-web";
+import { createMathJaxEngine } from "./mathjax";
+import { setTexEngine } from "./tex";
+
+try {
+  setTexEngine(createMathJaxEngine());
+} catch (err) {
+  // Labels fall back to the built-in stand-in; everything else still works.
+  console.error("MathJax could not start", err);
+}
 
 createSolver()
   .then((solver) => {

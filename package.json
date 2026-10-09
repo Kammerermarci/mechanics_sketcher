@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@fontsource/barlow": "^5.2.8",
-    "@salusoft89/planegcs": "^1.3.0"
+    "@salusoft89/planegcs": "^1.3.0",
+    "mathjax-full": "^3.2.2"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

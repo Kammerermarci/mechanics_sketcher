@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { emptySketch, addPoint, addLine, addCircle, addArc, addConstraint } from "../src/model";
+import { ORIGIN, emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, addSupport, addFrame } from "../src/model";
 import { mmPerUnit, geometryBox, buildPrims, anchorFor, dimTex, primDistance, textBox, arrowHeads, PAPER, type Prim } from "../src/prims";
 import { texRuns } from "../src/tex";
 
@@ -114,6 +114,78 @@ describe("primitive list", () => {
     expect(heads).toHaveLength(1);
     expect(heads[0][0]).toEqual([10, 0]);
     expect(heads[0][1][0]).toBeCloseTo(10 - PAPER.arrowLen);
+  });
+});
+
+describe("symbols", () => {
+  const of = (prims: Prim[], id: string) => prims.filter((p) => p.ref === id);
+
+  it("ignores an unused origin when sizing the figure", () => {
+    const sk = emptySketch();
+    const a = addPoint(sk, 10, 5), b = addPoint(sk, 14, 5);
+    addLine(sk, a.id, b.id);
+    expect(geometryBox(sk)).toEqual({ x0: 10, y0: 5, x1: 14, y1: 5 });
+    addLine(sk, ORIGIN, a.id);
+    expect(geometryBox(sk).x0).toBe(0);
+  });
+
+  it("draws a pin support under its joint, in paper sizes", () => {
+    const sk = emptySketch();
+    const a = addPoint(sk, 2, 1);
+    const pin = addSupport(sk, "pin", a.id);
+    const prims = of(buildPrims(sk, 10, { editor: false }), pin.id);
+    const tri = prims.find((p) => p.k === "poly");
+    expect(tri).toMatchObject({ pts: [[20, 10], [20 - PAPER.supportHalfWidth, 10 - PAPER.pinHeight], [20 + PAPER.supportHalfWidth, 10 - PAPER.pinHeight]], fill: "paper" });
+    const ground = prims.find((p) => p.k === "line" && p.stroke === "symbol");
+    expect(ground).toMatchObject({ a: [20 - PAPER.groundHalfWidth, 10 - PAPER.pinHeight], b: [20 + PAPER.groundHalfWidth, 10 - PAPER.pinHeight] });
+    expect(prims.filter((p) => p.k === "line" && p.stroke === "hatch").length).toBeGreaterThan(4);
+    // The same support on a figure drawn twice as large stays the same size.
+    const big = of(buildPrims(sk, 20, { editor: false }), pin.id).find((p) => p.k === "poly");
+    expect(big && big.k === "poly" && big.pts[0][1] - big.pts[1][1]).toBeCloseTo(PAPER.pinHeight);
+  });
+
+  it("turns a support with its angle", () => {
+    const sk = emptySketch();
+    const a = addPoint(sk, 0, 0);
+    const wall = addSupport(sk, "fixed", a.id, Math.PI / 2); // ground to the right of the joint
+    const prims = of(buildPrims(sk, 10, { editor: false }), wall.id);
+    const face = prims.find((p) => p.k === "line" && p.stroke === "member");
+    expect(face && face.k === "line" && face.a[0]).toBeCloseTo(0);
+    expect(face && face.k === "line" && Math.abs(face.a[1])).toBeCloseTo(PAPER.groundHalfWidth);
+    const hatch = prims.filter((p) => p.k === "line" && p.stroke === "hatch");
+    expect(hatch.every((p) => p.k === "line" && p.b[0] > 0)).toBe(true);
+    expect(prims.some((p) => p.k === "poly")).toBe(false);
+  });
+
+  it("gives a roller two wheels", () => {
+    const sk = emptySketch();
+    const a = addPoint(sk, 0, 0);
+    const roller = addSupport(sk, "roller", a.id);
+    const circles = of(buildPrims(sk, 10, { editor: false }), roller.id).filter((p) => p.k === "circle");
+    expect(circles.filter((p) => p.k === "circle" && p.r === PAPER.wheelRadius)).toHaveLength(2);
+  });
+
+  it("draws coordinate axes with arrows and labels, free or pinned to a joint", () => {
+    const sk = emptySketch();
+    const free = addFrame(sk, 1, 2);
+    let prims = of(buildPrims(sk, 10, { editor: false }), free.id);
+    const arrows = prims.filter((p) => p.k === "line");
+    expect(arrows).toMatchObject([{ a: [10, 20], b: [20, 20], arrowB: true }, { a: [10, 20], arrowB: true }]);
+    expect(arrows[1].k === "line" && arrows[1].b[1]).toBeCloseTo(30);
+    expect(prims.filter((p) => p.k === "text").map((p) => p.k === "text" && p.tex)).toEqual(["x", "y"]);
+
+    const joint = addPoint(sk, 5, 5);
+    free.at = joint.id;
+    free.yLabel = "";
+    prims = of(buildPrims(sk, 10, { editor: false }), free.id);
+    expect(prims.find((p) => p.k === "line")).toMatchObject({ a: [50, 50] });
+    expect(prims.filter((p) => p.k === "text")).toHaveLength(1);
+  });
+
+  it("picks a filled support by clicking inside it", () => {
+    const tri: Prim = { k: "poly", pts: [[0, 0], [-2, -4], [2, -4]], stroke: "symbol", fill: "paper", layer: "sym" };
+    expect(primDistance(tri, [0, -2])).toBe(0);
+    expect(primDistance(tri, [3, -4])).toBeCloseTo(1);
   });
 });
 
