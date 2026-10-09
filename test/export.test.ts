@@ -134,11 +134,12 @@ describe("export", () => {
     expect(tikz).toContain("bigtip/.tip={Stealth[length=2.7mm, width=1.65mm, inset=0.76mm]}");
     expect(tikz).toContain("\\draw[arrow, -bigtip] (0,0) -- (40,0);");
     expect(tikz).toContain("\\node[inner sep=0pt] at (20,3) {$F$};");
-    expect(tikz).toContain("\\draw[symbol, draw={rgb,255:red,211;green,47;blue,47}, fill={rgb,255:red,211;green,47;blue,47}] (0,0) circle[radius=0.7];");
+    // The dot is filled with its colour and keeps a black edge.
+    expect(tikz).toContain("\\draw[symbol, fill={rgb,255:red,211;green,47;blue,47}] (0,0) circle[radius=0.7];");
     expect(tikz).toContain("\\node[inner sep=0pt] at (-2,2) {$A$};");
     expect(tikz).not.toMatch(/\btip\/\.tip/); // only the tip that is used
     const svg = toSvg(sk)!;
-    expect(svg).toMatch(/<circle cx="[\d.]+" cy="[\d.]+" r="0\.7" stroke-width="0\.14" stroke="#d32f2f" fill="#d32f2f"\/>/);
+    expect(svg).toMatch(/<circle cx="[\d.]+" cy="[\d.]+" r="0\.7" stroke-width="0\.14" fill="#d32f2f"\/>/);
     // The stroked line stops inside the arrowhead instead of running to its tip.
     expect(svg).toMatch(/<line x1="[\d.]+" y1="[\d.]+" x2="[\d.]+" y2="[\d.]+" stroke-width="0\.21"\/>/);
     const x = /<line x1="([\d.]+)" y1="[\d.]+" x2="([\d.]+)"/.exec(svg)!;
@@ -158,5 +159,37 @@ describe("export", () => {
     const tikz = toTikz(sk)!;
     expect(tikz).toContain("\\draw[dim, -tip] (26,0) -- (20,0);");
     expect(tikz).toContain("\\node[label, anchor=west] at (26,0) {$R2$};");
+  });
+
+  it("writes a curved arrow with its head on the chosen end, and asks for the bending library", () => {
+    const sk = emptySketch();
+    sk.scaleMode = "fixed";
+    sk.mmPerUnit = 10;
+    const c = addPoint(sk, 0, 0), s = addPoint(sk, 2, 0), e = addPoint(sk, 0, 2);
+    const arc = addArc(sk, c.id, s.id, e.id); // a quarter turn, counter-clockwise
+    arc.arrow = "end";
+    arc.label = "M";
+    const tikz = toTikz(sk)!;
+    expect(tikz).toContain("\\usetikzlibrary{arrows.meta, bending}");
+    expect(tikz).toContain("\\draw[arrow, -bigtip] (20,0) arc[start angle=0, end angle=90, radius=20];");
+    expect(tikz).toMatch(/\\node\[inner sep=0pt\] at \(1[5-9][\d.]*,1[5-9][\d.]*\) \{\$M\$\};/); // outside the arc, at its middle
+    arc.arrow = "start";
+    expect(toTikz(sk)).toContain("\\draw[arrow, bigtip-] (20,0) arc[start angle=0, end angle=90, radius=20];");
+    // In the SVG the stroke stops inside the head, short of the arc's end.
+    const svg = toSvg(sk)!;
+    const end = /<path d="M([\d.]+) ([\d.]+)A20 20 0 0 0 ([\d.]+) ([\d.]+)" stroke-width="0\.21"\/>/.exec(svg)!;
+    expect(end).not.toBeNull();
+    expect(Number(end[2])).toBeLessThan(Number(end[4]) + 20 - 1); // the start has moved along the arc
+  });
+
+  it("scales a centre mark", () => {
+    const sk = emptySketch();
+    sk.scaleMode = "fixed";
+    sk.mmPerUnit = 10;
+    const circle = addCircle(sk, addPoint(sk, 0, 0).id, 1);
+    const mark = addSymbol(sk, { type: "centermark", on: circle.id, angle: 0 });
+    expect(toTikz(sk)).toContain("(1.2,0) (2,0) -- (12,0)"); // cross to 1.2, then from 2 to 2 past the rim
+    mark.scale = 2;
+    expect(toTikz(sk)).toContain("(2.4,0) (4,0) -- (14,0)");
   });
 });

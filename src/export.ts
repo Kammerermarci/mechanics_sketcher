@@ -5,7 +5,7 @@
 import type { Sketch } from "./model";
 import {
   type Prim, type StrokeStyle, type Outline, type Anchor, type LinePrim, type ArcPrim,
-  PAPER, STROKE_MM, STROKE_DASH, mmPerUnit, buildPrims, arrowHeads, strokedEnds, textBox, textCorners, outlinePolygon,
+  PAPER, STROKE_MM, STROKE_DASH, mmPerUnit, buildPrims, arrowHeads, strokedEnds, strokedSweep, textBox, textCorners, outlinePolygon,
 } from "./prims";
 import { type V, type Box, emptyBox, grow, boxIsEmpty, polar, wrap, TWO_PI } from "./geom";
 import { texEngine } from "./tex";
@@ -84,8 +84,7 @@ export function toSvg(sk: Sketch): string | null {
       continue;
     }
     const dash = STROKE_DASH[p.stroke];
-    const stroke = `stroke-width="${num(STROKE_MM[p.stroke])}"` + (dash ? ` stroke-dasharray="${dash.map((d) => num(d)).join(" ")}"` : "") +
-      (p.color ? ` stroke="${p.color}"` : "");
+    const stroke = `stroke-width="${num(STROKE_MM[p.stroke])}"` + (dash ? ` stroke-dasharray="${dash.map((d) => num(d)).join(" ")}"` : "");
     const fill = (p.k === "circle" || p.k === "poly") && p.fill ? ` fill="${p.fill === "ink" ? p.color ?? "#000" : "#fff"}"` : "";
     if (p.k === "line") {
       const [a, b] = strokedEnds(p).map(M);
@@ -96,10 +95,11 @@ export function toSvg(sk: Sketch): string | null {
     } else if (p.k === "poly") {
       body.push(`<polygon points="${p.pts.map(pt).join(" ")}" ${stroke}${fill}/>`);
     } else {
-      const s = M(polar(p.c, p.r, p.a0)), e = M(polar(p.c, p.r, p.a1));
+      const [a0, a1] = strokedSweep(p);
+      const s = M(polar(p.c, p.r, a0)), e = M(polar(p.c, p.r, a1));
       const r = num(p.r);
       // Counter-clockwise on paper is sweep-flag 0 once y is flipped.
-      body.push(`<path d="M${num(s[0])} ${num(s[1])}A${r} ${r} 0 ${p.a1 - p.a0 > Math.PI ? 1 : 0} 0 ${num(e[0])} ${num(e[1])}" ${stroke}/>`);
+      body.push(`<path d="M${num(s[0])} ${num(s[1])}A${r} ${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 0 ${num(e[0])} ${num(e[1])}" ${stroke}/>`);
     }
     if (p.k === "line" || p.k === "arc") {
       for (const head of arrowHeads(p)) body.push(`<polygon points="${head.map(pt).join(" ")}" fill="#000" stroke="none"/>`);
@@ -170,6 +170,8 @@ export function toTikz(sk: Sketch): string | null {
   if (!prims.length) return null;
   const used = new Set<StrokeStyle>();
   let needTip = false, needBigTip = false, needLabel = false;
+  /** A tip sits on an arc: the bending library turns it to follow the curve. */
+  let bentTip = false;
   const noteTip = (p: LinePrim | ArcPrim) => {
     if ((p.head ?? 1) !== 1) needBigTip = true;
     else needTip = true;
@@ -203,11 +205,13 @@ export function toTikz(sk: Sketch): string | null {
       noteTip(p);
       lines.push(`  \\draw[${p.stroke}${tips(p)}] ${co(p.a)} -- ${co(p.b)};`);
     } else if (p.k === "arc") {
-      if (p.arrowA || p.arrowB) noteTip(p);
+      if (p.arrowA || p.arrowB) {
+        noteTip(p);
+        bentTip = true;
+      }
       lines.push(`  \\draw[${p.stroke}${tips(p)}] ${co(polar(p.c, p.r, p.a0))} arc[start angle=${deg(p.a0)}, end angle=${deg(p.a1)}, radius=${num(p.r, 2)}];`);
     } else {
-      const fill = (p.color ? `, draw=${tikzColor(p.color)}` : "") +
-        (p.fill ? `, fill=${p.fill === "ink" ? (p.color ? tikzColor(p.color) : "black") : "white"}` : "");
+      const fill = p.fill ? `, fill=${p.fill === "ink" ? (p.color ? tikzColor(p.color) : "black") : "white"}` : "";
       const shape = p.k === "circle" ? `${co(p.c)} circle[radius=${num(p.r, 2)}]` : `${p.pts.map(co).join(" -- ")} -- cycle`;
       lines.push(`  \\draw[${p.stroke}${fill}] ${shape};`);
     }
@@ -227,7 +231,7 @@ export function toTikz(sk: Sketch): string | null {
   if (needTip) tip("tip", 1);
   if (needBigTip) tip("bigtip", PAPER.arrowScale);
   return (
-    `% Made with Mech Sketch. Needs \\usepackage{tikz}${needTip || needBigTip ? " and \\usetikzlibrary{arrows.meta}" : ""}.\n` +
+    `% Made with Mech Sketch. Needs \\usepackage{tikz}${needTip || needBigTip ? ` and \\usetikzlibrary{arrows.meta${bentTip ? ", bending" : ""}}` : ""}.\n` +
     `\\begin{tikzpicture}[x=1mm, y=1mm, line cap=round, line join=round,\n  ${styles.join(",\n  ")}]\n` +
     lines.join("\n") +
     `\n\\end{tikzpicture}\n`

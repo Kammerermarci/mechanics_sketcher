@@ -18,7 +18,7 @@ import {
 import {
   type Prim, PAPER, mmPerUnit, figureWidth, geometryBox, buildPrims, dimensionPrims,
   primDistance, textCentre, distanceFrame, angleFrame, roundFrame, symbolPosition, balloonAnchor,
-  balloonRadius, curveParam, sideOfCurve, formatNumber, frameTips, arrowLabelAt,
+  balloonRadius, curveParam, sideOfCurve, formatNumber, frameTips, arrowLabelAt, arrowAnchor, centerMarkEnds,
 } from "./prims";
 import {
   type View, type Glyph, type Preview, type SnapMark, GLYPH_SIZE, PREVIEW_REF, toScreen, toModel,
@@ -29,7 +29,7 @@ import { type TrimPlan, planTrim, applyTrim } from "./trim";
 import { toSvg, toTikz } from "./export";
 import { icon } from "./icons";
 
-type DrawTool = "point" | "line" | "centerline" | "arrow" | "circle" | "arc";
+type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc";
 type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum";
 type Command =
   | "horizontal" | "vertical" | "parallel" | "perpendicular" | "equal" | "coincident"
@@ -67,11 +67,23 @@ type DragState =
   /** `onText`: the press was on the number, so a plain click opens it for typing. */
   | { kind: "dim"; id: Id; startScreen: V; moved: boolean; onText: boolean }
   /** `origin`: where the symbol was when the drag began (a position, or the offset of a balloon or a name). */
-  | { kind: "sym"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean }
+  | { kind: "sym"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean; edit?: EditTarget }
   /** Pulling the tip of one of a pair of axes; `slack` is how far from the tip it was grabbed, in mm. */
-  | { kind: "axis"; id: Id; axis: "x" | "y"; startScreen: V; slack: number; moved: boolean }
+  | { kind: "axis"; id: Id; axis: "x" | "y"; startScreen: V; slack: number; moved: boolean; edit?: EditTarget }
+  /** Pulling an end of a centre mark to make the mark larger or smaller. */
+  | { kind: "reach"; id: Id; startScreen: V; moved: boolean }
   /** Moving the name of an arrow; `origin` is its offset from the arrow's middle when the drag began. */
-  | { kind: "label"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean };
+  | { kind: "label"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean; edit?: EditTarget };
+// `edit`, where present: the press was on a piece of text, so a plain click opens it for typing.
+
+/** Something whose text can be typed where it stands on the drawing. */
+type EditTarget =
+  | { kind: "dim"; id: Id }
+  | { kind: "balloon"; id: Id }
+  | { kind: "datum"; id: Id }
+  /** The name of an arrow; `id` is its line or arc. */
+  | { kind: "arrow"; id: Id }
+  | { kind: "axis"; id: Id; axis: "x" | "y" };
 
 /** `part` and `text` describe the piece that was hit: which part of its owner, and whether it is text. */
 interface Hit { id: Id; kind: "point" | "glyph" | "dim" | "curve" | "sym" | "fill"; part?: string; text?: boolean }
@@ -113,6 +125,7 @@ const TOOLS: ToolDef[] = [
   { id: "wall", label: "Fixed", icon: "wall", tab: "annotate", group: 2 },
   { id: "frame", label: "Axes", icon: "frame", tab: "annotate", group: 3 },
   { id: "arrow", label: "Arrow", icon: "arrow", tab: "annotate", group: 3 },
+  { id: "arcarrow", label: "Curved arrow", icon: "arcarrow", tab: "annotate", group: 3 },
   { id: "datum", label: "Datum point", icon: "datum", tab: "annotate", group: 3 },
   { id: "centermark", label: "Centre mark", icon: "centermark", tab: "annotate", group: 3 },
   { id: "balloon", label: "Balloon", key: "B", icon: "balloon", tab: "annotate", group: 3 },
@@ -192,7 +205,8 @@ export class App {
   private snapMark: SnapMark | null = null;
   private altKey = false;
   private spaceKey = false;
-  private editing: Id | null = null;
+  /** What the box on the drawing is editing: a dimension, or the name of something. */
+  private editing: EditTarget | null = null;
   /** The last thing picked with the Select tool, for stepping through overlaps. */
   private lastPick: { pos: V; id: Id; time: number } | null = null;
 
@@ -278,7 +292,7 @@ export class App {
     this.freedomStale = true;
     this.pruneSelection();
     this.pending = null;
-    this.closeDimEditor();
+    this.closeEditor();
     this.solve();
   }
 
@@ -342,7 +356,7 @@ export class App {
       this.drawTitleblock(mm);
       this.updateButtons();
     }
-    if (this.editing) this.placeDimEditor();
+    if (this.editing) this.placeEditor();
   }
 
   /**
@@ -373,12 +387,16 @@ export class App {
     };
   }
 
-  /** Handles on the selected symbol: the tips of a pair of axes, which can be pulled. Screen pixels. */
+  /** Handles on the selected symbol: the tips of a pair of axes or the ends of a centre mark, which can be pulled. Screen pixels. */
   private grips(mm: number): V[] {
     const s = this.selectedSymbol();
-    if (!s || s.type !== "frame" || this.tool !== "select") return [];
-    const tips = frameTips(this.sk, s, mm);
-    return [tips.x, tips.y].filter((t): t is V => t !== null).map((t) => toScreen(this.view, [t[0] / mm, t[1] / mm]));
+    if (!s || this.tool !== "select") return [];
+    let at: V[] = [];
+    if (s.type === "frame") {
+      const tips = frameTips(this.sk, s, mm);
+      at = [tips.x, tips.y].filter((t): t is V => t !== null);
+    } else if (s.type === "centermark") at = centerMarkEnds(this.sk, s, mm);
+    return at.map((t) => toScreen(this.view, [t[0] / mm, t[1] / mm]));
   }
 
   /**
@@ -427,8 +445,11 @@ export class App {
       case "trim": return `Click the part of a line, circle or arc to remove, up to where other curves cross it. ${done}`;
       case "circle": return p ? "Click to set the radius." : `Click the centre. ${done}`;
       case "arc":
-        if (!p) return `Click the centre. ${done}`;
-        return p.tool === "arc" && p.start ? "Sweep around the centre, then click where the arc ends." : "Click where the arc starts.";
+      case "arcarrow": {
+        const what = this.tool === "arc" ? "arc" : "arrow";
+        if (!p) return `Click the centre${this.tool === "arcarrow" ? " the arrow turns about" : ""}. ${done}`;
+        return p.tool === "arc" && p.start ? `Sweep around the centre, then click where the ${what} ends.` : `Click where the ${what} starts.`;
+      }
       case "pin":
       case "roller":
       case "wall":
@@ -691,7 +712,6 @@ export class App {
       if (this.tool === "centerline") line.centre = true;
       if (this.tool === "arrow") {
         line.arrow = "end";
-        // Left selected, so its name can be typed in the panel straight away.
         this.selection = new Set([line.id]);
       }
       let axis = snap.axis;
@@ -707,6 +727,8 @@ export class App {
       // One line per pair of clicks: the next click starts a new one.
       this.pending = null;
       this.finishDrawing(autos);
+      // An arrow's name is typed right away, where it will sit; clicking on leaves it without one.
+      if (line.arrow) this.openEditor({ kind: "arrow", id: line.id });
       return;
     }
 
@@ -725,7 +747,7 @@ export class App {
       return;
     }
 
-    if (this.tool === "arc") {
+    if (this.tool === "arc" || this.tool === "arcarrow") {
       if (!p || p.tool !== "arc") {
         this.pending = { tool: "arc", center: snap, sweep: 0, lastAng: 0 };
         return;
@@ -747,10 +769,16 @@ export class App {
         const q = polar(p.center.pos, r, endAng);
         e = addPoint(this.sk, q[0], q[1]).id;
       }
-      if (p.sweep >= 0) addArc(this.sk, c, s, e);
-      else addArc(this.sk, c, e, s);
+      // Arcs are kept counter-clockwise, so one swept clockwise has its ends swapped.
+      const arc = p.sweep >= 0 ? addArc(this.sk, c, s, e) : addArc(this.sk, c, e, s);
+      if (this.tool === "arcarrow") {
+        // The head goes on the end that was clicked last.
+        arc.arrow = p.sweep >= 0 ? "end" : "start";
+        this.selection = new Set([arc.id]);
+      }
       this.pending = null;
       this.finishDrawing(autos);
+      if (arc.arrow) this.openEditor({ kind: "arrow", id: arc.id });
     }
   }
 
@@ -765,7 +793,7 @@ export class App {
       this.selection.clear();
       this.hover = null;
     }
-    this.closeDimEditor();
+    this.closeEditor();
     this.touch();
   }
 
@@ -993,6 +1021,26 @@ export class App {
     else s.ySize = size;
   }
 
+  /** True when a screen position is on one of the four ends of a centre mark. */
+  private centerMarkEndAt(s: Sym, sp: V): boolean {
+    if (s.type !== "centermark") return false;
+    const mm = mmPerUnit(this.sk);
+    return centerMarkEnds(this.sk, s, mm).some((e) => dist(toScreen(this.view, [e[0] / mm, e[1] / mm]), sp) < 10);
+  }
+
+  /** Pulls an end of a centre mark in or out, which scales the whole mark. */
+  private dragReach(id: Id, sp: V): void {
+    const s = symbol(this.sk, id);
+    if (!s || s.type !== "centermark") return;
+    const mm = mmPerUnit(this.sk);
+    const f = roundFrame(this.sk, s.on, mm);
+    if (!f) return;
+    const over = dist(mul(toModel(this.view, sp), mm), f.c) - f.r;
+    let scale = over / PAPER.centreOver;
+    if (!this.altKey) scale = Math.round(scale * 20) / 20; // steps of 0.05, unless Alt is held
+    s.scale = Math.max(0.2, Math.min(10, scale));
+  }
+
   /** Which axis tip of a pair of axes is under a screen position, if any. */
   private axisTipAt(s: Sym, sp: V, hit: Hit): { axis: "x" | "y"; slack: number } | null {
     if (s.type !== "frame") return null;
@@ -1036,7 +1084,7 @@ export class App {
     this.cursor = sp;
     this.altKey = ev.altKey;
     const wasEditing = this.editing !== null;
-    if (wasEditing) this.commitDimEditor();
+    if (wasEditing) this.commitEditor();
     // Working on the canvas ends any typing in the panels.
     const focused = document.activeElement;
     if (focused instanceof HTMLElement && focused !== document.body) focused.blur();
@@ -1093,22 +1141,26 @@ export class App {
       const s = symbol(this.sk, hit.id)!;
       const tip = this.axisTipAt(s, sp, hit);
       if (tip) {
-        this.drag = { kind: "axis", id: hit.id, axis: tip.axis, startScreen: sp, slack: tip.slack, moved: false };
+        const edit: EditTarget | undefined = hit.text ? { kind: "axis", id: hit.id, axis: tip.axis } : undefined;
+        this.drag = { kind: "axis", id: hit.id, axis: tip.axis, startScreen: sp, slack: tip.slack, moved: false, edit };
+      } else if (s.type === "centermark" && this.centerMarkEndAt(s, sp)) {
+        this.drag = { kind: "reach", id: hit.id, startScreen: sp, moved: false };
       } else if (s.type === "datum" && hit.part !== "label") {
         // The dot is the point itself: dragging it moves the geometry.
         this.selection = new Set([s.at]);
         this.drag = this.startMove(s.at, sp, false);
       } else {
-        this.drag = { kind: "sym", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin: this.symbolDragOrigin(s), moved: false };
+        const edit: EditTarget | undefined = !hit.text ? undefined
+          : s.type === "balloon" ? { kind: "balloon", id: hit.id }
+          : s.type === "datum" ? { kind: "datum", id: hit.id } : undefined;
+        this.drag = { kind: "sym", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin: this.symbolDragOrigin(s), moved: false, edit };
       }
     } else if (hit.kind === "curve" && hit.part === "label") {
       // The name of an arrow: it moves on its own, the arrow stays.
-      const l = entity(this.sk, hit.id) as Line;
+      const e = entity(this.sk, hit.id) as Line | Arc;
       const mm = mmPerUnit(this.sk);
-      const a = point(this.sk, l.p1), b = point(this.sk, l.p2);
-      const at = arrowLabelAt(this.sk, l, mm) ?? [0, 0];
-      const origin = sub(at, mul(mid([a.x, a.y], [b.x, b.y]), mm));
-      this.drag = { kind: "label", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin, moved: false };
+      const origin = sub(arrowLabelAt(this.sk, e, mm) ?? [0, 0], arrowAnchor(this.sk, e, mm));
+      this.drag = { kind: "label", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin, moved: false, edit: { kind: "arrow", id: hit.id } };
     } else if (hit.kind !== "glyph") {
       this.drag = this.startMove(hit.id, sp, wasSelected && this.selection.size > 1);
     }
@@ -1168,11 +1220,16 @@ export class App {
       d.moved = true;
       this.dragAxis(d, sp);
       this.chromeDirty = true;
+    } else if (d?.kind === "reach") {
+      if (!d.moved && dist(sp, d.startScreen) < 3) return;
+      d.moved = true;
+      this.dragReach(d.id, sp);
+      this.chromeDirty = true;
     } else if (d?.kind === "label") {
       if (!d.moved && dist(sp, d.startScreen) < 3) return;
       d.moved = true;
       const l = entity(this.sk, d.id);
-      if (l?.type === "line") {
+      if (l?.type === "line" || l?.type === "arc") {
         const moved = mul(sub(toModel(this.view, sp), d.startModel), mmPerUnit(this.sk));
         l.lx = d.origin[0] + moved[0];
         l.ly = d.origin[1] + moved[1];
@@ -1231,7 +1288,10 @@ export class App {
     } else if (d.kind === "dim" && !d.moved && d.onText && ev.type === "pointerup") {
       // A click on the number, not a drag: type the new value where it stands.
       this.openDimEditor(d.id);
-    } else if ((d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label") && d.moved) {
+    } else if ((d.kind === "sym" || d.kind === "axis" || d.kind === "label") && !d.moved && d.edit && ev.type === "pointerup") {
+      // The same for a name: a click on it, and it is typed where it stands.
+      this.openEditor(d.edit);
+    } else if ((d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label" || d.kind === "reach") && d.moved) {
       this.commit();
     }
     this.touch();
@@ -1285,16 +1345,29 @@ export class App {
   private onDoubleClick(ev: MouseEvent): void {
     if (this.tool !== "select") return;
     const hit = this.hitTest(this.screenPos(ev));
-    if (hit?.kind === "dim") {
-      this.selection = new Set([hit.id]);
-      this.openDimEditor(hit.id);
-      this.touch();
+    if (!hit) return;
+    // A double-click opens the text of what was hit, also where there is no text yet to click on.
+    let target: EditTarget | null = null;
+    if (hit.kind === "dim") target = { kind: "dim", id: hit.id };
+    else if (hit.kind === "curve") {
+      const e = entity(this.sk, hit.id);
+      if (e && (e.type === "line" || e.type === "arc") && e.arrow) target = { kind: "arrow", id: hit.id };
+    } else if (hit.kind === "point") {
+      const d = this.datumOn(hit.id);
+      if (d) target = { kind: "datum", id: d.id };
+    } else if (hit.kind === "sym") {
+      const s = symbol(this.sk, hit.id);
+      if (s?.type === "balloon" || s?.type === "datum") target = { kind: s.type, id: hit.id };
     }
+    if (!target) return;
+    if (target.kind === "dim") this.selection = new Set([hit.id]);
+    this.openEditor(target);
+    this.touch();
   }
 
   /** Esc and right-click: back out one level at a time. */
   private cancel(): void {
-    if (this.editing) this.closeDimEditor();
+    if (this.editing) this.closeEditor();
     else if (this.pending) this.pending = null;
     else if (isCommand(this.tool) && this.selection.size) this.selection.clear();
     else if (this.tool !== "select") return this.setTool("select");
@@ -1548,43 +1621,102 @@ export class App {
   }
 
   private openDimEditor(id: Id): void {
-    const d = constraint(this.sk, id);
-    if (!d || !isDimension(d)) return;
-    this.editing = id;
+    this.openEditor({ kind: "dim", id });
+  }
+
+  /** The text prim that shows what an edit target holds, if it is on the drawing right now. */
+  private editPrim(t: EditTarget): Extract<Prim, { k: "text" }> | undefined {
+    const part = t.kind === "axis" ? t.axis : t.kind === "datum" || t.kind === "arrow" ? "label" : undefined;
+    return this.prims.find((p): p is Extract<Prim, { k: "text" }> => p.k === "text" && p.ref === t.id && (part === undefined || p.part === part));
+  }
+
+  /** What an edit target holds now, as the text to put in the box; null when it no longer exists. */
+  private editValue(t: EditTarget): string | null {
+    if (t.kind === "dim") {
+      const d = constraint(this.sk, t.id);
+      // The box shows what the figure shows: the label when there is one, else the number.
+      return d && isDimension(d) ? d.label?.trim() || this.shownValue(d) : null;
+    }
+    if (t.kind === "arrow") {
+      const e = entity(this.sk, t.id);
+      return e && (e.type === "line" || e.type === "arc") && e.arrow ? e.label ?? "" : null;
+    }
+    const s = symbol(this.sk, t.id);
+    if (t.kind === "balloon") return s?.type === "balloon" ? s.text : null;
+    if (t.kind === "datum") return s?.type === "datum" ? s.label : null;
+    return s?.type === "frame" ? (t.axis === "x" ? s.xLabel : s.yLabel) : null;
+  }
+
+  /** Opens the box for typing on the drawing, over the text it edits. */
+  private openEditor(t: EditTarget): void {
+    const value = this.editValue(t);
+    if (value === null) return;
+    this.editing = t;
     this.dimEditor.hidden = false;
-    // The box shows what the figure shows: the label when there is one, else the number.
-    this.editingInitial = d.label?.trim() || this.shownValue(d);
-    this.dimEditor.value = this.editingInitial;
-    this.placeDimEditor();
+    this.editingInitial = value;
+    this.dimEditor.value = value;
+    this.dimEditor.setAttribute("aria-label", t.kind === "dim" ? "Dimension value or label" : "Name");
+    // The prims on hand may predate the thing being edited (an arrow just drawn).
+    this.prims = buildPrims(this.sk, mmPerUnit(this.sk), { editor: !this.preview });
+    this.placeEditor();
     // Focus once the click that opened it has run its course; otherwise the
     // browser's own handling of that click takes the focus or the selection back.
     this.focusTimer = window.setTimeout(() => {
-      if (this.editing !== id) return;
+      if (this.editing !== t) return;
       this.dimEditor.focus();
       this.dimEditor.select();
     }, 0);
   }
 
-  private placeDimEditor(): void {
-    const d = this.editing ? constraint(this.sk, this.editing) : undefined;
-    if (!d || !isDimension(d)) return this.closeDimEditor();
+  private placeEditor(): void {
+    const t = this.editing;
+    if (!t) return;
+    if (this.editValue(t) === null) return this.closeEditor();
     const mm = mmPerUnit(this.sk);
-    const text = dimensionPrims(this.sk, d, mm).find((p) => p.k === "text");
-    if (!text || text.k !== "text") return;
-    const centre = textCentre(text);
-    const s = toScreen(this.view, [centre[0] / mm, centre[1] / mm]);
-    this.dimEditor.style.left = `${s[0]}px`;
-    this.dimEditor.style.top = `${s[1]}px`;
+    const text = this.editPrim(t);
+    let at: V | null = text ? textCentre(text) : null;
+    if (!at) {
+      // Nothing is shown yet (an empty name): the box goes where the text will appear.
+      if (t.kind === "arrow") at = arrowLabelAt(this.sk, entity(this.sk, t.id) as Line | Arc, mm, true);
+      else {
+        const s = symbol(this.sk, t.id);
+        if (s?.type === "datum") at = add(mul(symbolPosition(this.sk, s), mm), [s.dx, s.dy]);
+        else if (s?.type === "balloon") at = add(mul(balloonAnchor(this.sk, s), mm), [s.dx, s.dy]);
+        else if (s?.type === "frame" && t.kind === "axis") at = frameTips(this.sk, s, mm)[t.axis];
+      }
+    }
+    if (!at) return;
+    const sp = toScreen(this.view, [at[0] / mm, at[1] / mm]);
+    this.dimEditor.style.left = `${sp[0]}px`;
+    this.dimEditor.style.top = `${sp[1]}px`;
   }
 
-  private commitDimEditor(): void {
-    const id = this.editing;
-    if (!id) return;
+  private commitEditor(): void {
+    const t = this.editing;
+    if (!t) return;
     const text = this.dimEditor.value.trim().replace(/^\$+|\$+$/g, "");
-    const unchanged = text === this.editingInitial;
-    this.closeDimEditor();
-    const d = constraint(this.sk, id);
-    if (!d || !isDimension(d) || unchanged) return this.touch();
+    const unchanged = text === this.editingInitial.trim();
+    this.closeEditor();
+    if (unchanged || this.editValue(t) === null) return this.touch();
+    if (t.kind !== "dim") {
+      // A name: what was typed is what is shown.
+      if (t.kind === "arrow") {
+        const e = entity(this.sk, t.id) as Line | Arc;
+        if (text) e.label = text;
+        else delete e.label;
+      } else {
+        const s = symbol(this.sk, t.id)!;
+        if (s.type === "balloon") s.text = text;
+        else if (s.type === "datum") s.label = text;
+        else if (s.type === "frame" && t.kind === "axis") {
+          if (t.axis === "x") s.xLabel = text;
+          else s.yLabel = text;
+        }
+      }
+      return this.commit();
+    }
+    const id = t.id;
+    const d = constraint(this.sk, id) as Dimension;
     const label = d.label;
     if (text === "") {
       // Cleared: a label goes, and the number shows again.
@@ -1605,7 +1737,7 @@ export class App {
     this.touch();
   }
 
-  private closeDimEditor(): void {
+  private closeEditor(): void {
     if (!this.editing) return;
     clearTimeout(this.focusTimer);
     this.editing = null;
@@ -2116,7 +2248,7 @@ export class App {
       case "frame":
         html += `<h2>Coordinate axes</h2>`;
         html += text("First axis label", "sym-xlabel", s.xLabel);
-        html += text("Second axis label", "sym-ylabel", s.yLabel, "Written as TeX math. Leave empty for no label.");
+        html += text("Second axis label", "sym-ylabel", s.yLabel, "Written as TeX math. Leave empty for no label. Clicking a label on the drawing edits it there.");
         html += number("First axis length (mm on paper)", "sym-xsize", mm(s.xSize));
         html += number("Second axis length (mm on paper)", "sym-ysize", mm(s.ySize), "Set a length to 0 to leave that axis out.");
         html += number("Rotation (degrees)", "sym-angle", degrees(s.angle));
@@ -2125,13 +2257,14 @@ export class App {
         break;
       case "centermark":
         html += `<h2>Centre mark</h2>`;
-        html += number("Rotation (degrees)", "sym-angle", degrees(s.angle), "Dragging the mark turns it too.");
+        html += number("Size (1 is the standard mark)", "sym-scale", formatNumber(Number((s.scale ?? 1).toFixed(2))), "Scales the cross, its gaps and how far the lines run past the rim. Dragging an end of the mark sets this too.");
+        html += number("Rotation (degrees)", "sym-angle", degrees(s.angle), "Dragging the mark by its middle turns it too.");
         html += rotate;
         break;
       case "balloon": {
         const ends: [LeaderEnd, string][] = [["arrow", "Arrow"], ["dot", "Dot"], ["none", "Plain"]];
         html += `<h2>Balloon</h2>`;
-        html += text("Text", "sym-text", s.text, "A part number, or any TeX math.");
+        html += text("Text", "sym-text", s.text, "A part number, or any TeX math. Clicking it on the drawing edits it there.");
         html += `<div class="field"><span id="end-label">Leader ends in</span><div class="segmented" role="group" aria-labelledby="end-label">${ends.map(([e, name]) =>
           `<button type="button" data-end="${e}" aria-pressed="${s.end === e}">${name}</button>`).join("")}</div></div>`;
         html += `<label class="check"><input data-field="sym-circle" type="checkbox"${s.circle !== false ? " checked" : ""}><span>Circle around the text</span></label>`;
@@ -2154,7 +2287,7 @@ export class App {
         break;
       case "datum":
         html += `<h2>Datum point</h2>`;
-        html += text("Name", "sym-label", s.label, "Written as TeX math. Leave empty for none. Drag the name on the drawing to move it.");
+        html += text("Name", "sym-label", s.label, "Written as TeX math. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.");
         html += `<div class="field"><span id="colour-label">Colour</span><div class="swatches" role="group" aria-labelledby="colour-label">${DATUM_COLORS.map((c) =>
           `<button type="button" class="swatch" data-color="${c}" aria-pressed="${s.color === c}" aria-label="Colour ${c}" title="${c}" style="background:${c}"></button>`).join("")}` +
           `<label class="swatch custom" title="Another colour"><input data-field="sym-color" type="color" value="${esc(s.color)}" aria-label="Another colour"></label></div></div>`;
@@ -2233,19 +2366,21 @@ export class App {
       }
       const cs: Curve[] = [...lines, ...rounds];
       if (cs.length) {
-        const styleOf = (c: Curve): LineStyle => (c.construction ? "construction" : c.type === "line" && c.arrow ? "arrow" : c.centre ? "centre" : "solid");
+        const styleOf = (c: Curve): LineStyle => (c.construction ? "construction" : c.type !== "circle" && c.arrow ? "arrow" : c.centre ? "centre" : "solid");
         const shared = cs.every((c) => styleOf(c) === styleOf(cs[0])) ? styleOf(cs[0]) : null;
         const styles: [LineStyle, string][] = [["solid", "Solid"], ["centre", "Centre line"], ["construction", "Helper"]];
-        // Only a straight line can be an arrow.
-        if (!rounds.length) styles.splice(2, 0, ["arrow", "Arrow"]);
+        // Lines and arcs can be arrows; a full circle has no end to put a head on.
+        if (cs.every((c) => c.type !== "circle")) styles.splice(2, 0, ["arrow", "Arrow"]);
         html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented wrap" role="group" aria-labelledby="style-label">${styles.map(([st, name]) =>
           `<button type="button" data-style="${st}" aria-pressed="${shared === st}">${name}</button>`).join("")}</div>` +
           `<small>A centre line is thin and dash-dotted. A helper is dashed here and left out of the exported figure.</small></div>`;
-        const arrow = cs.length === 1 && lines.length === 1 && lines[0].arrow ? lines[0] : null;
+        const arrow = cs.length === 1 && cs[0].type !== "circle" && cs[0].arrow ? cs[0] : null;
         if (arrow) {
-          const heads: [ArrowEnds, string][] = [["end", "End"], ["start", "Start"], ["both", "Both"]];
-          html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="F, \\vec{v}_0" value="${esc(arrow.label ?? "")}"><small>Written as TeX math. Drag the name on the drawing to move it.</small></label>`;
-          html += `<div class="field"><span id="head-label">Arrowhead at the</span><div class="segmented" role="group" aria-labelledby="head-label">${heads.map(([h, name]) =>
+          const heads: [ArrowEnds, string][] = arrow.type === "line"
+            ? [["end", "End"], ["start", "Start"], ["both", "Both"]]
+            : [["end", "Anticlockwise"], ["start", "Clockwise"], ["both", "Both"]];
+          html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="${arrow.type === "line" ? "F, \\vec{v}_0" : "M, \\omega"}" value="${esc(arrow.label ?? "")}"><small>Written as TeX math. On the drawing, click the name to type it there and drag it to move it; double-click the arrow to give it one.</small></label>`;
+          html += `<div class="field"><span id="head-label">${arrow.type === "line" ? "Arrowhead at the" : "Points"}</span><div class="segmented wrap" role="group" aria-labelledby="head-label">${heads.map(([h, name]) =>
             `<button type="button" data-head="${h}" aria-pressed="${arrow.arrow === h}">${name}</button>`).join("")}</div></div>`;
         }
       }
@@ -2362,11 +2497,11 @@ export class App {
     });
 
     this.dimEditor.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); this.commitDimEditor(); }
-      else if (e.key === "Escape") { e.preventDefault(); this.closeDimEditor(); this.touch(); }
+      if (e.key === "Enter") { e.preventDefault(); this.commitEditor(); }
+      else if (e.key === "Escape") { e.preventDefault(); this.closeEditor(); this.touch(); }
       e.stopPropagation();
     });
-    this.dimEditor.addEventListener("blur", () => { if (this.editing) this.commitDimEditor(); });
+    this.dimEditor.addEventListener("blur", () => { if (this.editing) this.commitEditor(); });
 
     this.fileInput.addEventListener("change", () => {
       const f = this.fileInput.files?.[0];
@@ -2440,19 +2575,26 @@ export class App {
     for (const c of [...lines, ...rounds]) {
       delete c.construction;
       delete c.centre;
-      if (c.type === "line" && style !== "arrow") delete c.arrow;
+      if (c.type !== "circle" && style !== "arrow") delete c.arrow;
       if (style === "construction") c.construction = true;
       if (style === "centre") c.centre = true;
-      if (style === "arrow" && c.type === "line") c.arrow ??= "end";
+      if (style === "arrow" && c.type !== "circle") c.arrow ??= "end";
     }
     this.commit();
   }
 
+  /** The one selected line or arc, when it is drawn as an arrow. */
+  private selectedArrow(): Line | Arc | null {
+    if (this.selection.size !== 1) return null;
+    const e = entity(this.sk, [...this.selection][0]);
+    return e && (e.type === "line" || e.type === "arc") && e.arrow ? e : null;
+  }
+
   /** Sets which end of the selected arrow carries the head. */
   private setArrowHead(ends: ArrowEnds): void {
-    const { lines } = this.picked();
-    if (lines.length !== 1 || !lines[0].arrow) return;
-    lines[0].arrow = ends;
+    const e = this.selectedArrow();
+    if (!e) return;
+    e.arrow = ends;
     this.commit();
   }
 
@@ -2531,6 +2673,10 @@ export class App {
       if (field === "sym-angle" && (s.type === "support" || s.type === "frame" || s.type === "centermark")) {
         if (!Number.isFinite(v)) { this.toast("Type the rotation as a number of degrees."); return this.touch(); }
         s.angle = v * DEG;
+      } else if (s.type === "centermark" && field === "sym-scale") {
+        if (!Number.isFinite(v) || v < 0.2 || v > 10) { this.toast("The size must be between 0.2 and 10."); return this.touch(); }
+        if (Math.abs(v - 1) < 1e-9) delete s.scale;
+        else s.scale = v;
       } else if (s.type === "frame" && (field === "sym-xsize" || field === "sym-ysize")) {
         const size = length(0, 200, "Axis length");
         if (size === null) return this.touch();
@@ -2557,11 +2703,11 @@ export class App {
     }
 
     if (field === "arrow-label") {
-      const { lines } = this.picked();
-      if (lines.length !== 1) return;
+      const e = this.selectedArrow();
+      if (!e) return;
       const name = input.value.trim().replace(/^\$+|\$+$/g, "");
-      if (name) lines[0].label = name;
-      else delete lines[0].label;
+      if (name) e.label = name;
+      else delete e.label;
       return this.commit();
     }
 

@@ -33,6 +33,7 @@ export const ICONS: Record<string, string> = {
   hatch: `<path d="M3 7h14" stroke-width="2"/><path d="M6 7l-3 5M10 7l-3 5M14 7l-3 5M18 7l-3 5" stroke-width="1.2"/>`,
 
   arrow: `<path d="M4 16l8.6-8.6"/><path d="M16.5 3.5l-1.9 6.9-5-5z" fill="currentColor" stroke="none"/>`,
+  arcarrow: `<path d="M4.5 15.5A8.5 8.5 0 0 1 13 5.2"/><path d="M17.2 5.6l-6.2 3.1.9-6.6z" fill="currentColor" stroke="none"/>`,
   datum: `${dot(7.5, 12.5, 3.2)}<path d="M12.6 8.4l2.2-5.4 2.2 5.4M13.4 6.5h2.8" stroke-width="1.3"/>`,
   eye: `<path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10z"/><circle cx="10" cy="10" r="2.4"/>`,
 

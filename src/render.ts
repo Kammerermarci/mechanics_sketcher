@@ -5,7 +5,7 @@ import {
   type Sketch, type Id, type Constraint, type Curve, ORIGIN, entity, point, isDimension, arcRadius, isFixed,
 } from "./model";
 import { type V, add, sub, mul, norm, perp, mid, polar, wrap, projectOnSegment, TWO_PI } from "./geom";
-import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_MM, STROKE_DASH, arrowHeads, strokedEnds, textBox } from "./prims";
+import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_MM, STROKE_DASH, arrowHeads, strokedEnds, strokedSweep, textBox } from "./prims";
 import type { Overlaps } from "./regions";
 import { texEngine } from "./tex";
 import { ICONS } from "./icons";
@@ -294,7 +294,8 @@ function drawPrims(s: Scene): string {
     } else if (p.k === "poly") {
       out += `<polygon class="${cls}" points="${p.pts.map((q) => M(q).map(n2).join(",")).join(" ")}" ${sw}/>`;
     } else {
-      out += `<path class="${cls}" d="${arcPath(view, [p.c[0] / mm, p.c[1] / mm], p.r / mm, p.a0, p.a1)}" ${sw}/>`;
+      const [a0, a1] = strokedSweep(p);
+      out += `<path class="${cls}" d="${arcPath(view, [p.c[0] / mm, p.c[1] / mm], p.r / mm, a0, a1)}" ${sw}/>`;
     }
     if (p.k === "line" || p.k === "arc") {
       for (const head of arrowHeads(p)) {

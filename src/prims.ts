@@ -74,7 +74,7 @@ interface Base {
   ghost?: boolean;
   /** Which piece of its owner this is, where the editor treats pieces differently (a name, an axis). */
   part?: string;
-  /** CSS hex colour, for the few things that are not drawn in black. */
+  /** CSS hex colour a solid shape is filled with instead of black. Its outline stays black. */
   color?: string;
 }
 /** `head` scales the arrowheads; 1 is the size used on dimensions. */
@@ -490,20 +490,30 @@ function centerMarkPrims(sk: Sketch, s: CenterMark, mm: number): Prim[] {
   const f = roundFrame(sk, s.on, mm);
   if (!f) return [];
   const out: Prim[] = [];
-  const reach = f.r + PAPER.centreOver;
-  const inner = PAPER.centreCross + PAPER.centreGap;
+  const k = s.scale ?? 1;
+  const cross = PAPER.centreCross * k;
+  const reach = f.r + PAPER.centreOver * k;
+  const inner = cross + PAPER.centreGap * k;
   for (const ang of [s.angle, s.angle + Math.PI / 2]) {
     const at = (d: number) => polar(f.c, d, ang);
-    if (reach - inner < PAPER.centreCross) {
+    if (reach - inner < cross) {
       // Too small for a separate cross: one line each way.
       out.push({ ...base, a: at(-reach), b: at(reach) });
       continue;
     }
-    out.push({ ...base, a: at(-PAPER.centreCross), b: at(PAPER.centreCross) });
+    out.push({ ...base, a: at(-cross), b: at(cross) });
     out.push({ ...base, a: at(inner), b: at(reach) });
     out.push({ ...base, a: at(-inner), b: at(-reach) });
   }
   return out;
+}
+
+/** The four ends of a centre mark's lines, in paper mm. */
+export function centerMarkEnds(sk: Sketch, s: CenterMark, mm: number): V[] {
+  const f = roundFrame(sk, s.on, mm);
+  if (!f) return [];
+  const reach = f.r + PAPER.centreOver * (s.scale ?? 1);
+  return [0, 1, 2, 3].map((i) => polar(f.c, reach, s.angle + (i * Math.PI) / 2));
 }
 
 /** Radius of a balloon that holds its text, in mm. Without its circle, the clearance its leader keeps from the text. */
@@ -640,17 +650,35 @@ export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
   }
 }
 
-/** Centre of an arrow's name in paper mm, or null when it has none. */
-export function arrowLabelAt(sk: Sketch, l: Line, mm: number): V | null {
-  const tex = labelTex(l.label ?? "");
-  if (!l.arrow || !tex) return null;
-  const a = P(sk, l.p1, mm), b = P(sk, l.p2, mm);
-  const m = mid(a, b);
-  if (l.lx !== undefined && l.ly !== undefined) return [m[0] + l.lx, m[1] + l.ly];
-  // Beside the arrow, on its upper side, just clear of the line.
-  let n = len(sub(b, a)) < 1e-9 ? [0, 1] as V : perp(norm(sub(b, a)));
-  if (n[1] < -1e-9 || (Math.abs(n[1]) <= 1e-9 && n[0] > 0)) n = mul(n, -1);
-  const t = texEngine().measure(tex);
+/** The middle of an arrow, in paper mm: where its name is measured from. */
+export function arrowAnchor(sk: Sketch, e: Line | Arc, mm: number): V {
+  if (e.type === "line") return mid(P(sk, e.p1, mm), P(sk, e.p2, mm));
+  const { a0, a1 } = arcAngles(sk, e);
+  return polar(P(sk, e.c, mm), arcRadius(sk, e) * mm, (a0 + a1) / 2);
+}
+
+/**
+ * Centre of an arrow's name in paper mm, or null when it has none. With
+ * `always`, where the name would go even though there is none yet.
+ */
+export function arrowLabelAt(sk: Sketch, e: Line | Arc, mm: number, always = false): V | null {
+  const tex = labelTex(e.label ?? "");
+  if (!e.arrow || (!tex && !always)) return null;
+  const m = arrowAnchor(sk, e, mm);
+  if (e.lx !== undefined && e.ly !== undefined) return [m[0] + e.lx, m[1] + e.ly];
+  let n: V;
+  if (e.type === "line") {
+    // Beside the arrow, on its upper side.
+    const a = P(sk, e.p1, mm), b = P(sk, e.p2, mm);
+    n = len(sub(b, a)) < 1e-9 ? [0, 1] : perp(norm(sub(b, a)));
+    if (n[1] < -1e-9 || (Math.abs(n[1]) <= 1e-9 && n[0] > 0)) n = mul(n, -1);
+  } else {
+    // Outside the arc.
+    const c = P(sk, e.c, mm);
+    n = len(sub(m, c)) < 1e-9 ? [0, 1] : norm(sub(m, c));
+  }
+  // Just clear of the stroke, however wide the name is.
+  const t = texEngine().measure(tex || "F");
   const reach = (Math.abs(n[0]) * t.w + Math.abs(n[1]) * (t.asc + t.desc)) * PAPER.em / 2;
   return add(m, mul(n, reach + PAPER.textSep + 0.6));
 }
@@ -686,7 +714,16 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
       out.push({ ...base, k: "circle", c: P(sk, e.c, mm), r: e.r * mm });
     } else {
       const { a0, a1 } = arcAngles(sk, e);
-      out.push({ ...base, k: "arc", c: P(sk, e.c, mm), r: arcRadius(sk, e) * mm, a0, a1 });
+      const arc: ArcPrim = { ...base, k: "arc", c: P(sk, e.c, mm), r: arcRadius(sk, e) * mm, a0, a1 };
+      if (e.arrow && !e.construction) {
+        arc.stroke = "arrow";
+        arc.head = PAPER.arrowScale;
+        if (e.arrow !== "end") arc.arrowA = true;
+        if (e.arrow !== "start") arc.arrowB = true;
+      }
+      out.push(arc);
+      const at = e.arrow ? arrowLabelAt(sk, e, mm) : null;
+      if (at) out.push({ ref: e.id, layer: "geom", k: "text", at, tex: labelTex(e.label ?? ""), anchor: "c", part: "label" });
     }
   }
   for (const sym of sk.symbols) if (sym.type !== "fill") out.push(...symbolPrims(sk, sym, mm));
@@ -725,6 +762,14 @@ export function strokedEnds(p: LinePrim): [V, V] {
   const heads = (p.arrowA ? 1 : 0) + (p.arrowB ? 1 : 0);
   if (span <= back * heads) return [p.a, p.b];
   return [p.arrowA ? add(p.a, mul(u, back)) : p.a, p.arrowB ? sub(p.b, mul(u, back)) : p.b];
+}
+
+/** The same for an arc: the angles it is stroked between. */
+export function strokedSweep(p: ArcPrim): [number, number] {
+  const back = (PAPER.arrowLen * (p.head ?? 1) * 0.6) / Math.max(p.r, 1e-6);
+  const heads = (p.arrowA ? 1 : 0) + (p.arrowB ? 1 : 0);
+  if (!heads || p.a1 - p.a0 <= back * heads) return [p.a0, p.a1];
+  return [p.arrowA ? p.a0 + back : p.a0, p.arrowB ? p.a1 - back : p.a1];
 }
 
 /** Arrowhead outlines for a line or arc primitive. */

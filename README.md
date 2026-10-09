@@ -58,13 +58,19 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
      axis has its own length and label; drag an arrow tip to change the
      length.
    - *Arrow:* drawn with two clicks like a line, and constrained and
-     dimensioned like one. It can have a name (TeX), which is dragged to
-     where it should sit, and a head at either end or both. Any line can be
-     turned into an arrow in the side panel.
-   - *Datum point:* a coloured dot with a name (A, B, C ...) on a joint, on a
-     curve or anywhere. The point under it is ordinary geometry. Pick the
-     colour in the side panel and drag the name to move it.
-   - *Centre mark:* click a circle or arc.
+     dimensioned like one. A box for its name (TeX) opens as soon as it is
+     drawn; type it, or carry on clicking to leave it without one. The name
+     is dragged to where it should sit, and the head can be at either end or
+     both. Any line can be turned into an arrow in the side panel.
+   - *Curved arrow:* the same on an arc, for moments and rotations. Click
+     the centre, where it starts, sweep round and click where it ends; the
+     head goes on the end clicked last.
+   - *Datum point:* a coloured dot with a black edge and a name (A, B, C
+     ...) on a joint, on a curve or anywhere. The point under it is ordinary
+     geometry. Pick the colour in the side panel and drag the name to move
+     it.
+   - *Centre mark:* click a circle or arc. Drag an end of the mark to make
+     the whole mark larger or smaller; dragging it by the middle turns it.
    - *Balloon (B):* click what it points at, then where the balloon goes.
      Numbers count up on their own; the text can be any TeX, and the circle
      can be switched off.
@@ -73,6 +79,12 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
    - *Hatching:* click a line, arc or circle on the side the strokes should
      go. Drag it away from the curve to make the strokes longer; the side
      panel moves it to the other side or leans the strokes the other way.
+
+**Text is typed where it stands.** Click a dimension's number, the name of
+an arrow or a datum point, a balloon's text or an axis label, and a box opens
+on the spot; Enter accepts, Esc leaves it as it was. Pressing and dragging
+the same text moves it instead. Double-click an arrow or a datum point that
+has no name yet to give it one.
 
 **The middle mouse button confirms**, as in Creo: it places the dimension,
 accepts a typed value, drops a shape that is only half drawn, and with
@@ -117,7 +129,7 @@ small prompt before the download. The last name is offered again next time.
 
 ```latex
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta}   % for the arrowheads
+\usetikzlibrary{arrows.meta, bending}   % arrowheads; bending makes them follow arcs
 ...
 \begin{figure}
   \centering
@@ -180,13 +192,13 @@ set to the source "GitHub Actions" once.
 ## Status
 
 Working: geometry, centre lines, trim, constraints, distance / angle / radius
-dimensions with labels typeset by MathJax, supports, coordinate axes, arrows,
-datum points, centre marks, balloons, fills, hatching, the fixed origin,
+dimensions with labels typeset by MathJax, supports, coordinate axes, straight
+and curved arrows, datum points, centre marks, balloons, fills, hatching, the fixed origin,
 snapping, dragging, undo, save and load, print preview, SVG and TikZ export,
 install as an app.
 
-Not built yet: moments and distributed loads as symbols of their own. A
-single force is drawn with the Arrow tool. `docs/status-report.pdf` is the plan as of the first build.
+Not built yet: distributed loads. A single force is drawn with the Arrow
+tool, a moment with the Curved arrow tool. `docs/status-report.pdf` is the plan as of the first build.
 
 ## Licence note
 

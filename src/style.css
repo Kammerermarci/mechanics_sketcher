@@ -179,8 +179,7 @@ button { cursor: pointer; }
 .prim, .tex { color: var(--ink); }
 /* One class each, so the state colours further down win. */
 .prim.free { color: var(--blue); }
-/* Things with a colour of their own, such as a datum's dot. Selection and hover still recolour them. */
-.prim.tinted { color: var(--tint); }
+/* Solid shapes with a fill colour of their own, such as a datum's dot. The outline stays in the line colour. */
 .prim.construction { stroke-dasharray: 7 5; }
 .prim.filled { fill: var(--paper); }
 .prim.head { fill: currentColor; stroke: none; }
@@ -195,6 +194,7 @@ text.tex { fill: currentColor; font-family: var(--math); }
 .prim.sel, .tex.sel { color: var(--sel); }
 
 .prim.solid { fill: currentColor; }
+.prim.solid.tinted { fill: var(--tint); }
 /* Fills carry their own colour; the outline only shows when they are picked. */
 .region { stroke: none; }
 .region.hov { stroke: #f08a4b; stroke-width: 1.5; }

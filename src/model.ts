@@ -50,6 +50,13 @@ export interface Arc {
   construction?: boolean;
   /** A centre line: thin dash-dot, and not an edge of any shape. */
   centre?: boolean;
+  /** A curved arrow: which end carries the head. p1 is the start, p2 the end, counter-clockwise. */
+  arrow?: ArrowEnds;
+  /** The arrow's name, as TeX math. */
+  label?: string;
+  /** Where the name sits, in paper mm from the middle of the arc. Unset: outside it. */
+  lx?: number;
+  ly?: number;
 }
 export type Entity = Point | Line | Circle | Arc;
 export type Curve = Line | Circle | Arc;
@@ -147,6 +154,8 @@ export interface CenterMark {
   type: "centermark";
   on: Id;
   angle: number;
+  /** Size of the cross, its gaps and the reach past the rim, against the standard mark. Unset: 1. */
+  scale?: number;
 }
 export type LeaderEnd = "arrow" | "dot" | "none";
 /** A circled number (or any TeX) with a leader, for naming parts. */
@@ -300,7 +309,7 @@ export function curves(sk: Sketch): Curve[] {
 
 /** True for curves that form the shapes of the figure: not helpers, centre lines or arrows. */
 export function isEdge(e: Curve): boolean {
-  return !e.construction && !e.centre && !(e.type === "line" && e.arrow);
+  return !e.construction && !e.centre && !((e.type === "line" || e.type === "arc") && e.arrow);
 }
 
 /** Removes a point that no curve is built on any more, unless it was placed on purpose. */
