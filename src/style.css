@@ -178,6 +178,7 @@ text.tex { fill: currentColor; font-family: var(--math); }
 .origin-pt.sel circle { fill: var(--paper); }
 .preview { fill: none; stroke: var(--blue); stroke-width: 1.5; opacity: 0.75; }
 .preview-pt { stroke: var(--blue); opacity: 0.75; }
+.preview.danger { stroke: var(--bad); stroke-width: 4; stroke-linecap: round; opacity: 0.7; }
 
 .glyph { color: var(--mark); }
 .glyph > rect { fill: var(--mark-bg); }

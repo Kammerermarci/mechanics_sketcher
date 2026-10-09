@@ -2,7 +2,7 @@
 
 A constraint sketcher for truss and beam figures. Draw roughly, then constrain
 and dimension; changing a dimension re-solves the whole drawing. Figures are
-meant for LaTeX: export to TikZ and SVG is not built yet (see Status).
+meant for LaTeX: they export to TikZ and to SVG.
 
 ## Run it
 
@@ -22,9 +22,18 @@ The tools sit on two tabs. **Sketch** has what shapes the geometry: drawing
 tools and constraints. **Annotate** has what is added to the figure:
 dimensions, supports, axes, centre marks, balloons, fills and hatching.
 
-1. **Draw.** Pick Line (L) and click to place joints. Clicking an existing
-   joint reuses it. Near-horizontal and near-vertical lines snap and get that
-   constraint; hold Alt to switch snapping off. Middle-click ends a chain.
+1. **Draw.** Pick Line (L): one click starts a line, the next one ends it,
+   and the click after that starts a new line, so four clicks give two
+   lines. Clicking an existing joint reuses it. Near-horizontal and
+   near-vertical lines snap and get that constraint; hold Alt to switch
+   snapping off. *Centre line* draws the same way but gives a thin
+   dash-dotted line that is exported and does not close shapes for fills. A
+   selected line, circle or arc can be switched between solid, centre line
+   and helper (editor only, never exported) in the side panel.
+   *Trim (X)* removes the piece of a line, arc or circle under the cursor, up
+   to where other curves cross it; the piece that would go is shown in red
+   first. The cut ends stay on the curve they were cut at. A circle needs
+   two crossings to be trimmed and becomes an arc.
 2. **Constrain.** Press a constraint, then click the geometry it applies to. It
    is applied as soon as it has what it needs, and the tool stays active for
    the next one. (Selecting the geometry first works too.)
@@ -48,9 +57,9 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
    - *Hatching:* click a line, arc or circle on the side the strokes should
      go. Drag it away from the curve to make the strokes longer.
 
-**The middle mouse button confirms**, as in Creo: it ends the line being
-drawn, places the dimension, accepts a typed value, and with nothing in
-progress returns to Select. Dragging with it pans. Esc or right-click cancels.
+**The middle mouse button confirms**, as in Creo: it places the dimension,
+accepts a typed value, drops a shape that is only half drawn, and with
+nothing in progress returns to Select. Dragging with it pans. Esc or right-click cancels.
 
 **Colours while sketching.** A curve is blue while it can still move and
 turns black once it is fully constrained; the box in the corner counts the
@@ -69,13 +78,40 @@ The origin is a fixed point at (0, 0) that geometry can be constrained and
 dimensioned against. The button in the top right hides its axes. It is never
 part of the exported figure.
 
+## Export
+
+The buttons in the top bar write the figure as it will appear on paper:
+geometry, centre lines, dimensions, labels and symbols, without helper
+geometry, the origin, constraint markers or hidden dimensions.
+
+- **Export SVG** saves `figure.svg`, sized in millimetres. Labels are
+  outlines, so it needs no fonts.
+- **Export TikZ** saves `figure.tex`, a `tikzpicture` to `\input`. **Copy
+  TikZ** puts the same text on the clipboard. Labels are passed on as typed,
+  so LaTeX sets them in the document's own font.
+
+```latex
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}   % for the arrowheads
+...
+\begin{figure}
+  \centering
+  \input{figure.tex}
+\end{figure}
+```
+
+One TikZ unit is one millimetre, so the figure comes out at the width shown
+in the corner box. Line widths and the arrowhead are named styles at the top
+of the picture and can be changed there.
+
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
 | L, C, A, P | Line, circle, arc, point | D | Dimension |
+| X | Trim | B | Balloon |
 | H, V | Horizontal, vertical | E | Equal |
 | O | Coincident / point on curve | M | Midpoint |
 | T | Tangent | F | Fix or release a point |
-| B | Balloon | R | Turn the selected support, axes or centre mark 90° |
+| R | Turn the selected support, axes or centre mark 90° | | |
 | Middle-click | Confirm | Esc, right-click | Cancel one step |
 | Delete | Delete selection | Ctrl+Z, Ctrl+Y | Undo, redo |
 | Wheel | Zoom | Middle-drag | Pan |
@@ -91,10 +127,12 @@ part of the exported figure.
   which points are still free, by pinning each in turn and seeing whether
   that uses up a degree of freedom.
 - `src/prims.ts`: breaks the sketch down into lines, circles, arcs, filled
-  regions and text in paper millimetres. The screen draws from this list, and
-  the exporters will too.
+  regions and text in paper millimetres. The screen and both exporters draw
+  from this list.
+- `src/export.ts`: writes that list as SVG and as TikZ.
 - `src/regions.ts`: finds the closed regions for fills, and the stretches
   where curves overlap.
+- `src/trim.ts`: where curves cross, and cutting a curve between crossings.
 - `src/render.ts`: the editor canvas (SVG), including point handles and
   constraint markers that are never exported.
 - `src/mathjax.ts`: typesets labels with a bundled MathJax; `src/tex.ts` holds
@@ -115,13 +153,12 @@ set to the source "GitHub Actions" once.
 
 ## Status
 
-Working: geometry, constraints, distance / angle / radius dimensions with
-labels typeset by MathJax, supports, coordinate axes, centre marks, balloons,
-fills, hatching, the fixed origin, snapping, dragging, undo, save and load,
-install as an app.
+Working: geometry, centre lines, trim, constraints, distance / angle / radius
+dimensions with labels typeset by MathJax, supports, coordinate axes, centre
+marks, balloons, fills, hatching, the fixed origin, snapping, dragging, undo,
+save and load, SVG and TikZ export, install as an app.
 
-Not built yet: loads (forces, moments, distributed loads), TikZ and SVG
-export. `docs/status-report.pdf` is the plan as of the first build.
+Not built yet: loads (forces, moments, distributed loads). `docs/status-report.pdf` is the plan as of the first build.
 
 ## Licence note
 

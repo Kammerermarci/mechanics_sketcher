@@ -32,6 +32,9 @@ export const ICONS: Record<string, string> = {
   fill: `<path d="M4 16V8l6-4 6 4v8z" fill="currentColor" fill-opacity="0.28"/><path d="M4 16V8l6-4 6 4v8z"/>`,
   hatch: `<path d="M3 7h14" stroke-width="2"/><path d="M6 7l-3 5M10 7l-3 5M14 7l-3 5M18 7l-3 5" stroke-width="1.2"/>`,
 
+  centerline: `<path d="M3 17l4.2-4.2M8.6 11.4l.8-.8M10.8 9.2L15 5M16.2 3.8l.8-.8"/>`,
+  trim: `<path d="M3 15h5.5M11.5 15H17" stroke-dasharray="none"/><path d="M8.5 15h3" stroke-dasharray="1.2 1.6" stroke-width="1.2"/><path d="M6 4l8 9M14 4l-8 9" stroke-width="1.3"/>`,
+
   undo: `<path d="M7.5 4.5l-4 4 4 4"/><path d="M3.5 8.5h8a4.3 4.3 0 0 1 0 8.6H9"/>`,
   redo: `<path d="M12.5 4.5l4 4-4 4"/><path d="M16.5 8.5h-8a4.3 4.3 0 0 0 0 8.6H11"/>`,
   fit: `<path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/><rect x="7" y="7" width="6" height="6" stroke-width="1.2"/>`,

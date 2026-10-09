@@ -5,7 +5,7 @@
 // planar graph; its bounded faces are the regions. Curves that cross without
 // a point at the crossing are not split there, so such regions are not found.
 
-import { type Sketch, type Id, type Point, points, point, curves, curvePoints, arcRadius } from "./model";
+import { type Sketch, type Id, type Point, points, point, curves, curvePoints, arcRadius, isEdge } from "./model";
 import { type V, sub, dist, angleOf, polar, wrap, projectOnSegment, TWO_PI } from "./geom";
 
 /** A bounded region: corners in counter-clockwise order, and what joins each to the next. */
@@ -86,7 +86,7 @@ export function findFaces(sk: Sketch): Face[] {
   };
 
   for (const e of curves(sk)) {
-    if (e.construction) continue;
+    if (!isEdge(e)) continue;
     if (e.type === "line") {
       const a = pos(e.p1), b = pos(e.p2);
       if (dist(a, b) < eps) continue;
@@ -188,7 +188,7 @@ export function regionAt(sk: Sketch, q: V): Region | null {
       bestArea = f.area;
     }
   }
-  const circles = curves(sk).filter((e) => e.type === "circle" && !e.construction);
+  const circles = curves(sk).filter((e) => e.type === "circle" && isEdge(e));
   for (const c of circles) {
     if (c.type !== "circle") continue;
     const ctr = point(sk, c.c);
@@ -226,7 +226,7 @@ export interface Overlaps {
 
 export function findOverlaps(sk: Sketch): Overlaps {
   const out: Overlaps = { segments: [], rounds: [] };
-  const drawn = curves(sk).filter((e) => !e.construction);
+  const drawn = curves(sk).filter(isEdge);
   const pos = (id: Id): V => { const p = point(sk, id); return [p.x, p.y]; };
 
   const lines = drawn.filter((e) => e.type === "line").map((e) => ({ a: pos((e as { p1: Id }).p1), b: pos((e as { p2: Id }).p2) }));

@@ -5,7 +5,7 @@ import {
   type Sketch, type Id, type Constraint, type Curve, ORIGIN, entity, point, isDimension, arcRadius, isFixed,
 } from "./model";
 import { type V, add, sub, mul, norm, perp, mid, polar, wrap, projectOnSegment, TWO_PI } from "./geom";
-import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_MM, arrowHeads, textBox } from "./prims";
+import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_MM, STROKE_DASH, arrowHeads, textBox } from "./prims";
 import type { Overlaps } from "./regions";
 import { texEngine } from "./tex";
 import { ICONS } from "./icons";
@@ -34,6 +34,8 @@ export interface Preview {
   circles: { c: V; r: number }[];
   arcs: { c: V; r: number; a0: number; a1: number }[];
   points: V[];
+  /** Drawn as something about to be removed, not added. */
+  danger?: boolean;
 }
 
 export interface SnapMark {
@@ -222,8 +224,8 @@ function arcPath(view: View, c: V, r: number, a0: number, a1: number): string {
   return `M${n2(s[0])} ${n2(s[1])}A${n2(rp)} ${n2(rp)} 0 ${large} 0 ${n2(e[0])} ${n2(e[1])}`;
 }
 
-/** SVG path data for the outlines of a region; M maps paper mm to the screen. */
-function outlinePath(outlines: Outline[], M: (p: V) => V, pxPerMm: number): string {
+/** SVG path data for the outlines of a region; M maps paper mm to the target, pxPerMm scales radii. */
+export function outlinePath(outlines: Outline[], M: (p: V) => V, pxPerMm: number): string {
   let d = "";
   for (const o of outlines) {
     if (o.kind === "circle") {
@@ -266,17 +268,19 @@ function drawPrims(s: Scene): string {
       out += engine.svg(p.tex, topLeft[0], topLeft[1], PAPER.em * pxPerMm, cls);
       continue;
     }
-    const sw = n2(strokePx(p.stroke, pxPerMm));
+    const dash = STROKE_DASH[p.stroke];
+    const sw = `stroke-width="${n2(strokePx(p.stroke, pxPerMm))}"` +
+      (dash ? ` stroke-dasharray="${dash.map((d) => n2(d * pxPerMm)).join(" ")}"` : "");
     if (p.k === "line") {
       const a = M(p.a), b = M(p.b);
-      out += `<line class="${cls}" x1="${n2(a[0])}" y1="${n2(a[1])}" x2="${n2(b[0])}" y2="${n2(b[1])}" stroke-width="${sw}"/>`;
+      out += `<line class="${cls}" x1="${n2(a[0])}" y1="${n2(a[1])}" x2="${n2(b[0])}" y2="${n2(b[1])}" ${sw}/>`;
     } else if (p.k === "circle") {
       const c = M(p.c);
-      out += `<circle class="${cls}" cx="${n2(c[0])}" cy="${n2(c[1])}" r="${n2(p.r * pxPerMm)}" stroke-width="${sw}"/>`;
+      out += `<circle class="${cls}" cx="${n2(c[0])}" cy="${n2(c[1])}" r="${n2(p.r * pxPerMm)}" ${sw}/>`;
     } else if (p.k === "poly") {
-      out += `<polygon class="${cls}" points="${p.pts.map((q) => M(q).map(n2).join(",")).join(" ")}" stroke-width="${sw}"/>`;
+      out += `<polygon class="${cls}" points="${p.pts.map((q) => M(q).map(n2).join(",")).join(" ")}" ${sw}/>`;
     } else {
-      out += `<path class="${cls}" d="${arcPath(view, [p.c[0] / mm, p.c[1] / mm], p.r / mm, p.a0, p.a1)}" stroke-width="${sw}"/>`;
+      out += `<path class="${cls}" d="${arcPath(view, [p.c[0] / mm, p.c[1] / mm], p.r / mm, p.a0, p.a1)}" ${sw}/>`;
     }
     if (p.k === "line" || p.k === "arc") {
       for (const head of arrowHeads(p)) {
@@ -348,16 +352,17 @@ function drawGlyphs(s: Scene): string {
 function drawPreview(s: Scene): string {
   const pv = s.preview;
   if (!pv) return "";
+  const cls = pv.danger ? "preview danger" : "preview";
   let out = "";
   for (const [a, b] of pv.lines) {
     const p = toScreen(s.view, a), q = toScreen(s.view, b);
-    out += `<line class="preview" x1="${n2(p[0])}" y1="${n2(p[1])}" x2="${n2(q[0])}" y2="${n2(q[1])}"/>`;
+    out += `<line class="${cls}" x1="${n2(p[0])}" y1="${n2(p[1])}" x2="${n2(q[0])}" y2="${n2(q[1])}"/>`;
   }
   for (const c of pv.circles) {
     const p = toScreen(s.view, c.c);
-    out += `<circle class="preview" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${n2(c.r * s.view.scale)}"/>`;
+    out += `<circle class="${cls}" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${n2(c.r * s.view.scale)}"/>`;
   }
-  for (const a of pv.arcs) out += `<path class="preview" d="${arcPath(s.view, a.c, a.r, a.a0, a.a1)}"/>`;
+  for (const a of pv.arcs) out += `<path class="${cls}" d="${arcPath(s.view, a.c, a.r, a.a0, a.a1)}"/>`;
   for (const q of pv.points) {
     const p = toScreen(s.view, q);
     out += `<circle class="pt preview-pt" cx="${n2(p[0])}" cy="${n2(p[1])}" r="3.4"/>`;

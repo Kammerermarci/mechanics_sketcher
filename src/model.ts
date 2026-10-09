@@ -16,14 +16,20 @@ export interface Line {
   type: "line";
   p1: Id;
   p2: Id;
+  /** A helper: dashed in the editor and left out of the figure. */
   construction?: boolean;
+  /** A centre line: thin dash-dot, and not an edge of any shape. */
+  centre?: boolean;
 }
 export interface Circle {
   id: Id;
   type: "circle";
   c: Id;
   r: number;
+  /** A helper: dashed in the editor and left out of the figure. */
   construction?: boolean;
+  /** A centre line: thin dash-dot, and not an edge of any shape. */
+  centre?: boolean;
 }
 /** Counter-clockwise from p1 to p2 around c. */
 export interface Arc {
@@ -32,7 +38,10 @@ export interface Arc {
   c: Id;
   p1: Id;
   p2: Id;
+  /** A helper: dashed in the editor and left out of the figure. */
   construction?: boolean;
+  /** A centre line: thin dash-dot, and not an edge of any shape. */
+  centre?: boolean;
 }
 export type Entity = Point | Line | Circle | Arc;
 export type Curve = Line | Circle | Arc;
@@ -253,6 +262,18 @@ export function points(sk: Sketch): Point[] {
 }
 export function curves(sk: Sketch): Curve[] {
   return sk.entities.filter((e): e is Curve => e.type !== "point");
+}
+
+/** True for curves that form the shapes of the figure: not helpers, not centre lines. */
+export function isEdge(e: Curve): boolean {
+  return !e.construction && !e.centre;
+}
+
+/** Removes a point that no curve is built on any more, unless it was placed on purpose. */
+export function dropIfUnused(sk: Sketch, pointId: Id): void {
+  const p = entity(sk, pointId);
+  if (!p || p.type !== "point" || p.standalone || pointId === ORIGIN) return;
+  if (!pointInUse(sk, pointId)) remove(sk, [pointId]);
 }
 
 /** Ids of the points a curve is built on. */

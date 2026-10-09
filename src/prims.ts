@@ -48,11 +48,15 @@ export const PAPER = {
 };
 
 export type Anchor = "c" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
-export type StrokeStyle = "member" | "construction" | "dim" | "symbol" | "hatch" | "centre";
+export type StrokeStyle = "member" | "construction" | "dim" | "symbol" | "hatch" | "centre" | "centreline";
 /** Line width of each stroke style, in mm. */
 export const STROKE_MM: Record<StrokeStyle, number> = {
   member: PAPER.member, construction: PAPER.construction, dim: PAPER.dim,
-  symbol: PAPER.symbol, hatch: PAPER.hatch, centre: PAPER.centre,
+  symbol: PAPER.symbol, hatch: PAPER.hatch, centre: PAPER.centre, centreline: PAPER.symbol,
+};
+/** Dash patterns, as on and off lengths in mm. Styles not listed are solid. */
+export const STROKE_DASH: Partial<Record<StrokeStyle, number[]>> = {
+  centreline: [4, 1, 0.6, 1], // long dash, short dash
 };
 /** "paper" fills a shape with the background, hiding what lies under it; "ink" makes it solid. */
 export type Fill = "paper" | "ink";
@@ -565,7 +569,8 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
   for (const e of sk.entities) {
     if (e.type === "point") continue;
     if (e.construction && !opts.editor) continue;
-    const base = { ref: e.id, layer: "geom" as const, stroke: (e.construction ? "construction" : "member") as StrokeStyle };
+    const stroke: StrokeStyle = e.construction ? "construction" : e.centre ? "centreline" : "member";
+    const base = { ref: e.id, layer: "geom" as const, stroke };
     if (e.type === "line") {
       out.push({ ...base, k: "line", a: P(sk, e.p1, mm), b: P(sk, e.p2, mm) });
     } else if (e.type === "circle") {

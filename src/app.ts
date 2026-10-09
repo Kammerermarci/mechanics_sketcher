@@ -24,17 +24,22 @@ import {
   layoutGlyphs, renderScene,
 } from "./render";
 import { regionAt, findOverlaps } from "./regions";
+import { type TrimPlan, planTrim, applyTrim } from "./trim";
+import { toSvg, toTikz } from "./export";
 import { icon } from "./icons";
 
-type DrawTool = "point" | "line" | "circle" | "arc";
+type DrawTool = "point" | "line" | "centerline" | "circle" | "arc";
 type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch";
 type Command =
   | "horizontal" | "vertical" | "parallel" | "perpendicular" | "equal" | "coincident"
   | "midpoint" | "tangent" | "fixed" | "dimension";
 /** A constraint or the dimension command is a tool too: pick it, then the geometry. */
-type Tool = "select" | DrawTool | SymbolTool | Command;
+type Tool = "select" | DrawTool | "trim" | SymbolTool | Command;
 /** Sketch holds what shapes the geometry; Annotate what is added to the figure. */
 type Tab = "sketch" | "annotate";
+
+/** How a curve is drawn: a solid edge, a centre line, or a helper that is not exported. */
+type LineStyle = "solid" | "centre" | "construction";
 
 /** Where a click lands once snapping has had its say. */
 interface Snap {
@@ -46,8 +51,7 @@ interface Snap {
 }
 
 type Pending =
-  /** `first` is the point the chain of lines began at, once it exists. */
-  | { tool: "line"; start: Snap; first?: Id }
+  | { tool: "line"; start: Snap }
   | { tool: "circle"; center: Snap }
   | { tool: "arc"; center: Snap; start?: Snap; sweep: number; lastAng: number }
   /** A balloon whose leader has been anchored and whose circle is still to be placed. */
@@ -81,18 +85,20 @@ const TOOLS: ToolDef[] = [
   { id: "select", label: "Select", key: "Esc", icon: "select", tab: "both", group: 0 },
 
   { id: "line", label: "Line", key: "L", icon: "line", tab: "sketch", group: 1 },
+  { id: "centerline", label: "Centre line", icon: "centerline", tab: "sketch", group: 1 },
   { id: "circle", label: "Circle", key: "C", icon: "circle", tab: "sketch", group: 1 },
   { id: "arc", label: "Arc", key: "A", icon: "arc", tab: "sketch", group: 1 },
   { id: "point", label: "Point", key: "P", icon: "point", tab: "sketch", group: 1 },
-  { id: "horizontal", label: "Horizontal", key: "H", icon: "horizontal", tab: "sketch", group: 2, need: "a line, or two points" },
-  { id: "vertical", label: "Vertical", key: "V", icon: "vertical", tab: "sketch", group: 2, need: "a line, or two points" },
-  { id: "parallel", label: "Parallel", icon: "parallel", tab: "sketch", group: 2, need: "two lines" },
-  { id: "perpendicular", label: "Perpendicular", icon: "perpendicular", tab: "sketch", group: 2, need: "two lines" },
-  { id: "equal", label: "Equal", key: "E", icon: "equal", tab: "sketch", group: 2, need: "two lines, or two circles" },
-  { id: "coincident", label: "Coincident", key: "O", icon: "coincident", tab: "sketch", group: 2, need: "two points, or a point and a line or circle" },
-  { id: "midpoint", label: "Midpoint", key: "M", icon: "midpoint", tab: "sketch", group: 2, need: "a point and a line" },
-  { id: "tangent", label: "Tangent", key: "T", icon: "tangent", tab: "sketch", group: 2, need: "a line and a circle or arc" },
-  { id: "fixed", label: "Fix point", key: "F", icon: "fixed", tab: "sketch", group: 2, need: "a point" },
+  { id: "trim", label: "Trim", key: "X", icon: "trim", tab: "sketch", group: 2 },
+  { id: "horizontal", label: "Horizontal", key: "H", icon: "horizontal", tab: "sketch", group: 3, need: "a line, or two points" },
+  { id: "vertical", label: "Vertical", key: "V", icon: "vertical", tab: "sketch", group: 3, need: "a line, or two points" },
+  { id: "parallel", label: "Parallel", icon: "parallel", tab: "sketch", group: 3, need: "two lines" },
+  { id: "perpendicular", label: "Perpendicular", icon: "perpendicular", tab: "sketch", group: 3, need: "two lines" },
+  { id: "equal", label: "Equal", key: "E", icon: "equal", tab: "sketch", group: 3, need: "two lines, or two circles" },
+  { id: "coincident", label: "Coincident", key: "O", icon: "coincident", tab: "sketch", group: 3, need: "two points, or a point and a line or circle" },
+  { id: "midpoint", label: "Midpoint", key: "M", icon: "midpoint", tab: "sketch", group: 3, need: "a point and a line" },
+  { id: "tangent", label: "Tangent", key: "T", icon: "tangent", tab: "sketch", group: 3, need: "a line and a circle or arc" },
+  { id: "fixed", label: "Fix point", key: "F", icon: "fixed", tab: "sketch", group: 3, need: "a point" },
 
   { id: "dimension", label: "Dimension", key: "D", icon: "dimension", tab: "annotate", group: 1, need: "a line, two points, two lines, or a circle" },
   { id: "pin", label: "Pin", icon: "pin", tab: "annotate", group: 2 },
@@ -154,6 +160,8 @@ export class App {
   private freedom: Freedom | null = null;
   private freedomStale = true;
   private fillColor = FILL_COLORS[0];
+  /** What the Trim tool would remove under the pointer. */
+  private trimPlan: TrimPlan | null = null;
   /** What is selected; while a command is active, the geometry picked for it so far. */
   private selection = new Set<Id>();
   private hover: Id | null = null;
@@ -349,8 +357,10 @@ export class App {
         return "Click to select, drag to move. Shift-click adds to the selection. Wheel zooms; middle-drag pans.";
       case "point": return `Click to place a point. ${done}`;
       case "line":
-        return p ? "Click the next joint. Middle-click ends the chain. Hold Alt to switch snapping off."
-          : `Click to place the first joint. ${done}`;
+      case "centerline":
+        return p ? "Click where the line ends. Hold Alt to switch snapping off."
+          : `Click where the ${this.tool === "line" ? "line" : "centre line"} starts. ${done}`;
+      case "trim": return `Click the part of a line, circle or arc to remove, up to where other curves cross it. ${done}`;
       case "circle": return p ? "Click to set the radius." : `Click the centre. ${done}`;
       case "arc":
         if (!p) return `Click the centre. ${done}`;
@@ -379,6 +389,15 @@ export class App {
   }
 
   private previewShapes(): Preview | null {
+    if (this.tool === "trim") {
+      const g = this.trimPlan?.gone;
+      if (!g || this.drag) return null;
+      return {
+        lines: g.kind === "line" ? [[g.a, g.b]] : [], circles: [],
+        arcs: g.kind === "round" ? [{ c: g.c, r: g.r, a0: g.a0, a1: g.a1 >= g.a0 + TWO_PI ? g.a0 + TWO_PI - 1e-4 : g.a1 }] : [],
+        points: [], danger: true,
+      };
+    }
     const p = this.pending;
     if (!p || this.drag?.kind === "pan") return null;
     const snap = this.snapAt(this.cursor, this.snapAnchor());
@@ -593,20 +612,18 @@ export class App {
       return;
     }
 
-    if (this.tool === "line") {
+    if (this.tool === "line" || this.tool === "centerline") {
       if (!p || p.tool !== "line") {
         this.pending = { tool: "line", start: snap };
         return;
       }
       const s = p.start;
       const samePoint = snap.pointId !== undefined && snap.pointId === s.pointId;
-      if (samePoint || dist(toScreen(this.view, s.pos), toScreen(this.view, snap.pos)) < 3) {
-        this.pending = null; // clicking the last joint again ends the chain
-        return;
-      }
+      if (samePoint || dist(toScreen(this.view, s.pos), toScreen(this.view, snap.pos)) < 3) return; // no length yet
       const a = this.materialize(s, autos);
       const b = this.materialize(snap, autos);
-      addLine(this.sk, a, b);
+      const line = addLine(this.sk, a, b);
+      if (this.tool === "centerline") line.centre = true;
       let axis = snap.axis;
       if (!axis && snap.pointId) {
         // Ending on an existing joint, such as when closing a rectangle: still
@@ -617,14 +634,9 @@ export class App {
         else if (dx < 7 && dy > 14) axis = "v";
       }
       if (axis) autos.push({ type: axis === "h" ? "horizontal" : "vertical", a, b });
+      // One line per pair of clicks: the next click starts a new one.
+      this.pending = null;
       this.finishDrawing(autos);
-      const first = p.first ?? a;
-      if (b === first) {
-        this.pending = null; // the chain closed on itself
-        return;
-      }
-      const end = point(this.sk, b);
-      this.pending = { tool: "line", start: { pos: [end.x, end.y], pointId: b }, first };
       return;
     }
 
@@ -678,12 +690,31 @@ export class App {
     if (home !== "both") this.tab = home;
     this.pending = null;
     this.snapMark = null;
+    this.trimPlan = null;
     if (t !== "select") {
       this.selection.clear();
       this.hover = null;
     }
     this.closeDimEditor();
     this.touch();
+  }
+
+  // ---- trim --------------------------------------------------------------------
+
+  /** What a trim at this screen position would remove, if there is a curve there. */
+  private trimAt(sp: V): TrimPlan | null {
+    const hit = this.hitTest(sp, true);
+    if (!hit || hit.kind !== "curve") return null;
+    return planTrim(this.sk, hit.id, toModel(this.view, sp));
+  }
+
+  private trimClick(sp: V): void {
+    const plan = this.trimAt(sp);
+    this.trimPlan = null;
+    if (!plan) return;
+    const autos = applyTrim(this.sk, plan);
+    this.pruneSelection();
+    this.finishDrawing(autos);
   }
 
   // ---- symbols ----------------------------------------------------------------
@@ -890,6 +921,11 @@ export class App {
       this.touch();
       return;
     }
+    if (this.tool === "trim") {
+      this.trimClick(sp);
+      this.touch();
+      return;
+    }
     if (this.tool !== "select") {
       this.toolClick(sp);
       this.updateSnapMark();
@@ -975,6 +1011,8 @@ export class App {
       this.hover = this.hitTest(sp)?.id ?? null;
     } else if (isCommand(this.tool)) {
       this.hover = this.hitTest(sp, true)?.id ?? null;
+    } else if (this.tool === "trim") {
+      this.trimPlan = this.trimAt(sp);
     } else {
       const p = this.pending;
       if (p?.tool === "arc" && p.start) {
@@ -991,7 +1029,7 @@ export class App {
   }
 
   private updateSnapMark(): void {
-    if (this.tool === "select" || isCommand(this.tool)) {
+    if (this.tool === "select" || this.tool === "trim" || isCommand(this.tool)) {
       this.snapMark = null;
       return;
     }
@@ -1596,12 +1634,38 @@ export class App {
   }
 
   private save(): void {
-    const blob = new Blob([serialize(this.sk)], { type: "application/json" });
+    this.download("sketch.json", serialize(this.sk), "application/json");
+  }
+
+  private download(name: string, text: string, type: string): void {
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "sketch.json";
+    a.href = URL.createObjectURL(new Blob([text], { type }));
+    a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  /** Exports the figure. `how` picks the format and whether it is saved or copied. */
+  private async exportFigure(how: "svg" | "tikz" | "copy-tikz"): Promise<void> {
+    const text = how === "svg" ? toSvg(this.sk) : toTikz(this.sk);
+    if (!text) return this.toast("There is nothing to export yet.");
+    if (how === "svg") return this.download("figure.svg", text, "image/svg+xml");
+    if (how === "tikz") return this.download("figure.tex", text, "text/x-tex");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // No clipboard access (an old browser, or a page not allowed to use it): copy through a text box.
+      const box = document.createElement("textarea");
+      box.value = text;
+      box.style.position = "fixed";
+      box.style.opacity = "0";
+      document.body.appendChild(box);
+      box.select();
+      const ok = document.execCommand("copy");
+      box.remove();
+      if (!ok) return this.toast("Copying is blocked here. Use Export TikZ to save the file instead.");
+    }
+    this.toast("TikZ copied. Paste it into your document.");
   }
 
   private async open(file: File): Promise<void> {
@@ -1865,8 +1929,12 @@ export class App {
       }
       const cs: Curve[] = [...lines, ...rounds];
       if (cs.length) {
-        const all = cs.every((c) => c.construction);
-        html += `<label class="check"><input data-field="construction" type="checkbox"${all ? " checked" : ""}><span>Construction geometry</span></label><small class="note">Dashed here, and left out of the exported figure.</small>`;
+        const styleOf = (c: Curve): LineStyle => (c.construction ? "construction" : c.centre ? "centre" : "solid");
+        const shared = cs.every((c) => styleOf(c) === styleOf(cs[0])) ? styleOf(cs[0]) : null;
+        const styles: [LineStyle, string][] = [["solid", "Solid"], ["centre", "Centre line"], ["construction", "Helper"]];
+        html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented" role="group" aria-labelledby="style-label">${styles.map(([st, name]) =>
+          `<button type="button" data-style="${st}" aria-pressed="${shared === st}">${name}</button>`).join("")}</div>` +
+          `<small>A centre line is thin and dash-dotted. A helper is dashed here and left out of the exported figure.</small></div>`;
       }
       if (entities > 0) {
         const ids = new Set<Id>([...this.selection]);
@@ -1927,6 +1995,7 @@ export class App {
       else if (ds.delete) { remove(this.sk, [ds.delete]); this.pruneSelection(); this.solve(); this.commit(); }
       else if (ds.mode) this.setDimMode(ds.mode as DistanceMode);
       else if (ds.kind) this.setSupportKind(ds.kind as SupportKind);
+      else if (ds.style) this.setLineStyle(ds.style as LineStyle);
       else if (ds.end) this.editSymbol((x) => { if (x.type === "balloon") x.end = ds.end as LeaderEnd; });
       else if (ds.color) this.setFillColor(ds.color);
       else if (ds.act) this.action(ds.act);
@@ -1998,6 +2067,9 @@ export class App {
       case "new": return this.newSketch();
       case "open": return this.fileInput.click();
       case "save": return this.save();
+      case "export-svg": return void this.exportFigure("svg");
+      case "export-tikz": return void this.exportFigure("tikz");
+      case "copy-tikz": return void this.exportFigure("copy-tikz");
       case "delete": return this.deleteSelection();
       case "rotate": return this.rotateSelected(Math.PI / 2);
       case "flip":
@@ -2017,6 +2089,18 @@ export class App {
   private selectedSymbol(): Sym | null {
     if (this.selection.size !== 1) return null;
     return symbol(this.sk, [...this.selection][0]) ?? null;
+  }
+
+  /** Sets how the selected curves are drawn. */
+  private setLineStyle(style: LineStyle): void {
+    const { lines, rounds } = this.picked();
+    for (const c of [...lines, ...rounds]) {
+      delete c.construction;
+      delete c.centre;
+      if (style === "construction") c.construction = true;
+      if (style === "centre") c.centre = true;
+    }
+    this.commit();
   }
 
   /** Changes the one selected symbol and records the edit. */
@@ -2066,14 +2150,6 @@ export class App {
   private onPanelChange(input: HTMLInputElement): void {
     const field = input.dataset.field;
     if (!field) return;
-    if (field === "construction") {
-      const { lines, rounds } = this.picked();
-      for (const c of [...lines, ...rounds]) {
-        if (input.checked) c.construction = true;
-        else delete c.construction;
-      }
-      return this.commit();
-    }
 
     if (field.startsWith("sym-")) {
       const s = this.selectedSymbol();
