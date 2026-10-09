@@ -5,3 +5,6 @@ declare module "virtual:planegcs-wasm" {
   const base64: string;
   export default base64;
 }
+
+/** ISO time at which this copy of the app was built. */
+declare const __BUILD_TIME__: string;

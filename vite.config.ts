@@ -36,6 +36,8 @@ function planegcsWasm(): Plugin {
 export default defineConfig({
   base: "./",
   plugins: [planegcsWasm(), viteSingleFile()],
+  // When this copy was built, shown in the app so it is easy to tell which version is open.
+  define: { __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
   build: { target: "es2022", assetsInlineLimit: 100_000_000 },
   test: { environment: "node" },
 });

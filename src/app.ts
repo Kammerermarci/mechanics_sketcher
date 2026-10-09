@@ -185,6 +185,14 @@ function parseNumber(text: string): number {
   return t === "" ? NaN : Number(t);
 }
 
+/** When this copy of the app was built, in the reader's own time, for telling versions apart. */
+function buildLabel(): string {
+  const built = new Date(__BUILD_TIME__);
+  if (Number.isNaN(built.getTime())) return "";
+  const when = built.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return `This version was built on ${when}.`;
+}
+
 export class App {
   sk: Sketch = emptySketch();
   private history = new History();
@@ -2194,6 +2202,7 @@ export class App {
       `<label class="pop-row" title="Double-click for 100%."><span>Dimension size while editing</span>` +
       `<span class="pop-ctl"><input id="edit-scale" type="range" min="${EDIT_SCALE_MIN}" max="${EDIT_SCALE_MAX}" step="5" value="100"><output id="edit-scale-out" for="edit-scale">100%</output></span></label>` +
       `<p class="pop-note">How large text, arrows and symbols look on screen while you draw. The size in print is set in the corner box.</p>` +
+      `<p class="pop-note pop-build">${esc(buildLabel())}</p>` +
       `</div></div>` +
       `<button type="button" class="icon-btn" data-act="preview" aria-label="Print preview" title="Print preview: hide everything that is not exported (Q)">${icon("eye")}</button>` +
       `<button type="button" class="icon-btn" data-act="origin" aria-label="Show origin axes" title="Show or hide the axes at the origin">${icon("frame")}</button>` +
