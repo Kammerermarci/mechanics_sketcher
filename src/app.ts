@@ -1986,8 +1986,15 @@ export class App {
 
     document.addEventListener("click", (e) => {
       const btn = (e.target as Element).closest<HTMLElement>("button");
+      const menuBtn = btn?.dataset.menu ? btn : null;
+      // Any click closes an open menu, other than the one on its own button, which toggles it.
+      for (const open of document.querySelectorAll<HTMLElement>('[data-menu][aria-expanded="true"]')) {
+        if (open !== menuBtn) this.setMenu(open, false);
+      }
       if (!btn) return;
       const ds = btn.dataset;
+      // A click made from the keyboard (detail 0) moves focus into the menu.
+      if (menuBtn) return this.setMenu(menuBtn, menuBtn.getAttribute("aria-expanded") !== "true", e.detail === 0);
       if (ds.tab) this.setTab(ds.tab as Tab);
       else if (ds.tool) this.setTool(ds.tool as Tool);
       else if (ds.cmd) this.activate(ds.cmd as Command);
@@ -2051,7 +2058,12 @@ export class App {
       this.fileInput.value = "";
     });
 
-    window.addEventListener("keydown", (e) => this.onKeyDown(e));
+    // Starting to draw, pan or drag also closes an open menu.
+    document.addEventListener("pointerdown", (e) => {
+      if ((e.target as Element).closest(".menu")) return;
+      for (const open of document.querySelectorAll<HTMLElement>('[data-menu][aria-expanded="true"]')) this.setMenu(open, false);
+    });
+    window.addEventListener("keydown", (e) => { if (!this.menuKey(e)) this.onKeyDown(e); });
     window.addEventListener("keyup", (e) => {
       this.altKey = e.altKey;
       if (e.code === "Space") { this.spaceKey = false; this.render(); }
@@ -2201,6 +2213,44 @@ export class App {
       else delete d.hidden;
       this.commit();
     }
+  }
+
+  /** Opens or closes a drop-down menu; `focus` puts the keyboard on its first item. */
+  private setMenu(btn: HTMLElement, open: boolean, focus = false): void {
+    const list = document.getElementById(btn.getAttribute("aria-controls") ?? "");
+    if (!list) return;
+    btn.setAttribute("aria-expanded", String(open));
+    list.hidden = !open;
+    if (open && focus) list.querySelector<HTMLElement>("button")?.focus();
+  }
+
+  /** Keys for an open menu. Returns true when the key was the menu's to handle. */
+  private menuKey(e: KeyboardEvent): boolean {
+    const btn = document.querySelector<HTMLElement>('[data-menu][aria-expanded="true"]');
+    const target = e.target as HTMLElement;
+    if (!btn) {
+      // Arrow down on the closed button opens it, as menus do.
+      if (e.key === "ArrowDown" && target.dataset?.menu) { e.preventDefault(); this.setMenu(target, true, true); return true; }
+      return false;
+    }
+    const list = document.getElementById(btn.getAttribute("aria-controls") ?? "");
+    const items = [...(list?.querySelectorAll<HTMLElement>("button") ?? [])];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const go = (i: number) => items[(i + items.length) % items.length]?.focus();
+    switch (e.key) {
+      case "Escape": this.setMenu(btn, false); btn.focus(); break;
+      case "ArrowDown": go(at + 1); break;
+      case "ArrowUp": go(at < 0 ? -1 : at - 1); break;
+      case "Home": go(0); break;
+      case "End": go(-1); break;
+      case "Tab": this.setMenu(btn, false); return true; // let focus move on
+      default:
+        if (e.ctrlKey || e.metaKey) return false;
+        // Enter and Space press the focused item. Other typed keys are not tool shortcuts while the menu is open.
+        return e.key === "Enter" || e.key.length === 1;
+    }
+    e.preventDefault();
+    return true;
   }
 
   private onKeyDown(e: KeyboardEvent): void {

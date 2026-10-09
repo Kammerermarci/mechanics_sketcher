@@ -80,15 +80,15 @@ part of the exported figure.
 
 ## Export
 
-The buttons in the top bar write the figure as it will appear on paper:
-geometry, centre lines, dimensions, labels and symbols, without helper
+The **Export** menu in the top bar writes the figure as it will appear on
+paper: geometry, centre lines, dimensions, labels and symbols, without helper
 geometry, the origin, constraint markers or hidden dimensions.
 
-- **Export SVG** saves `figure.svg`, sized in millimetres. Labels are
-  outlines, so it needs no fonts.
-- **Export TikZ** saves `figure.tex`, a `tikzpicture` to `\input`. **Copy
-  TikZ** puts the same text on the clipboard. Labels are passed on as typed,
-  so LaTeX sets them in the document's own font.
+- **SVG** saves `figure.svg`, sized in millimetres. Labels are outlines, so
+  it needs no fonts.
+- **TikZ** saves `figure.tex`, a `tikzpicture` to `\input`. **Copy TikZ** puts
+  the same text on the clipboard. Labels are passed on as typed, so LaTeX
+  sets them in the document's own font.
 
 ```latex
 \usepackage{tikz}

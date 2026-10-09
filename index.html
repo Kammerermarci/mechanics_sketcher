@@ -18,10 +18,13 @@
       <button type="button" class="text-btn" data-act="open">Open</button>
       <button type="button" class="text-btn" data-act="save">Save</button>
     </div>
-    <div class="group" id="export-actions">
-      <button type="button" class="text-btn" data-act="export-svg" title="Save the figure as an SVG file">Export SVG</button>
-      <button type="button" class="text-btn" data-act="export-tikz" title="Save the figure as a TikZ picture (.tex)">Export TikZ</button>
-      <button type="button" class="text-btn" data-act="copy-tikz" title="Copy the TikZ picture, ready to paste into a LaTeX document">Copy TikZ</button>
+    <div class="group menu" id="export-menu">
+      <button type="button" class="text-btn menu-btn" id="export-btn" data-menu="export" aria-haspopup="menu" aria-expanded="false" aria-controls="export-list" title="Save or copy the figure for LaTeX">Export<svg class="caret" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.5l3 3 3-3"/></svg></button>
+      <div class="menu-list" id="export-list" role="menu" aria-labelledby="export-btn" hidden>
+        <button type="button" role="menuitem" data-act="export-svg"><span>SVG</span><span class="menu-note">figure.svg</span></button>
+        <button type="button" role="menuitem" data-act="export-tikz"><span>TikZ</span><span class="menu-note">figure.tex</span></button>
+        <button type="button" role="menuitem" data-act="copy-tikz"><span>Copy TikZ</span><span class="menu-note">to the clipboard</span></button>
+      </div>
     </div>
     <div class="tabs" id="tabs" role="tablist" aria-label="Tool sets"></div>
     <div class="spacer"></div>
