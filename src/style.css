@@ -359,6 +359,11 @@ text.tex { fill: currentColor; font-family: var(--math); }
   background: var(--paper);
   font-variant-numeric: tabular-nums;
 }
+/* A slider with its value beside it. */
+.slider-row { display: flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
+.slider-row input[type="range"] { flex: 1; min-width: 0; margin: 0; height: 24px; accent-color: var(--ink); cursor: pointer; }
+.slider-row input[type="range"]:disabled { cursor: default; opacity: 0.45; }
+.slider-row output { min-width: 4.6em; text-align: right; font-size: 13px; font-weight: 500; color: var(--ink); }
 .check { display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer; }
 .check input { width: 16px; height: 16px; margin: 0; accent-color: var(--ink); }
 .segmented { display: flex; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; background: var(--paper); }

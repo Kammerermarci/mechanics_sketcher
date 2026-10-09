@@ -180,13 +180,26 @@ describe("export", () => {
     expect(Number(end[2])).toBeLessThan(Number(end[4]) + 20 - 1); // the start has moved along the arc
   });
 
-  it("scales a centre mark", () => {
+  it("draws a centre mark like a centre line: long and short dashes, as many gaps as asked for", () => {
     const sk = emptySketch();
     const circle = addCircle(sk, addPoint(sk, 0, 0).id, 1);
     const mark = addSymbol(sk, { type: "centermark", on: circle.id, angle: 0 });
-    expect(toTikz(sk)).toContain("(1.2,0) (2,0) -- (12,0)"); // cross to 1.2, then from 2 to 2 past the rim
+    // Radius 10, 2 past the rim: long to -2, gap, the short dash across the centre, gap, long from 2.
+    expect(toTikz(sk)).toContain("(-12,0) -- (-2,0) (-1.2,0) -- (1.2,0) (2,0) -- (12,0)");
     mark.scale = 2;
-    expect(toTikz(sk)).toContain("(2.4,0) (4,0) -- (14,0)");
+    expect(toTikz(sk)).toContain("(-14,0) -- (-4,0) (-2.4,0) -- (2.4,0) (4,0) -- (14,0)");
+    delete mark.scale;
+    // Four gaps: two short dashes, and a long one across the centre. 24 = 3 long + 2 * 2.4 + 4 * 0.8.
+    mark.gaps = 4;
+    expect(toTikz(sk)).toContain("(-12,0) -- (-6.67,0) (-5.87,0) -- (-3.47,0) (-2.67,0) -- (2.67,0) (3.47,0) -- (5.87,0) (6.67,0) -- (12,0)");
+    // More than fit: drawn with as many as leave the long dashes recognisable.
+    mark.gaps = 16;
+    const perLine = figurePrims(sk).filter((p) => p.k === "line" && p.stroke === "centre").length / 2;
+    expect(perLine).toBeLessThan(17);
+    expect(perLine % 2).toBe(1); // still a long dash at both ends
+    // Segmentation off: one unbroken line each way.
+    mark.solid = true;
+    expect(toTikz(sk)).toContain("\\draw[centre] (-12,0) -- (12,0) (0,-12) -- (0,12);");
   });
 
   it("enlarges the whole figure by the dimension size, keeping the geometry at the figure width", () => {

@@ -198,12 +198,14 @@ describe("annotations", () => {
     const sk = emptySketch();
     const a = addPoint(sk, 0, 0), b = addPoint(sk, 2, 0);
     const l = addLine(sk, a.id, b.id);
-    const h = addSymbol(sk, { type: "hatch", on: l.id, side: -1, spacing: 2, depth: 3 });
+    const h = addSymbol(sk, { type: "hatch", on: l.id, side: -1, spacing: 0.2, depth: 0.3 }); // model units
     let strokes = of(buildPrims(sk, 10, { editor: false }), h.id);
-    expect(strokes).toHaveLength(10); // 20 mm at 2 mm spacing
+    expect(strokes).toHaveLength(10); // 2 units at 0.2 spacing
+    // It belongs to the drawing: at another scale it has the same strokes, only larger.
+    expect(of(buildPrims(sk, 25, { editor: false }), h.id)).toHaveLength(10);
     expect(strokes.every((p) => p.k === "line" && p.a[1] === 0 && Math.abs(p.b[1] + 3) < 1e-9)).toBe(true); // below the line
     h.side = 1;
-    h.spacing = 5;
+    h.spacing = 0.5;
     strokes = of(buildPrims(sk, 10, { editor: false }), h.id);
     expect(strokes).toHaveLength(4);
     expect(strokes.every((p) => p.k === "line" && p.b[1] > 0)).toBe(true);
@@ -213,7 +215,7 @@ describe("annotations", () => {
     const sk = emptySketch();
     const c = addPoint(sk, 0, 0);
     const circ = addCircle(sk, c.id, 1);
-    const h = addSymbol(sk, { type: "hatch", on: circ.id, side: -1, spacing: 2, depth: 2 });
+    const h = addSymbol(sk, { type: "hatch", on: circ.id, side: -1, spacing: 0.2, depth: 0.2 });
     const strokes = of(buildPrims(sk, 10, { editor: false }), h.id);
     expect(strokes.length).toBe(Math.round((2 * Math.PI * 10) / 2));
     expect(strokes.every((p) => p.k === "line" && Math.hypot(...p.b) > Math.hypot(...p.a))).toBe(true);
@@ -270,16 +272,19 @@ describe("print scale", () => {
     v1.symbols = [
       { id: "s1", type: "balloon", text: "1", x: 0, y: 0, dx: 10, dy: 20, end: "dot" },
       { id: "s2", type: "frame", x: 0, y: 0, angle: 0, xLabel: "x", yLabel: "y", xSize: 10, ySize: 14 },
+      { id: "s3", type: "hatch", on: "l3", side: 1, spacing: 2, depth: 3 },
     ];
+    v1.symbols[2].on = v1.entities.find((e: { type: string }) => e.type === "line").id;
     // 80 mm for 4 units: 20 mm per unit.
     const up = deserialize(JSON.stringify(v1));
-    expect(up.version).toBe(3);
+    expect(up.version).toBe(4);
     expect(up.dimScale).toBe(1);
     expect(up.figureWidthMm).toBe(80);
     expect(up.constraints[0]).toMatchObject({ offset: -0.4 });
     expect(up.constraints[1]).toMatchObject({ len: 0.25 });
     expect(up.symbols[0]).toMatchObject({ dx: 0.5, dy: 1 });
     expect(up.symbols[1]).toMatchObject({ xSize: 0.5, ySize: 0.7 });
+    expect(up.symbols[2]).toMatchObject({ spacing: 0.1, depth: 0.15 });
     expect(printMm(up)).toBeCloseTo(20); // so it prints as it did
 
     // Version 2 already kept placements in model units, but axis lengths still in mm.
@@ -288,10 +293,22 @@ describe("print scale", () => {
     v2.dimScale = 2; // laid out at 10 mm per unit
     v2.symbols[1].xSize = 10;
     v2.symbols[1].ySize = 14;
+    v2.symbols[2].spacing = 2;
+    v2.symbols[2].depth = 3;
     const up2 = deserialize(JSON.stringify(v2));
     expect(up2.symbols[1]).toMatchObject({ xSize: 1, ySize: 1.4 });
     expect(up2.constraints[0]).toMatchObject({ offset: -0.4 }); // left as it was
     expect(up2.dimScale).toBe(2);
+    expect(up2.symbols[2]).toMatchObject({ spacing: 0.2, depth: 0.3 });
+
+    // Version 3 had axis lengths in model units already; only the hatching was still in mm.
+    const v3 = JSON.parse(JSON.stringify(up));
+    v3.version = 3;
+    v3.symbols[2].spacing = 2;
+    v3.symbols[2].depth = 3;
+    const up3 = deserialize(JSON.stringify(v3));
+    expect(up3.symbols[1]).toMatchObject({ xSize: 0.5, ySize: 0.7 });
+    expect(up3.symbols[2]).toMatchObject({ spacing: 0.1, depth: 0.15 });
 
     // A set paper scale becomes the figure width it gave.
     v1.scaleMode = "fixed";

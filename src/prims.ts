@@ -440,25 +440,43 @@ export function frameTips(sk: Sketch, f: Frame, mm: number): { x: V | null; y: V
   return { x: tip(f.angle, f.xSize), y: tip(f.angle + Math.PI / 2, f.ySize) };
 }
 
+/**
+ * How a centre mark's line is broken up, in paper mm: `shorts` short dashes
+ * with a gap on either side of each, between long dashes of length `long`.
+ * As on a centre line it starts and ends on a long dash, and with fewer short
+ * dashes than asked for when the mark is too small to hold them. No short
+ * dashes means one unbroken line.
+ */
+export function centerMarkDashes(s: CenterMark, r: number): { reach: number; short: number; gap: number; long: number; shorts: number } {
+  const k = s.scale ?? 1;
+  const reach = r + PAPER.centreOver * k;
+  const short = 2 * PAPER.centreCross * k, gap = PAPER.centreGap * k;
+  const longWith = (n: number) => (2 * reach - n * short - 2 * n * gap) / (n + 1);
+  let shorts = s.solid ? 0 : Math.max(1, Math.round((s.gaps ?? 2) / 2));
+  // The long dashes must stay recognisable: at least half a short one.
+  while (shorts > 0 && longWith(shorts) < short / 2) shorts--;
+  return { reach, short, gap, long: longWith(shorts), shorts };
+}
+
 function centerMarkPrims(sk: Sketch, s: CenterMark, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const, k: "line" as const, stroke: "centre" as const };
   const f = roundFrame(sk, s.on, mm);
   if (!f) return [];
   const out: Prim[] = [];
-  const k = s.scale ?? 1;
-  const cross = PAPER.centreCross * k;
-  const reach = f.r + PAPER.centreOver * k;
-  const inner = cross + PAPER.centreGap * k;
+  const d = centerMarkDashes(s, f.r);
   for (const ang of [s.angle, s.angle + Math.PI / 2]) {
-    const at = (d: number) => polar(f.c, d, ang);
-    if (reach - inner < cross) {
-      // Too small for a separate cross: one line each way.
-      out.push({ ...base, a: at(-reach), b: at(reach) });
-      continue;
+    const at = (t: number) => polar(f.c, t, ang);
+    // Long, short, long ... from one end to the other. With an odd number of
+    // short dashes one of them is at the centre, where the two lines cross.
+    let t = -d.reach;
+    for (let i = 0; i <= d.shorts; i++) {
+      out.push({ ...base, a: at(t), b: at(t + d.long) });
+      t += d.long + d.gap;
+      if (i < d.shorts) {
+        out.push({ ...base, a: at(t), b: at(t + d.short) });
+        t += d.short + d.gap;
+      }
     }
-    out.push({ ...base, a: at(-cross), b: at(cross) });
-    out.push({ ...base, a: at(inner), b: at(reach) });
-    out.push({ ...base, a: at(-inner), b: at(-reach) });
   }
   return out;
 }
@@ -504,6 +522,22 @@ function datumPrims(sk: Sketch, s: Datum, mm: number): Prim[] {
   return out;
 }
 
+/** Most strokes a hatching is drawn with, however fine its spacing. */
+const HATCH_MAX = 2000;
+
+/** How many strokes fit along a curve of a given length at a given spacing. */
+export function hatchCount(length: number, spacing: number): number {
+  // The small allowance keeps a spacing worked out as length / n at n strokes.
+  return Math.max(1, Math.min(HATCH_MAX, Math.floor(length / spacing + 1e-6)));
+}
+
+/** Length of a line, arc or circle in model units. */
+export function curveLength(sk: Sketch, id: Id): number {
+  const c = curveShape(sk, id);
+  if (!c) return 0;
+  return c.kind === "line" ? dist(c.a, c.b) : c.r * (c.a1 - c.a0);
+}
+
 function hatchPrims(sk: Sketch, s: Hatch, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const, k: "line" as const, stroke: "hatch" as const };
   const c = curveShape(sk, s.on);
@@ -511,8 +545,10 @@ function hatchPrims(sk: Sketch, s: Hatch, mm: number): Prim[] {
   const out: Prim[] = [];
   // Each stroke leaves the curve towards the chosen side, leaning back along it (or forwards).
   const lean = s.lean ?? 1;
+  // Spacing and reach are kept in model units, like the curve they sit on.
+  const spacing = s.spacing * mm, depth = s.depth * mm;
   const stroke = (at: V, along: V, side: V) => {
-    out.push({ ...base, a: at, b: add(at, add(mul(side, s.depth), mul(along, -s.depth * 0.85 * lean))) });
+    out.push({ ...base, a: at, b: add(at, add(mul(side, depth), mul(along, -depth * 0.85 * lean))) });
   };
   if (c.kind === "line") {
     const a = mul(c.a, mm), b = mul(c.b, mm);
@@ -520,14 +556,14 @@ function hatchPrims(sk: Sketch, s: Hatch, mm: number): Prim[] {
     if (length < 1e-9) return [];
     const u = norm(sub(b, a));
     const n = mul(perp(u), s.side);
-    const count = Math.max(1, Math.floor(length / s.spacing));
-    const first = (length - (count - 1) * s.spacing) / 2;
-    for (let i = 0; i < count; i++) stroke(add(a, mul(u, first + i * s.spacing)), u, n);
+    const count = hatchCount(length, spacing);
+    const first = (length - (count - 1) * spacing) / 2;
+    for (let i = 0; i < count; i++) stroke(add(a, mul(u, first + i * spacing)), u, n);
     return out;
   }
   const ctr = mul(c.c, mm), r = c.r * mm;
   const sweep = c.a1 - c.a0;
-  const count = Math.max(1, Math.round((r * sweep) / s.spacing));
+  const count = hatchCount(r * sweep, spacing);
   const step = sweep / count;
   for (let i = 0; i < count; i++) {
     const ang = c.a0 + (i + 0.5) * step;

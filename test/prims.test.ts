@@ -255,7 +255,7 @@ describe("new annotations", () => {
     const sk = fixed();
     const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
     const l = addLine(sk, a.id, b.id);
-    const h = addSymbol(sk, { type: "hatch", on: l.id, side: -1, spacing: 2, depth: 2 });
+    const h = addSymbol(sk, { type: "hatch", on: l.id, side: -1, spacing: 0.2, depth: 0.2 }); // model units, drawn at 10 mm each
     const firstStroke = () => buildPrims(sk, 10, { editor: false }).find((p) => p.k === "line" && p.stroke === "hatch") as Extract<Prim, { k: "line" }>;
     const back = firstStroke();
     expect(back.b[0]).toBeLessThan(back.a[0]); // leaning back towards the start

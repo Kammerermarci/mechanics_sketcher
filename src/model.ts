@@ -156,8 +156,16 @@ export interface CenterMark {
   type: "centermark";
   on: Id;
   angle: number;
-  /** Size of the cross, its gaps and the reach past the rim, against the standard mark. Unset: 1. */
+  /** Size of the short dashes, the gaps and the reach past the rim, against the standard mark. Unset: 1. */
   scale?: number;
+  /**
+   * How many gaps each of its two lines has. The lines are drawn like a centre
+   * line, long and short dashes in turn, so this is even: 2 gives the classic
+   * mark with one short dash at the centre. Unset: 2.
+   */
+  gaps?: number;
+  /** Drawn as two unbroken lines instead. */
+  solid?: boolean;
 }
 export type LeaderEnd = "arrow" | "dot" | "none";
 /** A circled number (or any TeX) with a leader, for naming parts. */
@@ -203,7 +211,7 @@ export interface Hatch {
   on: Id;
   /** Which side of the curve, seen along its direction: 1 left, -1 right. */
   side: 1 | -1;
-  /** Distance between strokes and how far they reach, in annotation mm. */
+  /** Distance between strokes and how far they reach, in model units: the hatching belongs to the drawing. */
   spacing: number;
   depth: number;
   /** Which way the strokes lean along the curve: 1 back towards its start, -1 forwards. */
@@ -241,14 +249,14 @@ export function symbolRefs(s: Sym): Id[] {
 }
 
 /**
- * Sizes come in two kinds. Geometry, where a dimension or balloon sits, and
- * how long a pair of axes is, are in model units. The size of what annotates it (text, arrowheads,
+ * Sizes come in two kinds. Geometry, where a dimension or balloon sits, how
+ * long a pair of axes is and how hatching is spaced are in model units. The size of what annotates it (text, arrowheads,
  * supports, the gaps of a dimension) is in "annotation mm": the size it has
  * on paper when dimScale is 1. While editing, annotations keep one size on
  * screen however far the view is zoomed; in print they are scaled by dimScale.
  */
 export interface Sketch {
-  version: 3;
+  version: 4;
   nextId: number;
   entities: Entity[];
   constraints: Constraint[];
@@ -273,7 +281,7 @@ function originPoint(): Point {
 
 export function emptySketch(): Sketch {
   return {
-    version: 3, nextId: 1, entities: [originPoint()], constraints: [], symbols: [],
+    version: 4, nextId: 1, entities: [originPoint()], constraints: [], symbols: [],
     figureWidthMm: 80, dimScale: 1, showOrigin: true,
   };
 }
@@ -528,9 +536,17 @@ interface SketchV1 {
   showOrigin?: boolean;
 }
 
-/** Axis lengths were kept in annotation mm up to version 2; they become model units at `mm` per unit. */
-function axesToModel(symbols: Sym[], mm: number): Sym[] {
-  return symbols.map((s): Sym => (s.type === "frame" ? { ...s, xSize: s.xSize / mm, ySize: s.ySize / mm } : s));
+/**
+ * Sizes that used to be kept in annotation mm and now belong to the drawing
+ * become model units, at `mm` per unit: axis lengths (up to version 2) and
+ * the spacing and reach of hatching (up to version 3).
+ */
+function sizesToModel(symbols: Sym[], mm: number, what: { axes: boolean }): Sym[] {
+  return symbols.map((s): Sym => {
+    if (s.type === "frame" && what.axes) return { ...s, xSize: s.xSize / mm, ySize: s.ySize / mm };
+    if (s.type === "hatch") return { ...s, spacing: s.spacing / mm, depth: s.depth / mm };
+    return s;
+  });
 }
 
 /**
@@ -555,29 +571,29 @@ function upgradeV1(raw: SketchV1, entities: Entity[]): Pick<Sketch, "constraints
   });
   const symbols = (Array.isArray(raw.symbols) ? raw.symbols : []).map(upgradeSymbol).map((s): Sym =>
     s.type === "balloon" ? { ...s, dx: s.dx / mm, dy: s.dy / mm } : s);
-  return { constraints, symbols: axesToModel(symbols, mm), figureWidthMm: width };
+  return { constraints, symbols: sizesToModel(symbols, mm, { axes: true }), figureWidthMm: width };
 }
 
 export function deserialize(text: string): Sketch {
-  const raw = JSON.parse(text) as (Omit<Partial<Sketch>, "version"> & { version: 2 | 3 }) | SketchV1;
-  if (![1, 2, 3].includes(raw.version) || !Array.isArray(raw.entities) || !Array.isArray(raw.constraints)) {
+  const raw = JSON.parse(text) as (Omit<Partial<Sketch>, "version"> & { version: 2 | 3 | 4 }) | SketchV1;
+  if (![1, 2, 3, 4].includes(raw.version) || !Array.isArray(raw.entities) || !Array.isArray(raw.constraints)) {
     throw new Error("This file is not a sketch saved by this tool.");
   }
   // Files from before the origin existed get one.
   const entities = raw.entities.some((e) => e.id === ORIGIN) ? raw.entities : [originPoint(), ...raw.entities];
   if (raw.version === 1) {
-    return { version: 3, nextId: raw.nextId ?? 1, entities, ...upgradeV1(raw, entities), dimScale: 1, showOrigin: raw.showOrigin ?? true };
+    return { version: 4, nextId: raw.nextId ?? 1, entities, ...upgradeV1(raw, entities), dimScale: 1, showOrigin: raw.showOrigin ?? true };
   }
   const figureWidthMm = raw.figureWidthMm && raw.figureWidthMm > 0 ? raw.figureWidthMm : 80;
   const dimScale = raw.dimScale && raw.dimScale > 0 ? raw.dimScale : 1;
   let symbols = (Array.isArray(raw.symbols) ? raw.symbols : []).map(upgradeSymbol);
-  if (raw.version === 2) {
-    // At the scale the figure printed at, so the axes print as long as they did.
+  if (raw.version < 4) {
+    // At the scale the figure printed at, so axes and hatching print as they did.
     const extent = geometryExtent({ entities });
-    symbols = axesToModel(symbols, extent > 1e-9 ? figureWidthMm / dimScale / extent : 10);
+    symbols = sizesToModel(symbols, extent > 1e-9 ? figureWidthMm / dimScale / extent : 10, { axes: raw.version === 2 });
   }
   return {
-    version: 3,
+    version: 4,
     nextId: raw.nextId ?? 1,
     entities,
     constraints: raw.constraints,

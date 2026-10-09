@@ -19,6 +19,7 @@ import {
   type Prim, PAPER, printMm, geometryBox, buildPrims, dimensionPrims,
   primDistance, textCentre, distanceFrame, angleFrame, roundFrame, symbolPosition, balloonAnchor,
   curveParam, sideOfCurve, formatNumber, frameTips, arrowLabelAt, arrowAnchor, centerMarkEnds,
+  centerMarkDashes, curveLength, hatchCount,
 } from "./prims";
 import {
   type View, type Glyph, type Preview, type SnapMark, GLYPH_SIZE, PREVIEW_REF, toScreen, toModel,
@@ -149,7 +150,17 @@ const RELATION_NAMES: Record<string, string> = {
 const SUPPORT_NAMES: Record<SupportKind, string> = { pin: "Pin support", roller: "Roller support", fixed: "Fixed support" };
 /** Fill colours offered as swatches: light tones that print well under black lines. */
 const FILL_COLORS = ["#d5dbe1", "#eceff1", "#f6d9a8", "#f4b6a6", "#b9d7ee", "#bfe3c4", "#d9c8ea", "#8f9aa3"];
+/** A new hatching, in annotation mm: the size of the ground under a support, as the view is when it is made. */
 const DEFAULT_HATCH = { spacing: 1.3, depth: 1.6 };
+/** The hatching sliders run from few, long strokes to many, short ones, in equal ratios along the slider. */
+const HATCH_COUNT: [number, number] = [2, 300];
+/** Stroke length as a share of the hatched curve's length. */
+const HATCH_REACH: [number, number] = [1 / 500, 1 / 2];
+/** Most gaps a centre mark's line can be given. */
+const CENTRE_GAPS_MAX = 16;
+/** Position 0 to 100 on a slider whose values are spread in equal ratios between lo and hi. */
+const ratioPos = (v: number, [lo, hi]: [number, number]) => Math.round(Math.max(0, Math.min(100, (100 * Math.log(v / lo)) / Math.log(hi / lo))));
+const ratioValue = (pos: number, [lo, hi]: [number, number]) => lo * (hi / lo) ** (Math.max(0, Math.min(100, pos)) / 100);
 /** Colours offered for datum points: strong ones, so the dot reads on top of the lines. */
 const DATUM_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#17201b"];
 /** Where a datum's name starts out, in mm from its point. */
@@ -978,7 +989,9 @@ export class App {
       if (!e || e.type === "point") return this.toast("Click a line, an arc or a circle.");
       // The hatching goes on the side of the curve the click was on.
       const side = sideOfCurve(this.sk, e.id, raw) >= 0 ? 1 : -1;
-      const h = addSymbol(this.sk, { type: "hatch", on: e.id, side, ...DEFAULT_HATCH });
+      // Sized like a support's ground as the view is now; from then on it belongs to the drawing.
+      const unit = this.mm();
+      const h = addSymbol(this.sk, { type: "hatch", on: e.id, side, spacing: DEFAULT_HATCH.spacing / unit, depth: DEFAULT_HATCH.depth / unit });
       this.selection = new Set([h.id]);
       return this.commit();
     }
@@ -1024,9 +1037,10 @@ export class App {
       s.dy = d.origin[1] + moved[1];
     } else if (s.type === "hatch") {
       // Pulling away from the curve sets how deep the strokes reach, and on which side.
-      const off = sideOfCurve(this.sk, s.on, m) * mm;
+      const off = sideOfCurve(this.sk, s.on, m);
       s.side = off >= 0 ? 1 : -1;
-      s.depth = Math.max(0.5, Math.min(20, Math.round(Math.abs(off) * 10) / 10));
+      const whole = curveLength(this.sk, s.on);
+      s.depth = Math.max(whole * HATCH_REACH[0], Math.min(whole * HATCH_REACH[1], Math.abs(off)));
     } else if (s.type === "frame") {
       // Axes move freely; dropped on a joint they pin to it.
       const pos = add(d.origin, sub(m, d.startModel));
@@ -2322,14 +2336,31 @@ export class App {
     }).join("")}</ul>`;
   }
 
+  /** What stands beside a hatching slider: the stroke length in the drawing's units, or the number of strokes. */
+  private hatchLabel(s: Extract<Sym, { type: "hatch" }>, which: "depth" | "freq"): string {
+    if (which === "depth") return formatNumber(Number(s.depth.toPrecision(3)));
+    const n = hatchCount(curveLength(this.sk, s.on), s.spacing);
+    return `${n} ${n === 1 ? "stroke" : "strokes"}`;
+  }
+
+  /** What stands beside the gaps slider: the number asked for, and the number drawn when fewer fit. */
+  private gapsLabel(s: Extract<Sym, { type: "centermark" }>): string {
+    const asked = s.gaps ?? 2;
+    if (s.solid) return "none";
+    const f = roundFrame(this.sk, s.on, this.mm());
+    const drawn = f ? 2 * centerMarkDashes(s, f.r).shorts : asked;
+    return drawn < asked ? `${asked} (${drawn} fit)` : String(asked);
+  }
+
   /** `extra` goes in above the Delete button. */
   private symbolPanel(s: Sym, extra = ""): string {
     const degrees = (angle: number) => formatNumber(Number((angle / DEG).toFixed(2)));
-    const mm = (v: number) => formatNumber(Number(v.toFixed(2)));
     const text = (label: string, field: string, value: string, note = "") =>
       `<label class="field"><span>${label}</span><input data-field="${field}" type="text" spellcheck="false" value="${esc(value)}">${note ? `<small>${note}</small>` : ""}</label>`;
     const number = (label: string, field: string, value: string, note = "") =>
       `<label class="field"><span>${label}</span><input data-field="${field}" type="text" inputmode="decimal" value="${value}">${note ? `<small>${note}</small>` : ""}</label>`;
+    const slider = (label: string, field: string, min: number, max: number, step: number, value: number, shown: string, note = "", off = false) =>
+      `<label class="field"><span>${label}</span><span class="slider-row"><input data-field="${field}" type="range" min="${min}" max="${max}" step="${step}" value="${value}"${off ? " disabled" : ""}><output>${esc(shown)}</output></span>${note ? `<small>${note}</small>` : ""}</label>`;
     const rotate = `<button type="button" class="plain" data-act="rotate">Rotate 90° (R)</button>`;
     let html = "";
 
@@ -2356,7 +2387,10 @@ export class App {
         break;
       case "centermark":
         html += `<h2>Centre mark</h2>`;
-        html += number("Size (1 is the standard mark)", "sym-scale", formatNumber(Number((s.scale ?? 1).toFixed(2))), "Scales the cross, its gaps and how far the lines run past the rim. Dragging an end of the mark sets this too.");
+        html += number("Size (1 is the standard mark)", "sym-scale", formatNumber(Number((s.scale ?? 1).toFixed(2))), "Scales the short dashes, the gaps and how far the lines run past the rim. Dragging an end of the mark sets this too.");
+        html += `<label class="check"><input data-field="sym-segmented" type="checkbox"${s.solid ? "" : " checked"}><span>Segmented, like a centre line</span></label>`;
+        html += slider("Gaps on each line", "sym-gaps", 2, CENTRE_GAPS_MAX, 2, s.gaps ?? 2, this.gapsLabel(s),
+          "Long and short dashes in turn. A small mark is drawn with as many as fit.", !!s.solid);
         html += number("Rotation (degrees)", "sym-angle", degrees(s.angle), "Dragging the mark by its middle turns it too.");
         html += rotate;
         break;
@@ -2379,8 +2413,10 @@ export class App {
         break;
       case "hatch":
         html += `<h2>Hatching</h2>`;
-        html += number("Stroke length (mm in print at 100%)", "sym-depth", mm(s.depth), "Dragging the hatching away from the curve sets this too.");
-        html += number("Spacing (mm in print at 100%)", "sym-spacing", mm(s.spacing));
+        html += slider("Stroke size", "sym-depth", 0, 100, 1, ratioPos(s.depth / (curveLength(this.sk, s.on) || 1), HATCH_REACH), this.hatchLabel(s, "depth"),
+          "Dragging the hatching away from the curve sets this too.");
+        html += slider("Frequency", "sym-freq", 0, 100, 1, ratioPos(hatchCount(curveLength(this.sk, s.on), s.spacing), HATCH_COUNT), this.hatchLabel(s, "freq"),
+          "The hatching belongs to the drawing: neither size slider changes it, and it keeps its strokes when you zoom.");
         html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
         html += `<button type="button" class="plain" data-act="lean">Lean the strokes the other way</button>`;
         break;
@@ -2576,6 +2612,15 @@ export class App {
     bar.addEventListener("focusout", unexplain);
 
     this.panel.addEventListener("change", (e) => this.onPanelChange(e.target as HTMLInputElement));
+    this.panel.addEventListener("input", (e) => {
+      const input = e.target as HTMLInputElement;
+      if (input.type === "range") this.onPanelChange(input, true);
+    });
+    // A slider let go with the mouse gives the keyboard back to the drawing; moved with the arrow keys, it keeps it.
+    this.panel.addEventListener("pointerup", (e) => {
+      const input = e.target as HTMLInputElement;
+      if (input.type === "range") input.blur();
+    });
     const editScale = $<HTMLInputElement>("#edit-scale");
     editScale.addEventListener("input", () => this.setEditScale(Number(editScale.value), false));
     editScale.addEventListener("change", () => this.setEditScale(Number(editScale.value), true));
@@ -2781,21 +2826,25 @@ export class App {
     this.commit();
   }
 
-  private onPanelChange(input: HTMLInputElement): void {
+  /**
+   * A field in the side panel changed. `live` is a slider on the move: the
+   * change is shown at once, and recorded as one edit when the slider is let go.
+   */
+  private onPanelChange(input: HTMLInputElement, live = false): void {
     const field = input.dataset.field;
     if (!field) return;
+    /** Shows a slider's new value beside it and redraws, without rebuilding the panel under the pointer. */
+    const slide = (shown: string) => {
+      const out = input.parentElement?.querySelector("output");
+      if (out) out.textContent = shown;
+      return live ? this.render() : this.commit();
+    };
 
     if (field.startsWith("sym-")) {
       const s = this.selectedSymbol();
       if (!s) return;
       const v = parseNumber(input.value);
       const label = input.value.trim().replace(/^\$+|\$+$/g, "");
-      /** A typed length in mm, or null (with a message) when it is out of range. */
-      const length = (min: number, max: number, what: string): number | null => {
-        if (Number.isFinite(v) && v >= min && v <= max) return v;
-        this.toast(`${what} must be between ${min} and ${max} mm.`);
-        return null;
-      };
       if (field === "sym-angle" && (s.type === "support" || s.type === "frame" || s.type === "centermark")) {
         if (!Number.isFinite(v)) { this.toast("Type the rotation as a number of degrees."); return this.touch(); }
         s.angle = v * DEG;
@@ -2803,6 +2852,14 @@ export class App {
         if (!Number.isFinite(v) || v < 0.2 || v > 10) { this.toast("The size must be between 0.2 and 10."); return this.touch(); }
         if (Math.abs(v - 1) < 1e-9) delete s.scale;
         else s.scale = v;
+      } else if (s.type === "centermark" && field === "sym-segmented") {
+        if (input.checked) delete s.solid;
+        else s.solid = true;
+      } else if (s.type === "centermark" && field === "sym-gaps") {
+        const gaps = Math.max(2, Math.min(CENTRE_GAPS_MAX, 2 * Math.round(v / 2)));
+        if (gaps === 2) delete s.gaps;
+        else s.gaps = gaps;
+        return slide(this.gapsLabel(s));
       } else if (s.type === "frame" && (field === "sym-xsize" || field === "sym-ysize")) {
         if (!Number.isFinite(v) || v < 0) { this.toast("An axis length must be zero or more."); return this.touch(); }
         if (field === "sym-xsize") s.xSize = v;
@@ -2815,14 +2872,12 @@ export class App {
         else s.circle = false;
       } else if (s.type === "datum" && field === "sym-label") s.label = label;
       else if ((s.type === "fill" || s.type === "datum") && field === "sym-color") return this.setColor(input.value);
-      else if (s.type === "hatch" && field === "sym-depth") {
-        const depth = length(0.3, 30, "Stroke length");
-        if (depth === null) return this.touch();
-        s.depth = depth;
-      } else if (s.type === "hatch" && field === "sym-spacing") {
-        const spacing = length(0.3, 30, "Spacing");
-        if (spacing === null) return this.touch();
-        s.spacing = spacing;
+      else if (s.type === "hatch" && (field === "sym-depth" || field === "sym-freq")) {
+        const whole = curveLength(this.sk, s.on);
+        if (!Number.isFinite(v) || whole <= 0) return;
+        if (field === "sym-depth") s.depth = whole * ratioValue(v, HATCH_REACH);
+        else s.spacing = whole / Math.round(ratioValue(v, HATCH_COUNT));
+        return slide(this.hatchLabel(s, field === "sym-depth" ? "depth" : "freq"));
       }
       return this.commit();
     }

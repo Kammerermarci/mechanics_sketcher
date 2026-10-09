@@ -70,7 +70,10 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
      ...) on a joint, on a curve or anywhere. The point under it is ordinary
      geometry. Pick the colour in the side panel and drag the name to move
      it.
-   - *Centre mark:* click a circle or arc. Drag an end of the mark to make
+   - *Centre mark:* click a circle or arc. Its two lines are drawn like a
+     centre line, long and short dashes in turn; a slider in the side panel
+     sets how many gaps each line has, and a checkbox switches the
+     segmentation off for two plain lines. Drag an end of the mark to make
      the whole mark larger or smaller; dragging it by the middle turns it.
    - *Balloon (B):* click what it points at, then where the balloon goes.
      Numbers count up on their own; the text can be any TeX, and the circle
@@ -78,8 +81,11 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
    - *Fill:* click inside a closed shape. A circle inside it is left as a hole.
      The shape's lines have to meet at shared points.
    - *Hatching:* click a line, arc or circle on the side the strokes should
-     go. Drag it away from the curve to make the strokes longer; the side
-     panel moves it to the other side or leans the strokes the other way.
+     go. Two sliders in the side panel set the stroke size and the
+     frequency; dragging the hatching away from the curve also sets the
+     size. The panel moves it to the other side or leans the strokes the
+     other way. Hatching belongs to the drawing: it keeps its strokes when
+     you zoom, and neither size slider changes it.
 
 **Text is typed where it stands.** Click a dimension's number, the name of
 an arrow or a datum point, a balloon's text or an axis label, and a box opens
@@ -196,8 +202,8 @@ dimension size of 100%. The editor lays the list out at a scale that follows
 the zoom, which keeps annotations one size on screen; the exporters lay it
 out at the scale that fits the figure width and then enlarge everything by
 the dimension size. Sketches saved in earlier file versions kept placements
-(version 1) and axis lengths (versions 1 and 2) in millimetres and are
-converted when they are opened.
+(version 1), axis lengths (up to version 2) and hatching (up to version 3)
+in millimetres and are converted when they are opened.
 
 ## Installing it as an app
 
