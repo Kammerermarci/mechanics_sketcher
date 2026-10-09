@@ -222,6 +222,41 @@ describe("diagnosis", () => {
   });
 });
 
+describe("freedom", () => {
+  it("tells apart the joints that are pinned down from those that can still move", () => {
+    const sk = emptySketch();
+    const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0.2), c = addPoint(sk, 2, 3);
+    addLine(sk, a.id, b.id);
+    addLine(sk, b.id, c.id);
+    addConstraint(sk, { type: "fixed", p: a.id });
+    addConstraint(sk, { type: "horizontal", a: a.id, b: b.id });
+    addConstraint(sk, { type: "distance", a: a.id, b: b.id, mode: "aligned", value: 4, offset: 8 });
+    const before = structuredClone(sk);
+    const f = solver.freedom(sk)!;
+    expect([...f.points]).toEqual([c.id]); // a is fixed, b is fully determined, c is loose
+    expect(sk).toEqual(before); // probing leaves the sketch alone
+    addConstraint(sk, { type: "distance", a: b.id, b: c.id, mode: "aligned", value: 3, offset: 8 });
+    expect([...solver.freedom(sk)!.points]).toEqual([c.id]); // still one way to move
+    addConstraint(sk, { type: "vertical", a: b.id, b: c.id });
+    expect(solver.freedom(sk)!.points.size).toBe(0);
+  });
+
+  it("tracks a circle's radius separately from its centre", () => {
+    const sk = emptySketch();
+    const c = addPoint(sk, 1, 1);
+    const circ = addCircle(sk, c.id, 2);
+    let f = solver.freedom(sk)!;
+    expect(f.points.has(c.id)).toBe(true);
+    expect(f.radii.has(circ.id)).toBe(true);
+    addConstraint(sk, { type: "fixed", p: c.id });
+    f = solver.freedom(sk)!;
+    expect(f.points.size).toBe(0);
+    expect(f.radii.has(circ.id)).toBe(true);
+    addConstraint(sk, { type: "radius", target: circ.id, value: 2, angle: 0 });
+    expect(solver.freedom(sk)!.radii.size).toBe(0);
+  });
+});
+
 describe("model", () => {
   it("cleans up endpoints and constraints when a line is deleted", () => {
     const { sk, A, B, C, ab } = triangle(4, 3);

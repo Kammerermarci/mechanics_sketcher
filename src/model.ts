@@ -114,10 +114,80 @@ export interface Frame {
   /** TeX labels of the two axes; empty for none. */
   xLabel: string;
   yLabel: string;
-  /** Axis length on paper, in mm. */
-  size: number;
+  /** Length of each axis on paper, in mm. 0 leaves that axis out. */
+  xSize: number;
+  ySize: number;
 }
-export type Sym = Support | Frame;
+/** Centre lines through a circle or arc. */
+export interface CenterMark {
+  id: Id;
+  type: "centermark";
+  on: Id;
+  angle: number;
+}
+export type LeaderEnd = "arrow" | "dot" | "none";
+/** A circled number (or any TeX) with a leader, for naming parts. */
+export interface Balloon {
+  id: Id;
+  type: "balloon";
+  text: string;
+  /** What the leader points at: a point, a spot on a curve, or the position x, y. */
+  at?: Id;
+  on?: Id;
+  /** Where on the curve `on`: fraction along a line or arc, angle on a circle. */
+  t?: number;
+  x: number;
+  y: number;
+  /** Centre of the balloon relative to what it points at, in paper mm. */
+  dx: number;
+  dy: number;
+  end: LeaderEnd;
+}
+/** A closed region filled with a colour. */
+export interface Fill {
+  id: Id;
+  type: "fill";
+  /** CSS hex colour, e.g. "#d5dbe1". */
+  color: string;
+  /** Set when the region is one whole circle. */
+  circle?: Id;
+  /** Otherwise the corners of the region, in order around it. */
+  points: Id[];
+  /** For each corner, the arc that runs from it to the next corner; null for a straight side. */
+  arcs: (Id | null)[];
+  /** Every line and arc on the boundary; the fill goes when one of them does. */
+  curves: Id[];
+  /** Circles inside the region that are left unfilled. */
+  holes: Id[];
+}
+/** Short slanted strokes along one side of a curve, like the ground under a support. */
+export interface Hatch {
+  id: Id;
+  type: "hatch";
+  on: Id;
+  /** Which side of the curve, seen along its direction: 1 left, -1 right. */
+  side: 1 | -1;
+  /** Distance between strokes and how far they reach, in paper mm. */
+  spacing: number;
+  depth: number;
+}
+export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch;
+
+/** Everything a symbol needs to exist; it is removed when any of these is. */
+export function symbolRefs(s: Sym): Id[] {
+  switch (s.type) {
+    case "support": return [s.at];
+    case "frame": return s.at ? [s.at] : [];
+    case "centermark":
+    case "hatch":
+      return [s.on];
+    case "balloon": return s.at ? [s.at] : s.on ? [s.on] : [];
+    case "fill": return s.circle ? [s.circle] : [...s.points, ...s.curves];
+  }
+}
+
+/** How the paper scale is chosen: fit a set width, or stay at a set scale. */
+export type ScaleMode = "width" | "fixed";
 
 export interface Sketch {
   version: 1;
@@ -125,8 +195,12 @@ export interface Sketch {
   entities: Entity[];
   constraints: Constraint[];
   symbols: Sym[];
-  /** Width of the drawn geometry on paper, in mm. */
+  /** Width of the drawn geometry on paper, in mm. Used when scaleMode is "width". */
   figureWidthMm: number;
+  /** "width": the scale follows the drawing so it stays figureWidthMm wide. "fixed": it stays at mmPerUnit. */
+  scaleMode: ScaleMode;
+  /** Paper mm per model unit. Used when scaleMode is "fixed". */
+  mmPerUnit: number;
   /** Whether the editor draws axes at the origin. They are never exported. */
   showOrigin: boolean;
 }
@@ -144,7 +218,7 @@ function originPoint(): Point {
 export function emptySketch(): Sketch {
   return {
     version: 1, nextId: 1, entities: [originPoint()], constraints: [], symbols: [],
-    figureWidthMm: 80, showOrigin: true,
+    figureWidthMm: 80, scaleMode: "width", mmPerUnit: 10, showOrigin: true,
   };
 }
 
@@ -253,10 +327,17 @@ export function addSupport(sk: Sketch, kind: SupportKind, at: Id, angle = 0): Su
   return s;
 }
 export function addFrame(sk: Sketch, x: number, y: number, at?: Id): Frame {
-  const f: Frame = { id: newId(sk, "symbol"), type: "frame", x, y, angle: 0, xLabel: "x", yLabel: "y", size: 10 };
+  const f: Frame = { id: newId(sk, "symbol"), type: "frame", x, y, angle: 0, xLabel: "x", yLabel: "y", xSize: 10, ySize: 10 };
   if (at) f.at = at;
   sk.symbols.push(f);
   return f;
+}
+type SymDraft<T> = T extends unknown ? Omit<T, "id"> : never;
+/** Adds any symbol; the typed helpers above cover the common ones. */
+export function addSymbol<T extends SymDraft<Sym>>(sk: Sketch, draft: T): Extract<Sym, { type: T["type"] }> {
+  const full = { ...draft, id: newId(sk, "symbol") } as unknown as Extract<Sym, { type: T["type"] }>;
+  sk.symbols.push(full);
+  return full;
 }
 
 type Draft<T> = T extends unknown ? Omit<T, "id"> : never;
@@ -303,13 +384,23 @@ export function remove(sk: Sketch, ids: Iterable<Id>): void {
 
   const alive = new Set(sk.entities.map((e) => e.id));
   sk.constraints = sk.constraints.filter((c) => constraintRefs(c).every((r) => alive.has(r)));
-  sk.symbols = sk.symbols.filter((s) => s.at === undefined || alive.has(s.at));
+  sk.symbols = sk.symbols.filter((s) => symbolRefs(s).every((r) => alive.has(r)));
+  for (const s of sk.symbols) if (s.type === "fill") s.holes = s.holes.filter((h) => alive.has(h));
 }
 
 // ---- files --------------------------------------------------------------
 
 export function serialize(sk: Sketch): string {
   return JSON.stringify(sk, null, 1);
+}
+
+/** Brings a symbol saved by an earlier build up to the current shape. */
+function upgradeSymbol(s: Sym): Sym {
+  if (s.type === "frame" && s.xSize === undefined) {
+    const { size, ...rest } = s as Frame & { size?: number };
+    return { ...rest, xSize: size ?? 10, ySize: size ?? 10 };
+  }
+  return s;
 }
 
 export function deserialize(text: string): Sketch {
@@ -324,8 +415,10 @@ export function deserialize(text: string): Sketch {
     nextId: raw.nextId ?? 1,
     entities,
     constraints: raw.constraints,
-    symbols: Array.isArray(raw.symbols) ? raw.symbols : [],
+    symbols: (Array.isArray(raw.symbols) ? raw.symbols : []).map(upgradeSymbol),
     figureWidthMm: raw.figureWidthMm ?? 80,
+    scaleMode: raw.scaleMode === "fixed" ? "fixed" : "width",
+    mmPerUnit: raw.mmPerUnit && raw.mmPerUnit > 0 ? raw.mmPerUnit : 10,
     showOrigin: raw.showOrigin ?? true,
   };
 }

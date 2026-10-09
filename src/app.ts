@@ -3,34 +3,38 @@
 
 import {
   type Sketch, type Id, type Point, type Line, type Circle, type Arc, type Curve, type Constraint,
-  type ConstraintDraft, type Dimension, type DistanceMode, type Sym, type SupportKind,
-  ORIGIN, emptySketch, entity, point, constraint, symbol, points, curves, curvePoints, constraintRefs,
-  isDimension, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint, addSupport,
-  addFrame, remove, serialize, deserialize, clone,
+  type ConstraintDraft, type Dimension, type DistanceMode, type Sym, type SupportKind, type LeaderEnd,
+  ORIGIN, emptySketch, entity, point, constraint, symbol, symbolRefs, points, curves, curvePoints,
+  constraintRefs, isDimension, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint,
+  addSupport, addFrame, addSymbol, remove, serialize, deserialize, clone,
 } from "./model";
-import { SketchSolver, type Drag, type SolveResult } from "./solver";
+import { SketchSolver, type Drag, type SolveResult, type Freedom } from "./solver";
 import { History } from "./history";
 import {
   type V, add, sub, mul, dot, cross, norm, perp, mid, dist, angleOf, polar, wrap, inSweep,
   projectOnSegment, intersectLines, boxIsEmpty, grow, TWO_PI,
 } from "./geom";
 import {
-  type Prim, PAPER, mmPerUnit, geometryBox, buildPrims, dimensionPrims, primDistance, textBox,
-  distanceFrame, angleFrame, roundFrame, symbolPosition, formatNumber,
+  type Prim, PAPER, mmPerUnit, figureWidth, geometryBox, buildPrims, dimensionPrims,
+  primDistance, textBox, distanceFrame, angleFrame, roundFrame, symbolPosition, balloonAnchor,
+  balloonRadius, curveParam, sideOfCurve, formatNumber,
 } from "./prims";
 import {
   type View, type Glyph, type Preview, type SnapMark, GLYPH_SIZE, PREVIEW_REF, toScreen, toModel,
   layoutGlyphs, renderScene,
 } from "./render";
+import { regionAt, findOverlaps } from "./regions";
 import { icon } from "./icons";
 
 type DrawTool = "point" | "line" | "circle" | "arc";
-type SymbolTool = "pin" | "roller" | "wall" | "frame";
+type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch";
 type Command =
   | "horizontal" | "vertical" | "parallel" | "perpendicular" | "equal" | "coincident"
   | "midpoint" | "tangent" | "fixed" | "dimension";
 /** A constraint or the dimension command is a tool too: pick it, then the geometry. */
 type Tool = "select" | DrawTool | SymbolTool | Command;
+/** Sketch holds what shapes the geometry; Annotate what is added to the figure. */
+type Tab = "sketch" | "annotate";
 
 /** Where a click lands once snapping has had its say. */
 interface Snap {
@@ -45,45 +49,69 @@ type Pending =
   /** `first` is the point the chain of lines began at, once it exists. */
   | { tool: "line"; start: Snap; first?: Id }
   | { tool: "circle"; center: Snap }
-  | { tool: "arc"; center: Snap; start?: Snap; sweep: number; lastAng: number };
+  | { tool: "arc"; center: Snap; start?: Snap; sweep: number; lastAng: number }
+  /** A balloon whose leader has been anchored and whose circle is still to be placed. */
+  | { tool: "balloon"; anchor: Snap };
 
 type DragState =
   /** `quiet`: the press already confirmed a typed value, so releasing does nothing more. */
   | { kind: "pan"; last: V; moved: boolean; quiet: boolean }
-  | { kind: "box"; a: V; b: V; additive: boolean }
+  /** `click`: what to select if the press turns out to be a click, not a drag. */
+  | { kind: "box"; a: V; b: V; additive: boolean; click?: Id }
   | { kind: "move"; grabbed: Id; startScreen: V; startModel: V; targets: { id: Id; x: number; y: number }[]; rim?: Id; moved: boolean; collapse: boolean }
   | { kind: "dim"; id: Id; startScreen: V; moved: boolean }
+  /** `origin`: where the symbol was when the drag began (a position, or a balloon's offset). */
   | { kind: "sym"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean };
 
-interface Hit { id: Id; kind: "point" | "glyph" | "dim" | "curve" | "sym" }
+interface Hit { id: Id; kind: "point" | "glyph" | "dim" | "curve" | "sym" | "fill" }
 
-const TOOLS: { id: Tool; label: string; key?: string; icon: string; group: "draw" | "symbol" }[] = [
-  { id: "select", label: "Select", key: "Esc", icon: "select", group: "draw" },
-  { id: "line", label: "Line", key: "L", icon: "line", group: "draw" },
-  { id: "circle", label: "Circle", key: "C", icon: "circle", group: "draw" },
-  { id: "arc", label: "Arc", key: "A", icon: "arc", group: "draw" },
-  { id: "point", label: "Point", key: "P", icon: "point", group: "draw" },
-  { id: "pin", label: "Pin", icon: "pin", group: "symbol" },
-  { id: "roller", label: "Roller", icon: "roller", group: "symbol" },
-  { id: "wall", label: "Fixed", icon: "wall", group: "symbol" },
-  { id: "frame", label: "Axes", icon: "frame", group: "symbol" },
+interface ToolDef {
+  id: Tool;
+  label: string;
+  key?: string;
+  icon: string;
+  tab: Tab | "both";
+  /** Tools with the same group number sit together on the ribbon. */
+  group: number;
+  /** For constraints and the dimension command: what they are applied to. */
+  need?: string;
+}
+
+const TOOLS: ToolDef[] = [
+  { id: "select", label: "Select", key: "Esc", icon: "select", tab: "both", group: 0 },
+
+  { id: "line", label: "Line", key: "L", icon: "line", tab: "sketch", group: 1 },
+  { id: "circle", label: "Circle", key: "C", icon: "circle", tab: "sketch", group: 1 },
+  { id: "arc", label: "Arc", key: "A", icon: "arc", tab: "sketch", group: 1 },
+  { id: "point", label: "Point", key: "P", icon: "point", tab: "sketch", group: 1 },
+  { id: "horizontal", label: "Horizontal", key: "H", icon: "horizontal", tab: "sketch", group: 2, need: "a line, or two points" },
+  { id: "vertical", label: "Vertical", key: "V", icon: "vertical", tab: "sketch", group: 2, need: "a line, or two points" },
+  { id: "parallel", label: "Parallel", icon: "parallel", tab: "sketch", group: 2, need: "two lines" },
+  { id: "perpendicular", label: "Perpendicular", icon: "perpendicular", tab: "sketch", group: 2, need: "two lines" },
+  { id: "equal", label: "Equal", key: "E", icon: "equal", tab: "sketch", group: 2, need: "two lines, or two circles" },
+  { id: "coincident", label: "Coincident", key: "O", icon: "coincident", tab: "sketch", group: 2, need: "two points, or a point and a line or circle" },
+  { id: "midpoint", label: "Midpoint", key: "M", icon: "midpoint", tab: "sketch", group: 2, need: "a point and a line" },
+  { id: "tangent", label: "Tangent", key: "T", icon: "tangent", tab: "sketch", group: 2, need: "a line and a circle or arc" },
+  { id: "fixed", label: "Fix point", key: "F", icon: "fixed", tab: "sketch", group: 2, need: "a point" },
+
+  { id: "dimension", label: "Dimension", key: "D", icon: "dimension", tab: "annotate", group: 1, need: "a line, two points, two lines, or a circle" },
+  { id: "pin", label: "Pin", icon: "pin", tab: "annotate", group: 2 },
+  { id: "roller", label: "Roller", icon: "roller", tab: "annotate", group: 2 },
+  { id: "wall", label: "Fixed", icon: "wall", tab: "annotate", group: 2 },
+  { id: "frame", label: "Axes", icon: "frame", tab: "annotate", group: 3 },
+  { id: "centermark", label: "Centre mark", icon: "centermark", tab: "annotate", group: 3 },
+  { id: "balloon", label: "Balloon", key: "B", icon: "balloon", tab: "annotate", group: 3 },
+  { id: "fill", label: "Fill", icon: "fill", tab: "annotate", group: 4 },
+  { id: "hatch", label: "Hatching", icon: "hatch", tab: "annotate", group: 4 },
 ];
 
-const COMMANDS: { id: Command; label: string; key?: string; icon: string; need: string }[] = [
-  { id: "horizontal", label: "Horizontal", key: "H", icon: "horizontal", need: "a line, or two points" },
-  { id: "vertical", label: "Vertical", key: "V", icon: "vertical", need: "a line, or two points" },
-  { id: "parallel", label: "Parallel", icon: "parallel", need: "two lines" },
-  { id: "perpendicular", label: "Perpendicular", icon: "perpendicular", need: "two lines" },
-  { id: "equal", label: "Equal", key: "E", icon: "equal", need: "two lines, or two circles" },
-  { id: "coincident", label: "Coincident", key: "O", icon: "coincident", need: "two points, or a point and a line or circle" },
-  { id: "midpoint", label: "Midpoint", key: "M", icon: "midpoint", need: "a point and a line" },
-  { id: "tangent", label: "Tangent", key: "T", icon: "tangent", need: "a line and a circle or arc" },
-  { id: "fixed", label: "Fix point", key: "F", icon: "fixed", need: "a point" },
-  { id: "dimension", label: "Dimension", key: "D", icon: "dimension", need: "a line, two points, two lines, or a circle" },
+const COMMAND_IDS: Command[] = [
+  "horizontal", "vertical", "parallel", "perpendicular", "equal", "coincident", "midpoint", "tangent", "fixed", "dimension",
 ];
-
-const isCommand = (t: Tool): t is Command => COMMANDS.some((c) => c.id === t);
-const isSymbolTool = (t: Tool): t is SymbolTool => t === "pin" || t === "roller" || t === "wall" || t === "frame";
+const isCommand = (t: Tool): t is Command => (COMMAND_IDS as Tool[]).includes(t);
+const isSymbolTool = (t: Tool): t is SymbolTool =>
+  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch"].includes(t);
+const toolDef = (t: Tool): ToolDef => TOOLS.find((d) => d.id === t)!;
 
 const RELATION_NAMES: Record<string, string> = {
   coincident: "Coincident", pointOn: "Point on curve", midpoint: "Midpoint", horizontal: "Horizontal",
@@ -91,6 +119,9 @@ const RELATION_NAMES: Record<string, string> = {
   tangent: "Tangent", fixed: "Fixed point", distance: "Distance", angle: "Angle", radius: "Radius",
 };
 const SUPPORT_NAMES: Record<SupportKind, string> = { pin: "Pin support", roller: "Roller support", fixed: "Fixed support" };
+/** Fill colours offered as swatches: light tones that print well under black lines. */
+const FILL_COLORS = ["#d5dbe1", "#eceff1", "#f6d9a8", "#f4b6a6", "#b9d7ee", "#bfe3c4", "#d9c8ea", "#8f9aa3"];
+const DEFAULT_HATCH = { spacing: 1.3, depth: 1.6 };
 
 const AUTOSAVE_KEY = "mech-sketch.autosave";
 const POINT_TOL = 10;  // px
@@ -98,7 +129,7 @@ const CURVE_TOL = 7;   // px
 const DEFAULT_SCALE = 40;
 const DEG = Math.PI / 180;
 
-const $ = <T extends Element>(sel: string): T => {
+const $ = <T extends HTMLElement | SVGElement = HTMLElement>(sel: string): T => {
   const el = document.querySelector<T>(sel);
   if (!el) throw new Error(`missing element ${sel}`);
   return el;
@@ -118,6 +149,11 @@ export class App {
 
   private view: View = { cx: 0, cy: 0, scale: DEFAULT_SCALE, w: 800, h: 600 };
   private tool: Tool = "select";
+  private tab: Tab = "sketch";
+  /** What can still move, worked out after each edit; null until then or when it cannot be told. */
+  private freedom: Freedom | null = null;
+  private freedomStale = true;
+  private fillColor = FILL_COLORS[0];
   /** What is selected; while a command is active, the geometry picked for it so far. */
   private selection = new Set<Id>();
   private hover: Id | null = null;
@@ -170,6 +206,7 @@ export class App {
 
   /** Records the current sketch as an undo step and saves it. */
   private commit(): void {
+    this.freedomStale = true;
     this.history.commit(this.sk);
     this.autosave();
     this.touch();
@@ -208,6 +245,7 @@ export class App {
 
   private replaceSketch(sk: Sketch): void {
     this.sk = sk;
+    this.freedomStale = true;
     this.pruneSelection();
     this.pending = null;
     this.closeDimEditor();
@@ -247,13 +285,13 @@ export class App {
       const c = constraint(this.sk, id);
       if (c) constraintRefs(c).forEach((r) => related.add(r));
       const s = symbol(this.sk, id);
-      if (s?.at) related.add(s.at);
+      if (s && s.type !== "fill") symbolRefs(s).forEach((r) => related.add(r));
     }
     this.svg.innerHTML = renderScene({
       sk: this.sk, view: this.view, mm, prims: [...this.prims, ...this.dimensionPreview(mm)], glyphs: this.glyphs,
       selection: this.selection, related, hover: this.hover,
       conflicting: new Set(this.result.conflicting), redundant: new Set(this.result.redundant),
-      free: this.result.dof > 0 || !this.result.ok,
+      freeIds: this.freeIds(), overlaps: findOverlaps(this.sk),
       preview: this.previewShapes(), snap: this.snapMark,
       box: this.drag?.kind === "box" ? { a: this.drag.a, b: this.drag.b } : null,
     });
@@ -276,6 +314,33 @@ export class App {
     if (this.editing) this.placeDimEditor();
   }
 
+  /**
+   * Ids of the points and curves that can still move. A curve is free while
+   * any point it is built on is, or, for a circle, while its radius is.
+   */
+  private freeIds(): Set<Id> {
+    // Not while dragging: what is free does not change mid-drag, and probing costs a solve per point.
+    if (this.freedomStale && !this.drag) {
+      this.freedomStale = false;
+      this.freedom = this.result.ok ? this.solver.freedom(this.sk) : null;
+    }
+    const ids = new Set<Id>();
+    const f = this.freedom;
+    if (!f) {
+      // Unknown (conflicting constraints, or too large to probe): all or nothing.
+      if (this.result.dof !== 0 || !this.result.ok) for (const e of this.sk.entities) ids.add(e.id);
+      return ids;
+    }
+    for (const e of this.sk.entities) {
+      if (e.type === "point") {
+        if (f.points.has(e.id)) ids.add(e.id);
+      } else if (curvePoints(e).some((p) => f.points.has(p)) || f.radii.has(e.id)) {
+        ids.add(e.id);
+      }
+    }
+    return ids;
+  }
+
   private toolHint(): string {
     const p = this.pending;
     const done = "Middle-click or Esc when done.";
@@ -295,13 +360,19 @@ export class App {
       case "wall":
         return `Click a joint to put a ${SUPPORT_NAMES[this.tool === "wall" ? "fixed" : this.tool].toLowerCase()} there. ${done}`;
       case "frame": return "Click where the coordinate axes should go. On a joint, they stay pinned to it.";
+      case "centermark": return `Click a circle or arc to give it centre lines. ${done}`;
+      case "balloon":
+        return p ? "Click where the balloon should sit. Clicking the same spot again leaves out the leader."
+          : `Click what the balloon points at. ${done}`;
+      case "fill": return `Click inside a closed shape to fill it. ${done}`;
+      case "hatch": return `Click a line, arc or circle, on the side the hatching should go. ${done}`;
       case "dimension":
         return this.canApply("dimension")
           ? "Middle-click, or click empty space, where the dimension should go. Its position picks aligned, horizontal or vertical."
           : `Dimension: click a line, two points, two lines, or a circle. ${done}`;
       case "fixed": return `Fix point: click a point to fix it, or a fixed one to release it. ${done}`;
       default: {
-        const info = COMMANDS.find((c) => c.id === this.tool)!;
+        const info = toolDef(this.tool);
         return `${info.label}: click ${info.need}. ${done}`;
       }
     }
@@ -312,6 +383,12 @@ export class App {
     if (!p || this.drag?.kind === "pan") return null;
     const snap = this.snapAt(this.cursor, this.snapAnchor());
     const pv: Preview = { lines: [], circles: [], arcs: [], points: [] };
+    if (p.tool === "balloon") {
+      const raw = toModel(this.view, this.cursor);
+      pv.lines.push([p.anchor.pos, raw]);
+      pv.circles.push({ c: raw, r: PAPER.balloonRadius / mmPerUnit(this.sk) });
+      return pv;
+    }
     if (p.tool === "line") {
       pv.lines.push([p.start.pos, snap.pos]);
       if (!p.start.pointId) pv.points.push(p.start.pos);
@@ -371,6 +448,11 @@ export class App {
     for (const p of this.prims) {
       if (!p.ref) continue;
       if (geometryOnly && p.layer !== "geom") continue;
+      if (p.k === "region") {
+        // A fill is picked anywhere inside it, but only when nothing else is there.
+        if (primDistance(p, q) === 0) offer({ id: p.ref, kind: "fill" }, 3, 0);
+        continue;
+      }
       // Measured in pixels. Text gets a head start so a dimension's label is easy to grab.
       const d = primDistance(p, q) * pxPerMm - (p.k === "text" ? CURVE_TOL * 0.5 : 0);
       if (d >= CURVE_TOL) continue;
@@ -525,7 +607,16 @@ export class App {
       const a = this.materialize(s, autos);
       const b = this.materialize(snap, autos);
       addLine(this.sk, a, b);
-      if (snap.axis) autos.push({ type: snap.axis === "h" ? "horizontal" : "vertical", a, b });
+      let axis = snap.axis;
+      if (!axis && snap.pointId) {
+        // Ending on an existing joint, such as when closing a rectangle: still
+        // take the hint if the line came out level or upright.
+        const from = toScreen(this.view, s.pos), to = toScreen(this.view, snap.pos);
+        const dx = Math.abs(to[0] - from[0]), dy = Math.abs(to[1] - from[1]);
+        if (dy < 7 && dx > 14) axis = "h";
+        else if (dx < 7 && dy > 14) axis = "v";
+      }
+      if (axis) autos.push({ type: axis === "h" ? "horizontal" : "vertical", a, b });
       this.finishDrawing(autos);
       const first = p.first ?? a;
       if (b === first) {
@@ -583,6 +674,8 @@ export class App {
 
   private setTool(t: Tool): void {
     this.tool = t;
+    const home = toolDef(t).tab;
+    if (home !== "both") this.tab = home;
     this.pending = null;
     this.snapMark = null;
     if (t !== "select") {
@@ -605,20 +698,97 @@ export class App {
     return Math.atan2(far.y - here.y, far.x - here.x) - Math.PI / 2;
   }
 
+  /** The next free part number: one more than the largest number already on a balloon. */
+  private nextBalloonNumber(): string {
+    let max = 0;
+    for (const s of this.sk.symbols) {
+      if (s.type === "balloon" && /^\d+$/.test(s.text.trim())) max = Math.max(max, Number(s.text));
+    }
+    return String(max + 1);
+  }
+
   private symbolClick(sp: V): void {
-    const snap = this.snapAt(sp);
-    if (this.tool === "frame") {
+    const tool = this.tool as SymbolTool;
+    const raw = toModel(this.view, sp);
+
+    if (tool === "frame") {
+      const snap = this.snapAt(sp);
       const f = addFrame(this.sk, snap.pos[0], snap.pos[1], snap.pointId);
       this.commit();
       this.setTool("select");
       this.selection = new Set([f.id]);
       return;
     }
+
+    if (tool === "balloon") {
+      const p = this.pending;
+      if (!p || p.tool !== "balloon") {
+        this.pending = { tool: "balloon", anchor: this.snapAt(sp) };
+        return;
+      }
+      const a = p.anchor;
+      const mm = mmPerUnit(this.sk);
+      // Placed on the spot it points at, the balloon needs no leader.
+      const onSpot = dist(toScreen(this.view, a.pos), sp) < 6;
+      const offset = onSpot ? [0, 0] : mul(sub(raw, a.pos), mm);
+      const b = addSymbol(this.sk, {
+        type: "balloon", text: this.nextBalloonNumber(), x: a.pos[0], y: a.pos[1],
+        dx: offset[0], dy: offset[1], end: a.curveId || a.pointId ? "arrow" : "dot",
+        ...(a.pointId ? { at: a.pointId } : a.curveId ? { on: a.curveId, t: curveParam(this.sk, a.curveId, a.pos) } : {}),
+      });
+      this.pending = null;
+      this.commit();
+      this.selection = new Set([b.id]);
+      return;
+    }
+
+    if (tool === "fill") {
+      const region = regionAt(this.sk, raw);
+      if (!region) {
+        this.toast("Click inside a closed shape. Its lines must meet at shared points.");
+        return;
+      }
+      const same = (f: Sym) => f.type === "fill" && (region.kind === "circle"
+        ? f.circle === region.circle
+        : !f.circle && f.points.length === region.face.points.length && region.face.points.every((id) => f.points.includes(id)));
+      const existing = this.sk.symbols.find(same);
+      if (existing && existing.type === "fill") {
+        existing.color = this.fillColor; // filling a filled shape recolours it
+        this.selection = new Set([existing.id]);
+        return this.commit();
+      }
+      const f = region.kind === "circle"
+        ? addSymbol(this.sk, { type: "fill", color: this.fillColor, circle: region.circle, points: [], arcs: [], curves: [], holes: [] })
+        : addSymbol(this.sk, { type: "fill", color: this.fillColor, points: region.face.points, arcs: region.face.arcs, curves: region.face.curves, holes: region.holes });
+      this.selection = new Set([f.id]);
+      return this.commit();
+    }
+
+    if (tool === "centermark" || tool === "hatch") {
+      const hit = this.hitTest(sp, true);
+      const e = hit ? entity(this.sk, hit.id) : undefined;
+      if (tool === "centermark") {
+        if (!e || (e.type !== "circle" && e.type !== "arc")) return this.toast("Click a circle or an arc.");
+        if (this.sk.symbols.some((x) => x.type === "centermark" && x.on === e.id)) return this.toast("That one already has centre lines.");
+        const c = addSymbol(this.sk, { type: "centermark", on: e.id, angle: 0 });
+        this.selection = new Set([c.id]);
+        return this.commit();
+      }
+      if (!e || e.type === "point") return this.toast("Click a line, an arc or a circle.");
+      // The hatching goes on the side of the curve the click was on.
+      const side = sideOfCurve(this.sk, e.id, raw) >= 0 ? 1 : -1;
+      const h = addSymbol(this.sk, { type: "hatch", on: e.id, side, ...DEFAULT_HATCH });
+      this.selection = new Set([h.id]);
+      return this.commit();
+    }
+
+    // Supports
+    const snap = this.snapAt(sp);
     if (!snap.pointId && !snap.curveId) {
       this.toast("Click a joint, or a spot on a line, to put the support there.");
       return;
     }
-    const kind: SupportKind = this.tool === "wall" ? "fixed" : (this.tool as "pin" | "roller");
+    const kind: SupportKind = tool === "wall" ? "fixed" : (tool as "pin" | "roller");
     const autos: ConstraintDraft[] = [];
     const at = this.materialize(snap, autos, true);
     // One support per joint: a new one replaces what was there.
@@ -627,39 +797,61 @@ export class App {
     this.finishDrawing(autos);
   }
 
+  /** Where a drag of a symbol starts from: its position, or for a balloon its offset. */
+  private symbolDragOrigin(s: Sym): V {
+    return s.type === "balloon" ? [s.dx, s.dy] : symbolPosition(this.sk, s);
+  }
+
   private dragSymbol(d: Extract<DragState, { kind: "sym" }>, sp: V): void {
     const s = symbol(this.sk, d.id);
     if (!s) return;
     const m = toModel(this.view, sp);
-    if (s.type === "support") {
-      // The ground side follows the pointer around the joint.
-      const dir = sub(m, symbolPosition(this.sk, s));
-      if (dist(m, symbolPosition(this.sk, s)) * this.view.scale < 6) return;
-      let angle = Math.atan2(dir[0], -dir[1]);
-      if (!this.altKey) angle = Math.round(angle / (15 * DEG)) * 15 * DEG;
-      s.angle = angle;
-      return;
-    }
-    // Axes move freely; dropped on a joint they pin to it.
-    const pos = add(d.origin, sub(m, d.startModel));
-    const screenPos = toScreen(this.view, pos);
-    const near = points(this.sk).find((p) => dist(toScreen(this.view, [p.x, p.y]), screenPos) < POINT_TOL);
-    if (near && !this.altKey) {
-      s.at = near.id;
-      s.x = near.x;
-      s.y = near.y;
-    } else {
-      delete s.at;
-      s.x = pos[0];
-      s.y = pos[1];
+    const mm = mmPerUnit(this.sk);
+    const snapAngle = (a: number) => (this.altKey ? a : Math.round(a / (15 * DEG)) * 15 * DEG);
+
+    if (s.type === "support" || s.type === "centermark") {
+      const centre = symbolPosition(this.sk, s);
+      if (dist(m, centre) * this.view.scale < 6) return;
+      const dir = sub(m, centre);
+      // A support's ground side follows the pointer; a centre mark's first line points at it.
+      s.angle = snapAngle(s.type === "support" ? Math.atan2(dir[0], -dir[1]) : angleOf(dir));
+    } else if (s.type === "balloon") {
+      // The balloon moves; what it points at stays.
+      const moved = mul(sub(m, d.startModel), mm);
+      s.dx = d.origin[0] + moved[0];
+      s.dy = d.origin[1] + moved[1];
+    } else if (s.type === "hatch") {
+      // Pulling away from the curve sets how deep the strokes reach, and on which side.
+      const off = sideOfCurve(this.sk, s.on, m) * mm;
+      s.side = off >= 0 ? 1 : -1;
+      s.depth = Math.max(0.5, Math.min(20, Math.round(Math.abs(off) * 10) / 10));
+    } else if (s.type === "frame") {
+      // Axes move freely; dropped on a joint they pin to it.
+      const pos = add(d.origin, sub(m, d.startModel));
+      const screenPos = toScreen(this.view, pos);
+      const near = points(this.sk).find((p) => dist(toScreen(this.view, [p.x, p.y]), screenPos) < POINT_TOL);
+      if (near && !this.altKey) {
+        s.at = near.id;
+        s.x = near.x;
+        s.y = near.y;
+      } else {
+        delete s.at;
+        s.x = pos[0];
+        s.y = pos[1];
+      }
     }
   }
 
   private rotateSelected(by: number): void {
-    const syms = [...this.selection].map((id) => symbol(this.sk, id)).filter((s) => s !== undefined);
-    if (!syms.length) return;
-    for (const s of syms) s.angle = wrap(s.angle + by + Math.PI) - Math.PI;
-    this.commit();
+    let turned = false;
+    for (const id of this.selection) {
+      const s = symbol(this.sk, id);
+      if (s && (s.type === "support" || s.type === "frame" || s.type === "centermark")) {
+        s.angle = wrap(s.angle + by + Math.PI) - Math.PI;
+        turned = true;
+      }
+    }
+    if (turned) this.commit();
   }
 
   // ---- pointer --------------------------------------------------------------
@@ -706,8 +898,9 @@ export class App {
     }
 
     const hit = this.pickAt(sp, ev.timeStamp, !ev.shiftKey);
-    if (!hit) {
-      this.drag = { kind: "box", a: sp, b: sp, additive: ev.shiftKey };
+    if (!hit || hit.kind === "fill") {
+      // On a fill, a drag still draws a selection box; only a plain click picks the fill.
+      this.drag = { kind: "box", a: sp, b: sp, additive: ev.shiftKey, click: hit?.id };
       return;
     }
     if (ev.shiftKey) {
@@ -723,7 +916,7 @@ export class App {
       this.drag = { kind: "dim", id: hit.id, startScreen: sp, moved: false };
     } else if (hit.kind === "sym") {
       const s = symbol(this.sk, hit.id)!;
-      this.drag = { kind: "sym", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin: symbolPosition(this.sk, s), moved: false };
+      this.drag = { kind: "sym", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin: this.symbolDragOrigin(s), moved: false };
     } else if (hit.kind !== "glyph") {
       this.drag = this.startMove(hit.id, sp, wasSelected && this.selection.size > 1);
     }
@@ -835,7 +1028,13 @@ export class App {
 
   private finishBox(d: Extract<DragState, { kind: "box" }>): void {
     if (!d.additive) this.selection.clear();
-    if (dist(d.a, d.b) < 3) return;
+    if (dist(d.a, d.b) < 3) {
+      if (d.click) {
+        if (d.additive && this.selection.has(d.click)) this.selection.delete(d.click);
+        else this.selection.add(d.click);
+      }
+      return;
+    }
     const x0 = Math.min(d.a[0], d.b[0]), x1 = Math.max(d.a[0], d.b[0]);
     const y0 = Math.min(d.a[1], d.b[1]), y1 = Math.max(d.a[1], d.b[1]);
     const within = (m: V) => {
@@ -1229,7 +1428,7 @@ export class App {
    */
   private commandClick(sp: V): void {
     const cmd = this.tool as Command;
-    const info = COMMANDS.find((c) => c.id === cmd)!;
+    const info = toolDef(cmd);
     // Picks are geometry; a dimension left selected by the last placement is dropped.
     for (const id of [...this.selection]) if (!entity(this.sk, id)) this.selection.delete(id);
 
@@ -1301,7 +1500,7 @@ export class App {
 
   /** Applies a constraint to the picked geometry. */
   private run(cmd: Exclude<Command, "dimension">): void {
-    const info = COMMANDS.find((c) => c.id === cmd)!;
+    const info = toolDef(cmd);
     if (!this.canApply(cmd)) {
       this.toast(`${info.label} needs ${info.need}.`);
       return;
@@ -1431,7 +1630,8 @@ export class App {
     // Axes placed away from the geometry belong in view too.
     const mm0 = mmPerUnit(this.sk);
     for (const s of this.sk.symbols) {
-      if (s.type === "frame") grow(b, symbolPosition(this.sk, s), boxIsEmpty(b) ? 0 : s.size / mm0);
+      if (s.type === "frame") grow(b, symbolPosition(this.sk, s), boxIsEmpty(b) ? 0 : Math.max(s.xSize, s.ySize) / mm0);
+      if (s.type === "balloon") grow(b, add(balloonAnchor(this.sk, s), [s.dx / mm0, s.dy / mm0]), balloonRadius(s.text) / mm0);
     }
     if (boxIsEmpty(b) || (b.x1 - b.x0 < 1e-9 && b.y1 - b.y0 < 1e-9)) {
       this.view.cx = 0;
@@ -1453,14 +1653,8 @@ export class App {
   // ---- chrome ---------------------------------------------------------------
 
   private buildToolbars(): void {
-    const toolButton = (t: (typeof TOOLS)[number]) =>
-      `<button type="button" class="tool" data-tool="${t.id}" aria-label="${t.label}" title="${t.label}${t.key ? ` (${t.key})` : ""}">${icon(t.icon, 22)}<span>${t.label}</span></button>`;
-    $("#tools").innerHTML =
-      TOOLS.filter((t) => t.group === "draw").map(toolButton).join("") +
-      `<span class="rail-rule"></span>` +
-      TOOLS.filter((t) => t.group === "symbol").map(toolButton).join("");
-    $("#constraint-actions").innerHTML = COMMANDS.map((c) =>
-      `${c.id === "dimension" ? `<span class="rule"></span>` : ""}<button type="button" class="icon-btn" data-cmd="${c.id}" aria-label="${c.label}" title="${c.label}${c.key ? ` (${c.key})` : ""}">${icon(c.icon)}</button>`,
+    $("#tabs").innerHTML = (["sketch", "annotate"] as Tab[]).map((t) =>
+      `<button type="button" role="tab" class="tab" data-tab="${t}" id="tab-${t}" aria-controls="ribbon">${t === "sketch" ? "Sketch" : "Annotate"}</button>`,
     ).join("");
     $("#view-actions").innerHTML =
       `<button type="button" class="icon-btn" data-act="undo" aria-label="Undo" title="Undo (Ctrl+Z)">${icon("undo")}</button>` +
@@ -1468,14 +1662,42 @@ export class App {
       `<span class="rule"></span>` +
       `<button type="button" class="icon-btn" data-act="origin" aria-label="Show origin axes" title="Show or hide the axes at the origin">${icon("frame")}</button>` +
       `<button type="button" class="icon-btn" data-act="fit" aria-label="Zoom to fit" title="Zoom to fit (0)">${icon("fit")}</button>`;
+    this.buildRibbon();
+  }
+
+  /** The ribbon shows the tools of the open tab, in groups. */
+  private buildRibbon(): void {
+    const tools = TOOLS.filter((t) => t.tab === this.tab || t.tab === "both");
+    let html = "";
+    let group = -1;
+    for (const t of tools) {
+      if (t.group !== group && group !== -1) html += `<span class="ribbon-rule"></span>`;
+      group = t.group;
+      const attr = isCommand(t.id) ? `data-cmd="${t.id}"` : `data-tool="${t.id}"`;
+      html += `<button type="button" class="tool" ${attr} aria-label="${t.label}" title="${t.label}${t.key ? ` (${t.key})` : ""}">${icon(t.icon, 22)}<span>${t.label}</span></button>`;
+    }
+    const ribbon = $("#ribbon");
+    ribbon.innerHTML = html;
+    ribbon.setAttribute("aria-labelledby", `tab-${this.tab}`);
+    ribbon.dataset.shown = this.tab;
+  }
+
+  private setTab(tab: Tab): void {
+    if (tab === this.tab) return;
+    this.tab = tab;
+    // A tool that lives on the other tab is put down.
+    const home = toolDef(this.tool).tab;
+    if (home !== "both" && home !== tab) return this.setTool("select");
+    this.touch();
   }
 
   private updateButtons(): void {
-    document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((b) => {
-      b.setAttribute("aria-pressed", String(b.dataset.tool === this.tool));
+    if ($("#ribbon").dataset.shown !== this.tab) this.buildRibbon();
+    document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((b) => {
+      b.setAttribute("aria-selected", String(b.dataset.tab === this.tab));
     });
-    document.querySelectorAll<HTMLButtonElement>("[data-cmd]").forEach((b) => {
-      b.setAttribute("aria-pressed", String(b.dataset.cmd === this.tool));
+    document.querySelectorAll<HTMLButtonElement>("[data-tool], [data-cmd]").forEach((b) => {
+      b.setAttribute("aria-pressed", String((b.dataset.tool ?? b.dataset.cmd) === this.tool));
     });
     $<HTMLButtonElement>('[data-act="undo"]').disabled = !this.history.canUndo;
     $<HTMLButtonElement>('[data-act="redo"]').disabled = !this.history.canRedo;
@@ -1490,19 +1712,21 @@ export class App {
     else if (r.dof === 0) { count = "0"; state = "Fully constrained"; cls = "done"; }
     else { count = String(r.dof); state = r.dof === 1 ? "degree of freedom left" : "degrees of freedom left"; cls = "free"; }
 
-    const active = document.activeElement === this.titleblock.querySelector("input");
-    if (active) {
-      // Leave the width field alone while it is being typed in.
+    // The box that was typed in last sets the scale; the other one follows and shows the result.
+    const fixed = this.sk.scaleMode === "fixed";
+    const width = formatNumber(Number(((fixed ? figureWidth(this.sk) : this.sk.figureWidthMm) / 10).toFixed(2)));
+    const scale = formatNumber(Number(mm.toFixed(3)));
+    const typing = this.titleblock.contains(document.activeElement) && document.activeElement?.tagName === "INPUT";
+    if (typing) {
+      // Leave the boxes alone while one is being typed in.
       const dof = this.titleblock.querySelector(".tb-dof");
       if (dof) dof.outerHTML = this.dofCell(count, state, cls);
-      const scale = this.titleblock.querySelector(".tb-scale-v");
-      if (scale) scale.textContent = `1 unit = ${formatNumber(mm)} mm`;
       return;
     }
     this.titleblock.innerHTML =
       this.dofCell(count, state, cls) +
-      `<label class="tb-cell"><span class="tb-k">Figure width</span><span class="tb-v"><input id="fig-width" type="text" inputmode="decimal" value="${formatNumber(this.sk.figureWidthMm / 10)}"> cm</span></label>` +
-      `<div class="tb-cell"><span class="tb-k">Paper scale</span><span class="tb-v tb-scale-v">1 unit = ${formatNumber(mm)} mm</span></div>`;
+      `<label class="tb-cell${fixed ? " follows" : ""}"><span class="tb-k">Figure width${fixed ? "" : " (set)"}</span><span class="tb-v"><input id="fig-width" data-scale="width" type="text" inputmode="decimal" value="${width}"> cm</span></label>` +
+      `<label class="tb-cell${fixed ? "" : " follows"}"><span class="tb-k">Paper scale${fixed ? " (set)" : ""}</span><span class="tb-v">1 unit = <input id="fig-scale" data-scale="fixed" type="text" inputmode="decimal" value="${scale}"> mm</span></label>`;
   }
 
   private dofCell(count: string, state: string, cls: string): string {
@@ -1530,24 +1754,63 @@ export class App {
   }
 
   private symbolPanel(s: Sym): string {
-    const degrees = formatNumber(Number((s.angle / DEG).toFixed(2)));
+    const degrees = (angle: number) => formatNumber(Number((angle / DEG).toFixed(2)));
+    const mm = (v: number) => formatNumber(Number(v.toFixed(2)));
+    const text = (label: string, field: string, value: string, note = "") =>
+      `<label class="field"><span>${label}</span><input data-field="${field}" type="text" spellcheck="false" value="${esc(value)}">${note ? `<small>${note}</small>` : ""}</label>`;
+    const number = (label: string, field: string, value: string, note = "") =>
+      `<label class="field"><span>${label}</span><input data-field="${field}" type="text" inputmode="decimal" value="${value}">${note ? `<small>${note}</small>` : ""}</label>`;
+    const rotate = `<button type="button" class="plain" data-act="rotate">Rotate 90° (R)</button>`;
     let html = "";
-    if (s.type === "support") {
-      const kinds: [SupportKind, string][] = [["pin", "Pin"], ["roller", "Roller"], ["fixed", "Fixed"]];
-      html += `<h2>${SUPPORT_NAMES[s.kind]}</h2>`;
-      html += `<div class="field"><span id="kind-label">Kind</span><div class="segmented" role="group" aria-labelledby="kind-label">${kinds.map(([k, name]) =>
-        `<button type="button" data-kind="${k}" aria-pressed="${s.kind === k}">${name}</button>`).join("")}</div></div>`;
-      html += `<label class="field"><span>Rotation (degrees)</span><input data-field="sym-angle" type="text" inputmode="decimal" value="${degrees}"><small>At 0 the ground is below the joint. Dragging the support around its joint turns it too.</small></label>`;
-      html += `<button type="button" class="plain" data-act="rotate">Rotate 90° (R)</button>`;
-      html += `<p class="muted note-block">Supports are drawn only. To hold a joint in place, fix the point.</p>`;
-    } else {
-      html += `<h2>Coordinate axes</h2>`;
-      html += `<label class="field"><span>First axis label</span><input data-field="sym-xlabel" type="text" spellcheck="false" value="${esc(s.xLabel)}"></label>`;
-      html += `<label class="field"><span>Second axis label</span><input data-field="sym-ylabel" type="text" spellcheck="false" value="${esc(s.yLabel)}"><small>Written as TeX math. Leave empty for no label.</small></label>`;
-      html += `<label class="field"><span>Rotation (degrees)</span><input data-field="sym-angle" type="text" inputmode="decimal" value="${degrees}"></label>`;
-      html += `<label class="field"><span>Axis length (mm on paper)</span><input data-field="sym-size" type="text" inputmode="decimal" value="${formatNumber(s.size)}"></label>`;
-      html += `<button type="button" class="plain" data-act="rotate">Rotate 90° (R)</button>`;
-      html += `<p class="muted note-block">${s.at ? "Pinned to a joint; it moves with it. Drag it away to free it." : "Drag it anywhere. Dropped on a joint, it stays pinned there."}</p>`;
+
+    switch (s.type) {
+      case "support": {
+        const kinds: [SupportKind, string][] = [["pin", "Pin"], ["roller", "Roller"], ["fixed", "Fixed"]];
+        html += `<h2>${SUPPORT_NAMES[s.kind]}</h2>`;
+        html += `<div class="field"><span id="kind-label">Kind</span><div class="segmented" role="group" aria-labelledby="kind-label">${kinds.map(([k, name]) =>
+          `<button type="button" data-kind="${k}" aria-pressed="${s.kind === k}">${name}</button>`).join("")}</div></div>`;
+        html += number("Rotation (degrees)", "sym-angle", degrees(s.angle), "At 0 the ground is below the joint. Dragging the support around its joint turns it too.");
+        html += rotate;
+        html += `<p class="muted note-block">Supports are drawn only. To hold a joint in place, fix the point.</p>`;
+        break;
+      }
+      case "frame":
+        html += `<h2>Coordinate axes</h2>`;
+        html += text("First axis label", "sym-xlabel", s.xLabel);
+        html += text("Second axis label", "sym-ylabel", s.yLabel, "Written as TeX math. Leave empty for no label.");
+        html += number("First axis length (mm on paper)", "sym-xsize", mm(s.xSize));
+        html += number("Second axis length (mm on paper)", "sym-ysize", mm(s.ySize), "Set a length to 0 to leave that axis out.");
+        html += number("Rotation (degrees)", "sym-angle", degrees(s.angle));
+        html += rotate;
+        html += `<p class="muted note-block">${s.at ? "Pinned to a joint; it moves with it. Drag it away to free it." : "Drag it anywhere. Dropped on a joint, it stays pinned there."}</p>`;
+        break;
+      case "centermark":
+        html += `<h2>Centre mark</h2>`;
+        html += number("Rotation (degrees)", "sym-angle", degrees(s.angle), "Dragging the mark turns it too.");
+        html += rotate;
+        break;
+      case "balloon": {
+        const ends: [LeaderEnd, string][] = [["arrow", "Arrow"], ["dot", "Dot"], ["none", "Plain"]];
+        html += `<h2>Balloon</h2>`;
+        html += text("Text", "sym-text", s.text, "A part number, or any TeX math.");
+        html += `<div class="field"><span id="end-label">Leader ends in</span><div class="segmented" role="group" aria-labelledby="end-label">${ends.map(([e, name]) =>
+          `<button type="button" data-end="${e}" aria-pressed="${s.end === e}">${name}</button>`).join("")}</div></div>`;
+        html += `<p class="muted note-block">Drag the balloon to move it; its leader keeps pointing at the same spot.</p>`;
+        break;
+      }
+      case "fill":
+        html += `<h2>Fill</h2>`;
+        html += `<div class="field"><span id="colour-label">Colour</span><div class="swatches" role="group" aria-labelledby="colour-label">${FILL_COLORS.map((c) =>
+          `<button type="button" class="swatch" data-color="${c}" aria-pressed="${s.color === c}" aria-label="Colour ${c}" title="${c}" style="background:${c}"></button>`).join("")}` +
+          `<label class="swatch custom" title="Another colour"><input data-field="sym-color" type="color" value="${esc(s.color)}" aria-label="Another colour"></label></div></div>`;
+        if (s.holes.length) html += `<p class="muted note-block">${s.holes.length === 1 ? "The circle inside is" : "The circles inside are"} left unfilled.</p>`;
+        break;
+      case "hatch":
+        html += `<h2>Hatching</h2>`;
+        html += number("Stroke length (mm on paper)", "sym-depth", mm(s.depth), "Dragging the hatching away from the curve sets this too.");
+        html += number("Spacing (mm on paper)", "sym-spacing", mm(s.spacing));
+        html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
+        break;
     }
     return html + `<button type="button" class="danger" data-act="delete">Delete</button>`;
   }
@@ -1558,7 +1821,7 @@ export class App {
     let html = "";
 
     if (isCommand(this.tool) && !(cons.length === 1 && isDimension(cons[0]))) {
-      const info = COMMANDS.find((c) => c.id === this.tool)!;
+      const info = toolDef(this.tool);
       html += `<h2>${info.label}</h2>`;
       html += this.tool === "dimension"
         ? `<ol class="steps"><li>Click ${info.need}.</li><li>Middle-click where the dimension should go. Beside the line gives its length; above or below, the horizontal distance; left or right, the vertical one.</li><li>Type the value and press Enter.</li></ol>`
@@ -1615,12 +1878,15 @@ export class App {
       html += `<button type="button" class="danger" data-act="delete">Delete selection</button>`;
     } else {
       html += `<h2>Nothing selected</h2>`;
+      const over = findOverlaps(this.sk);
+      const n = over.segments.length + over.rounds.length;
+      if (n) html += `<p class="warn">${n === 1 ? "Two curves lie" : `Curves lie in ${n} places`} on top of each other, shown in red. Click there again to step through them and delete the extra one.</p>`;
       if (this.sk.constraints.length) {
         html += `<h3>All constraints</h3>${this.constraintRows(this.sk.constraints)}`;
       } else {
-        html += `<ol class="steps"><li><b>Draw.</b> Place joints with the Line tool; exact positions do not matter yet.</li>` +
-          `<li><b>Constrain.</b> Press a constraint in the top bar, then click the geometry it applies to.</li>` +
-          `<li><b>Dimension.</b> Press D, click a line, then middle-click where the dimension goes and type its length.</li></ol>`;
+        html += `<ol class="steps"><li><b>Draw.</b> On the Sketch tab, place joints with the Line tool; exact positions do not matter yet.</li>` +
+          `<li><b>Constrain.</b> Press a constraint, then click the geometry it applies to. Curves turn black once nothing about them can move.</li>` +
+          `<li><b>Annotate.</b> On the Annotate tab, press Dimension, click a line, middle-click where the dimension goes and type its length. Supports, balloons, fills and hatching are there too.</li></ol>`;
       }
     }
     this.panel.innerHTML = html;
@@ -1654,12 +1920,15 @@ export class App {
       const btn = (e.target as Element).closest<HTMLElement>("button");
       if (!btn) return;
       const ds = btn.dataset;
-      if (ds.tool) this.setTool(ds.tool as Tool);
+      if (ds.tab) this.setTab(ds.tab as Tab);
+      else if (ds.tool) this.setTool(ds.tool as Tool);
       else if (ds.cmd) this.activate(ds.cmd as Command);
       else if (ds.select) { this.setTool("select"); this.selection = new Set([ds.select]); this.touch(); }
       else if (ds.delete) { remove(this.sk, [ds.delete]); this.pruneSelection(); this.solve(); this.commit(); }
       else if (ds.mode) this.setDimMode(ds.mode as DistanceMode);
       else if (ds.kind) this.setSupportKind(ds.kind as SupportKind);
+      else if (ds.end) this.editSymbol((x) => { if (x.type === "balloon") x.end = ds.end as LeaderEnd; });
+      else if (ds.color) this.setFillColor(ds.color);
       else if (ds.act) this.action(ds.act);
     });
 
@@ -1667,12 +1936,12 @@ export class App {
     const explain = (e: Event) => {
       const btn = (e.target as Element).closest?.<HTMLElement>("[data-cmd]");
       if (!btn) return;
-      const info = COMMANDS.find((c) => c.id === btn.dataset.cmd)!;
+      const info = toolDef(btn.dataset.cmd as Tool);
       this.hintOverride = `${info.label}${info.key ? ` (${info.key})` : ""}: press this, then click ${info.need}.`;
       this.render();
     };
     const unexplain = () => { this.hintOverride = null; this.render(); };
-    const bar = $("#constraint-actions");
+    const bar = $("#ribbon");
     bar.addEventListener("mouseover", explain);
     bar.addEventListener("focusin", explain);
     bar.addEventListener("mouseleave", unexplain);
@@ -1681,14 +1950,20 @@ export class App {
     this.panel.addEventListener("change", (e) => this.onPanelChange(e.target as HTMLInputElement));
     this.titleblock.addEventListener("change", (e) => {
       const input = e.target as HTMLInputElement;
-      const cm = parseNumber(input.value);
-      if (Number.isFinite(cm) && cm >= 1 && cm <= 100) {
-        this.sk.figureWidthMm = cm * 10;
-        this.commit();
-      } else {
-        this.toast("Figure width must be between 1 and 100 cm.");
-        input.value = formatNumber(this.sk.figureWidthMm / 10);
-      }
+      const v = parseNumber(input.value);
+      if (input.dataset.scale === "width") {
+        // A width: the scale follows the drawing so the figure stays this wide.
+        if (Number.isFinite(v) && v >= 1 && v <= 100) {
+          this.sk.figureWidthMm = v * 10;
+          this.sk.scaleMode = "width";
+        } else this.toast("Figure width must be between 1 and 100 cm.");
+      } else if (Number.isFinite(v) && v > 0 && v <= 1e6) {
+        // A scale: it stays put, and the figure width follows the drawing.
+        this.sk.mmPerUnit = v;
+        this.sk.scaleMode = "fixed";
+      } else this.toast("The scale must be a number of millimetres greater than zero.");
+      input.blur();
+      this.commit();
     });
     this.titleblock.addEventListener("keydown", (e) => {
       if (e.key === "Enter") (e.target as HTMLElement).blur();
@@ -1725,6 +2000,8 @@ export class App {
       case "save": return this.save();
       case "delete": return this.deleteSelection();
       case "rotate": return this.rotateSelected(Math.PI / 2);
+      case "flip":
+        return this.editSymbol((x) => { if (x.type === "hatch") x.side = x.side === 1 ? -1 : 1; });
       case "origin":
         this.sk.showOrigin = !this.sk.showOrigin;
         return this.commit();
@@ -1740,6 +2017,21 @@ export class App {
   private selectedSymbol(): Sym | null {
     if (this.selection.size !== 1) return null;
     return symbol(this.sk, [...this.selection][0]) ?? null;
+  }
+
+  /** Changes the one selected symbol and records the edit. */
+  private editSymbol(change: (s: Sym) => void): void {
+    const s = this.selectedSymbol();
+    if (!s) return;
+    change(s);
+    this.commit();
+  }
+
+  /** Colours the selected fill, and remembers the colour for the next one. */
+  private setFillColor(color: string): void {
+    if (!/^#[0-9a-f]{6}$/i.test(color)) return;
+    this.fillColor = color;
+    this.editSymbol((x) => { if (x.type === "fill") x.color = color; });
   }
 
   private setSupportKind(kind: SupportKind): void {
@@ -1786,21 +2078,34 @@ export class App {
     if (field.startsWith("sym-")) {
       const s = this.selectedSymbol();
       if (!s) return;
-      if (field === "sym-angle") {
-        const deg = parseNumber(input.value);
-        if (!Number.isFinite(deg)) return this.toast("Type the rotation as a number of degrees.");
-        s.angle = deg * DEG;
-      } else if (s.type === "frame" && field === "sym-size") {
-        const size = parseNumber(input.value);
-        if (!Number.isFinite(size) || size < 2 || size > 100) {
-          this.toast("Axis length must be between 2 and 100 mm.");
-          return this.touch();
-        }
-        s.size = size;
-      } else if (s.type === "frame" && (field === "sym-xlabel" || field === "sym-ylabel")) {
-        const label = input.value.trim().replace(/^\$+|\$+$/g, "");
-        if (field === "sym-xlabel") s.xLabel = label;
-        else s.yLabel = label;
+      const v = parseNumber(input.value);
+      const label = input.value.trim().replace(/^\$+|\$+$/g, "");
+      /** A typed length in mm, or null (with a message) when it is out of range. */
+      const length = (min: number, max: number, what: string): number | null => {
+        if (Number.isFinite(v) && v >= min && v <= max) return v;
+        this.toast(`${what} must be between ${min} and ${max} mm.`);
+        return null;
+      };
+      if (field === "sym-angle" && (s.type === "support" || s.type === "frame" || s.type === "centermark")) {
+        if (!Number.isFinite(v)) { this.toast("Type the rotation as a number of degrees."); return this.touch(); }
+        s.angle = v * DEG;
+      } else if (s.type === "frame" && (field === "sym-xsize" || field === "sym-ysize")) {
+        const size = length(0, 200, "Axis length");
+        if (size === null) return this.touch();
+        if (field === "sym-xsize") s.xSize = size;
+        else s.ySize = size;
+      } else if (s.type === "frame" && field === "sym-xlabel") s.xLabel = label;
+      else if (s.type === "frame" && field === "sym-ylabel") s.yLabel = label;
+      else if (s.type === "balloon" && field === "sym-text") s.text = label;
+      else if (s.type === "fill" && field === "sym-color") return this.setFillColor(input.value);
+      else if (s.type === "hatch" && field === "sym-depth") {
+        const depth = length(0.3, 30, "Stroke length");
+        if (depth === null) return this.touch();
+        s.depth = depth;
+      } else if (s.type === "hatch" && field === "sym-spacing") {
+        const spacing = length(0.3, 30, "Spacing");
+        if (spacing === null) return this.touch();
+        s.spacing = spacing;
       }
       return this.commit();
     }
@@ -1874,11 +2179,10 @@ export class App {
       return this.rotateSelected(e.shiftKey ? -Math.PI / 2 : Math.PI / 2);
     }
     const tool = TOOLS.find((t) => t.key === key);
-    const cmd = COMMANDS.find((c) => c.key === key);
-    if (!tool && !cmd) return;
+    if (!tool) return;
     // Without this the letter would be typed into the dimension box a command opens.
     e.preventDefault();
-    if (tool) this.setTool(tool.id);
-    else if (cmd) this.activate(cmd.id);
+    if (isCommand(tool.id)) this.activate(tool.id);
+    else this.setTool(tool.id);
   }
 }

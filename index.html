@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mech Sketch</title>
+<meta name="theme-color" content="#e7ebe5">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-192.png">
 </head>
 <body>
 <div id="app">
@@ -14,11 +18,11 @@
       <button type="button" class="text-btn" data-act="open">Open</button>
       <button type="button" class="text-btn" data-act="save">Save</button>
     </div>
-    <div class="group" id="constraint-actions" role="toolbar" aria-label="Constraints and dimensions"></div>
+    <div class="tabs" id="tabs" role="tablist" aria-label="Tool sets"></div>
     <div class="spacer"></div>
     <div class="group" id="view-actions" role="toolbar" aria-label="History and view"></div>
   </header>
-  <nav class="rail" id="tools" role="toolbar" aria-label="Drawing tools" aria-orientation="vertical"></nav>
+  <nav class="ribbon" id="ribbon" role="toolbar"></nav>
   <main class="stage" id="stage">
     <svg id="canvas" role="img" aria-label="Sketch"></svg>
     <div class="empty" id="empty">

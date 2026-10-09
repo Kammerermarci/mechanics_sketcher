@@ -12,6 +12,14 @@ export type Drag =
   /** Pull the rim of a circle or arc towards a position. */
   | { kind: "rim"; id: Id; x: number; y: number };
 
+/** What in a sketch is not yet pinned down. */
+export interface Freedom {
+  /** Points that can still move. */
+  points: Set<Id>;
+  /** Circles whose radius can still change. */
+  radii: Set<Id>;
+}
+
 export interface SolveResult {
   ok: boolean;
   /** Degrees of freedom left. Meaningful only when ok. */
@@ -218,6 +226,48 @@ export class SketchSolver {
       }
     }
     return result;
+  }
+
+  /** Degrees of freedom with one point pinned or an extra constraint added; null if that does not solve. */
+  private dofWith(sk: Sketch, pin: Id | null, extra: Prim[]): number | null {
+    const g = this.gcs;
+    g.clear_data();
+    const geometry = geometryPrims(sk).map((p) => (p.type === "point" && p.id === pin ? { ...p, fixed: true } : p));
+    const constraints: Prim[] = [];
+    for (const c of sk.constraints) constraints.push(...constraintPrims(sk, c));
+    g.push_primitives_and_params([...geometry, ...constraints, ...extra]);
+    const status = g.solve();
+    if (status !== SolveStatus.Success && status !== SolveStatus.Converged) return null;
+    return g.gcs.dof();
+  }
+
+  /**
+   * Which points can still move, and which circles can still change size.
+   * A point is free if pinning it where it is uses up a degree of freedom.
+   * Returns null when the sketch does not solve, or is too large to probe
+   * point by point. Does not change the sketch.
+   */
+  freedom(original: Sketch): Freedom | null {
+    if (original.entities.length > 400) return null;
+    // Probe a solved copy: pinning a point only makes sense where the constraints already hold.
+    const sk = structuredClone(original);
+    if (!this.solve(sk).ok) return null;
+    const pts = sk.entities.filter((e) => e.type === "point");
+    const base = this.dofWith(sk, null, []);
+    if (base === null) return null;
+    const out: Freedom = { points: new Set(), radii: new Set() };
+    if (base <= 0) return out;
+    for (const p of pts) {
+      if (isFixed(sk, p.id)) continue;
+      const d = this.dofWith(sk, p.id, []);
+      if (d !== null && d < base) out.points.add(p.id);
+    }
+    for (const e of sk.entities) {
+      if (e.type !== "circle") continue;
+      const d = this.dofWith(sk, null, [{ id: "probe:r", type: "circle_radius", c_id: e.id, radius: e.r }]);
+      if (d !== null && d < base) out.radii.add(e.id);
+    }
+    return out;
   }
 
   dispose(): void {

@@ -25,3 +25,9 @@ createSolver()
         `Reload the page; if it keeps happening, the browser may be blocking WebAssembly.</p>`;
     }
   });
+
+// Served from a web address, the app registers a service worker so it can be
+// installed and keeps working offline. Opened as a file, there is none to register.
+if ("serviceWorker" in navigator && location.protocol.startsWith("http") && !import.meta.env.DEV) {
+  navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("Offline support is unavailable", err));
+}

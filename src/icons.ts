@@ -27,6 +27,11 @@ export const ICONS: Record<string, string> = {
   wall: `<path d="M6.5 3v14"/><path d="M6.5 5l-3 2.5M6.5 9l-3 2.5M6.5 13l-3 2.5" stroke-width="1.1"/><path d="M6.5 10h11" stroke-width="2.2"/>`,
   frame: `<path d="M5 15.5V4M5 15.5h11.5"/><path d="M3 6.2l2-2.4 2 2.4M14.3 13.5l2.4 2-2.4 2" stroke-width="1.3"/>`,
 
+  centermark: `<circle cx="10" cy="10" r="5.2"/><path d="M10 2v5M10 13v5M2 10h5M13 10h5M8.6 10h2.8M10 8.6v2.8" stroke-width="1.2"/>`,
+  balloon: `<circle cx="12.5" cy="7.5" r="5"/><path d="M8.8 11.2L3 17"/><path d="M12.5 5.4v4.4M11.3 6.4l1.2-1" stroke-width="1.3"/>`,
+  fill: `<path d="M4 16V8l6-4 6 4v8z" fill="currentColor" fill-opacity="0.28"/><path d="M4 16V8l6-4 6 4v8z"/>`,
+  hatch: `<path d="M3 7h14" stroke-width="2"/><path d="M6 7l-3 5M10 7l-3 5M14 7l-3 5M18 7l-3 5" stroke-width="1.2"/>`,
+
   undo: `<path d="M7.5 4.5l-4 4 4 4"/><path d="M3.5 8.5h8a4.3 4.3 0 0 1 0 8.6H9"/>`,
   redo: `<path d="M12.5 4.5l4 4-4 4"/><path d="M16.5 8.5h-8a4.3 4.3 0 0 0 0 8.6H11"/>`,
   fit: `<path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/><rect x="7" y="7" width="6" height="6" stroke-width="1.2"/>`,

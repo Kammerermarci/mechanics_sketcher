@@ -4,8 +4,9 @@
 import {
   type Sketch, type Id, type Constraint, type Curve, ORIGIN, entity, point, isDimension, arcRadius, isFixed,
 } from "./model";
-import { type V, add, sub, mul, norm, perp, mid, polar, projectOnSegment, TWO_PI } from "./geom";
-import { type Prim, type StrokeStyle, PAPER, STROKE_MM, arrowHeads, textBox } from "./prims";
+import { type V, add, sub, mul, norm, perp, mid, polar, wrap, projectOnSegment, TWO_PI } from "./geom";
+import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_MM, arrowHeads, textBox } from "./prims";
+import type { Overlaps } from "./regions";
 import { texEngine } from "./tex";
 import { ICONS } from "./icons";
 
@@ -55,8 +56,10 @@ export interface Scene {
   hover: Id | null;
   conflicting: Set<Id>;
   redundant: Set<Id>;
-  /** True while the sketch still has degrees of freedom. */
-  free: boolean;
+  /** Points and curves that can still move; everything else is fully constrained. */
+  freeIds: Set<Id>;
+  /** Stretches where curves lie on top of each other, drawn in red. */
+  overlaps: Overlaps;
   preview: Preview | null;
   snap: SnapMark | null;
   /** Selection rectangle in screen pixels. */
@@ -95,7 +98,7 @@ export function layoutGlyphs(sk: Sketch, view: View): Glyph[] {
     // Below and to the right of the point, unless a support is drawn there:
     // then on the side facing away from the support's ground.
     const support = sk.symbols.find((s) => s.type === "support" && s.at === id);
-    if (!support) return place(c, S(id), [0.75, 0.75], [1, 0]);
+    if (support?.type !== "support") return place(c, S(id), [0.75, 0.75], [1, 0]);
     const k = Math.cos(support.angle), n = Math.sin(support.angle);
     const up: V = [-0.75 * k - 0.75 * n, -0.75 * n + 0.75 * k]; // (-0.75, 0.75) turned with the support
     place(c, S(id), [up[0], -up[1]], [-1, 0]);
@@ -191,11 +194,11 @@ export const PREVIEW_REF = "__preview";
 function primClass(s: Scene, p: Prim): string {
   // Typeset text is a nested <svg>; it gets its own base class so the stroke
   // rules for drawn shapes do not leak into it.
-  const cls = p.k === "text" ? ["tex", p.layer] : ["prim", p.layer, p.stroke];
-  if ((p.k === "circle" || p.k === "poly") && p.fill) cls.push("filled");
+  const cls = p.k === "text" ? ["tex", p.layer] : p.k === "region" ? ["region"] : ["prim", p.layer, p.stroke];
+  if ((p.k === "circle" || p.k === "poly") && p.fill) cls.push(p.fill === "ink" ? "solid" : "filled");
   if (p.ghost) cls.push("ghost");
-  if (p.layer === "geom") cls.push(s.free ? "free" : "defined");
   const id = p.ref;
+  if (p.layer === "geom") cls.push(id && s.freeIds.has(id) ? "free" : "defined");
   if (id === PREVIEW_REF) cls.push("pv");
   else if (id) {
     if (s.conflicting.has(id)) cls.push("bad");
@@ -219,6 +222,32 @@ function arcPath(view: View, c: V, r: number, a0: number, a1: number): string {
   return `M${n2(s[0])} ${n2(s[1])}A${n2(rp)} ${n2(rp)} 0 ${large} 0 ${n2(e[0])} ${n2(e[1])}`;
 }
 
+/** SVG path data for the outlines of a region; M maps paper mm to the screen. */
+function outlinePath(outlines: Outline[], M: (p: V) => V, pxPerMm: number): string {
+  let d = "";
+  for (const o of outlines) {
+    if (o.kind === "circle") {
+      const c = M(o.c), r = o.r * pxPerMm;
+      d += `M${n2(c[0] - r)} ${n2(c[1])}a${n2(r)} ${n2(r)} 0 1 0 ${n2(2 * r)} 0a${n2(r)} ${n2(r)} 0 1 0 ${n2(-2 * r)} 0Z`;
+      continue;
+    }
+    const start = M(o.start);
+    d += `M${n2(start[0])} ${n2(start[1])}`;
+    for (const seg of o.segs) {
+      const to = M(seg.to);
+      if (seg.k === "L") d += `L${n2(to[0])} ${n2(to[1])}`;
+      else {
+        const sweep = seg.ccw ? wrap(seg.a1 - seg.a0) : wrap(seg.a0 - seg.a1);
+        const r = n2(seg.r * pxPerMm);
+        // Counter-clockwise on paper is sweep-flag 0 on the y-down screen.
+        d += `A${r} ${r} 0 ${sweep > Math.PI ? 1 : 0} ${seg.ccw ? 0 : 1} ${n2(to[0])} ${n2(to[1])}`;
+      }
+    }
+    d += "Z";
+  }
+  return d;
+}
+
 function drawPrims(s: Scene): string {
   const { view, mm } = s;
   const pxPerMm = view.scale / mm;
@@ -227,6 +256,10 @@ function drawPrims(s: Scene): string {
   let out = "";
   for (const p of s.prims) {
     const cls = primClass(s, p);
+    if (p.k === "region") {
+      out += `<path class="${cls}" d="${outlinePath(p.outlines, M, pxPerMm)}" fill="${p.color}" fill-rule="evenodd"/>`;
+      continue;
+    }
     if (p.k === "text") {
       const b = textBox(p);
       const topLeft = M([b.x0, b.y1]);
@@ -272,8 +305,26 @@ function drawHandles(s: Scene): string {
       continue;
     }
     if (isFixed(s.sk, e.id)) cls.push("fixed");
-    if (!s.free) cls.push("defined");
+    if (!s.freeIds.has(e.id)) cls.push("defined");
     out += `<circle class="${cls.join(" ")}" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${lit ? 4.6 : 3.4}"/>`;
+  }
+  return out;
+}
+
+/** Red over the stretches where two curves share the same space. */
+function drawOverlaps(s: Scene): string {
+  let out = "";
+  for (const [a, b] of s.overlaps.segments) {
+    const p = toScreen(s.view, a), q = toScreen(s.view, b);
+    out += `<line class="overlap" x1="${n2(p[0])}" y1="${n2(p[1])}" x2="${n2(q[0])}" y2="${n2(q[1])}"/>`;
+  }
+  for (const r of s.overlaps.rounds) {
+    if (r.a1 - r.a0 >= TWO_PI - 1e-9) {
+      const c = toScreen(s.view, r.c);
+      out += `<circle class="overlap" cx="${n2(c[0])}" cy="${n2(c[1])}" r="${n2(r.r * s.view.scale)}"/>`;
+    } else {
+      out += `<path class="overlap" d="${arcPath(s.view, r.c, r.r, r.a0, r.a1)}"/>`;
+    }
   }
   return out;
 }
@@ -339,5 +390,5 @@ export function renderScene(s: Scene): string {
     const x = Math.min(s.box.a[0], s.box.b[0]), y = Math.min(s.box.a[1], s.box.b[1]);
     box = `<rect class="marquee" x="${n2(x)}" y="${n2(y)}" width="${n2(Math.abs(s.box.a[0] - s.box.b[0]))}" height="${n2(Math.abs(s.box.a[1] - s.box.b[1]))}"/>`;
   }
-  return background(s.view, s.sk.showOrigin) + drawPrims(s) + drawHandles(s) + drawGlyphs(s) + drawPreview(s) + drawSnap(s) + box;
+  return background(s.view, s.sk.showOrigin) + drawPrims(s) + drawOverlaps(s) + drawHandles(s) + drawGlyphs(s) + drawPreview(s) + drawSnap(s) + box;
 }
