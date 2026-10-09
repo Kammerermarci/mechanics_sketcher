@@ -63,11 +63,11 @@ describe("export", () => {
     const dim = sk.constraints[0];
     if (dim.type === "distance") dim.hidden = true;
     const tikz = toTikz(sk)!;
-    expect(tikz).toContain("centreline/.style={line width=0.4pt, dash pattern=on 4mm off 1mm on 0.6mm off 1mm}");
+    expect(tikz).toContain("centreline/.style={line width=0.4pt, dash pattern=on 2mm off 0.6mm on 0.3mm off 0.6mm}");
     expect(tikz).toContain("\\draw[centreline] (20,-10) -- (20,10);");
     expect(tikz).not.toContain("(0,20)");
     expect(tikz).not.toContain("2a");
-    expect(toSvg(sk)).toContain('stroke-dasharray="4 1 0.6 1"');
+    expect(toSvg(sk)).toContain('stroke-dasharray="2 0.6 0.3 0.6"');
   });
 
   it("writes circles, arcs, supports and fills", () => {
@@ -91,5 +91,72 @@ describe("export", () => {
     const svg = toSvg(sk)!;
     expect(svg).toContain('fill="#f6d9a8" fill-rule="evenodd"');
     expect(svg).toMatch(/<polygon points="[^"]+" stroke-width="0.14" fill="#fff"\/>/);
+  });
+
+  it("turns the text of a slanted aligned dimension along its line", () => {
+    const sk = emptySketch();
+    sk.scaleMode = "fixed";
+    sk.mmPerUnit = 10;
+    const a = addPoint(sk, 0, 0), b = addPoint(sk, 3, 3);
+    addLine(sk, a.id, b.id);
+    const d = addConstraint(sk, { type: "distance", a: a.id, b: b.id, mode: "aligned", value: Math.hypot(3, 3), offset: 8, label: "\\ell" });
+    const tikz = toTikz(sk)!;
+    // 45 degrees, text on the side the dimension line was pulled to.
+    expect(tikz).toMatch(/\\node\[label, anchor=south, rotate=45\] at \(9\.34,20\.66\) \{\$\\ell\$\};/);
+    setTexEngine(createMathJaxEngine());
+    expect(toSvg(sk)).toMatch(/<g transform="rotate\(-45 [\d.]+ [\d.]+\)"><svg/);
+    // Asked to stay upright, it is not turned.
+    d.text = "upright";
+    expect(toTikz(sk)).not.toContain("rotate=");
+    expect(toSvg(sk)).not.toContain("rotate(");
+  });
+
+  it("keeps typed spaces in labels", () => {
+    const sk = beam();
+    const dim = sk.constraints[0];
+    if (dim.type === "distance") dim.label = "F = 10 \\mathrm{kN}";
+    expect(toTikz(sk)).toContain("{$F\\ =\\ 10\\ \\mathrm{kN}$}");
+  });
+
+  it("writes arrows with a larger tip and their names, and datum points in colour", () => {
+    const sk = emptySketch();
+    sk.scaleMode = "fixed";
+    sk.mmPerUnit = 10;
+    const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
+    const l = addLine(sk, a.id, b.id);
+    l.arrow = "end";
+    l.label = "F";
+    l.lx = 0;
+    l.ly = 3;
+    addSymbol(sk, { type: "datum", at: a.id, color: "#d32f2f", label: "A", dx: -2, dy: 2 });
+    const tikz = toTikz(sk)!;
+    expect(tikz).toContain("arrow/.style={line width=0.6pt}");
+    expect(tikz).toContain("bigtip/.tip={Stealth[length=2.7mm, width=1.65mm, inset=0.76mm]}");
+    expect(tikz).toContain("\\draw[arrow, -bigtip] (0,0) -- (40,0);");
+    expect(tikz).toContain("\\node[inner sep=0pt] at (20,3) {$F$};");
+    expect(tikz).toContain("\\draw[symbol, draw={rgb,255:red,211;green,47;blue,47}, fill={rgb,255:red,211;green,47;blue,47}] (0,0) circle[radius=0.7];");
+    expect(tikz).toContain("\\node[inner sep=0pt] at (-2,2) {$A$};");
+    expect(tikz).not.toMatch(/\btip\/\.tip/); // only the tip that is used
+    const svg = toSvg(sk)!;
+    expect(svg).toMatch(/<circle cx="[\d.]+" cy="[\d.]+" r="0\.7" stroke-width="0\.14" stroke="#d32f2f" fill="#d32f2f"\/>/);
+    // The stroked line stops inside the arrowhead instead of running to its tip.
+    expect(svg).toMatch(/<line x1="[\d.]+" y1="[\d.]+" x2="[\d.]+" y2="[\d.]+" stroke-width="0\.21"\/>/);
+    const x = /<line x1="([\d.]+)" y1="[\d.]+" x2="([\d.]+)"/.exec(svg)!;
+    expect(Number(x[2]) - Number(x[1])).toBeCloseTo(40 - 2.7 * 0.6, 2);
+  });
+
+  it("draws a radius dimension outside the circle when asked", () => {
+    const sk = emptySketch();
+    sk.scaleMode = "fixed";
+    sk.mmPerUnit = 10;
+    const c = addCircle(sk, addPoint(sk, 0, 0).id, 2);
+    const d = addConstraint(sk, { type: "radius", target: c.id, value: 2, angle: 0 });
+    expect(toTikz(sk)).toContain("\\draw[dim, -tip] (0,0) -- (20,0);"); // from the centre
+    d.len = 6;
+    expect(toTikz(sk)).toContain("\\draw[dim, -tip] (14,0) -- (20,0);");
+    d.outside = true;
+    const tikz = toTikz(sk)!;
+    expect(tikz).toContain("\\draw[dim, -tip] (26,0) -- (20,0);");
+    expect(tikz).toContain("\\node[label, anchor=west] at (26,0) {$R2$};");
   });
 });

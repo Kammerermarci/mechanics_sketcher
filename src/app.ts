@@ -4,6 +4,7 @@
 import {
   type Sketch, type Id, type Point, type Line, type Circle, type Arc, type Curve, type Constraint,
   type ConstraintDraft, type Dimension, type DistanceMode, type Sym, type SupportKind, type LeaderEnd,
+  type ArrowEnds, type Datum,
   ORIGIN, emptySketch, entity, point, constraint, symbol, symbolRefs, points, curves, curvePoints,
   constraintRefs, isDimension, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint,
   addSupport, addFrame, addSymbol, remove, serialize, deserialize, clone,
@@ -16,8 +17,8 @@ import {
 } from "./geom";
 import {
   type Prim, PAPER, mmPerUnit, figureWidth, geometryBox, buildPrims, dimensionPrims,
-  primDistance, textBox, distanceFrame, angleFrame, roundFrame, symbolPosition, balloonAnchor,
-  balloonRadius, curveParam, sideOfCurve, formatNumber,
+  primDistance, textCentre, distanceFrame, angleFrame, roundFrame, symbolPosition, balloonAnchor,
+  balloonRadius, curveParam, sideOfCurve, formatNumber, frameTips, arrowLabelAt,
 } from "./prims";
 import {
   type View, type Glyph, type Preview, type SnapMark, GLYPH_SIZE, PREVIEW_REF, toScreen, toModel,
@@ -28,8 +29,8 @@ import { type TrimPlan, planTrim, applyTrim } from "./trim";
 import { toSvg, toTikz } from "./export";
 import { icon } from "./icons";
 
-type DrawTool = "point" | "line" | "centerline" | "circle" | "arc";
-type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch";
+type DrawTool = "point" | "line" | "centerline" | "arrow" | "circle" | "arc";
+type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum";
 type Command =
   | "horizontal" | "vertical" | "parallel" | "perpendicular" | "equal" | "coincident"
   | "midpoint" | "tangent" | "fixed" | "dimension";
@@ -38,8 +39,8 @@ type Tool = "select" | DrawTool | "trim" | SymbolTool | Command;
 /** Sketch holds what shapes the geometry; Annotate what is added to the figure. */
 type Tab = "sketch" | "annotate";
 
-/** How a curve is drawn: a solid edge, a centre line, or a helper that is not exported. */
-type LineStyle = "solid" | "centre" | "construction";
+/** How a curve is drawn: a solid edge, a centre line, an arrow, or a helper that is not exported. */
+type LineStyle = "solid" | "centre" | "arrow" | "construction";
 
 /** Where a click lands once snapping has had its say. */
 interface Snap {
@@ -63,11 +64,17 @@ type DragState =
   /** `click`: what to select if the press turns out to be a click, not a drag. */
   | { kind: "box"; a: V; b: V; additive: boolean; click?: Id }
   | { kind: "move"; grabbed: Id; startScreen: V; startModel: V; targets: { id: Id; x: number; y: number }[]; rim?: Id; moved: boolean; collapse: boolean }
-  | { kind: "dim"; id: Id; startScreen: V; moved: boolean }
-  /** `origin`: where the symbol was when the drag began (a position, or a balloon's offset). */
-  | { kind: "sym"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean };
+  /** `onText`: the press was on the number, so a plain click opens it for typing. */
+  | { kind: "dim"; id: Id; startScreen: V; moved: boolean; onText: boolean }
+  /** `origin`: where the symbol was when the drag began (a position, or the offset of a balloon or a name). */
+  | { kind: "sym"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean }
+  /** Pulling the tip of one of a pair of axes; `slack` is how far from the tip it was grabbed, in mm. */
+  | { kind: "axis"; id: Id; axis: "x" | "y"; startScreen: V; slack: number; moved: boolean }
+  /** Moving the name of an arrow; `origin` is its offset from the arrow's middle when the drag began. */
+  | { kind: "label"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean };
 
-interface Hit { id: Id; kind: "point" | "glyph" | "dim" | "curve" | "sym" | "fill" }
+/** `part` and `text` describe the piece that was hit: which part of its owner, and whether it is text. */
+interface Hit { id: Id; kind: "point" | "glyph" | "dim" | "curve" | "sym" | "fill"; part?: string; text?: boolean }
 
 interface ToolDef {
   id: Tool;
@@ -105,6 +112,8 @@ const TOOLS: ToolDef[] = [
   { id: "roller", label: "Roller", icon: "roller", tab: "annotate", group: 2 },
   { id: "wall", label: "Fixed", icon: "wall", tab: "annotate", group: 2 },
   { id: "frame", label: "Axes", icon: "frame", tab: "annotate", group: 3 },
+  { id: "arrow", label: "Arrow", icon: "arrow", tab: "annotate", group: 3 },
+  { id: "datum", label: "Datum point", icon: "datum", tab: "annotate", group: 3 },
   { id: "centermark", label: "Centre mark", icon: "centermark", tab: "annotate", group: 3 },
   { id: "balloon", label: "Balloon", key: "B", icon: "balloon", tab: "annotate", group: 3 },
   { id: "fill", label: "Fill", icon: "fill", tab: "annotate", group: 4 },
@@ -116,7 +125,7 @@ const COMMAND_IDS: Command[] = [
 ];
 const isCommand = (t: Tool): t is Command => (COMMAND_IDS as Tool[]).includes(t);
 const isSymbolTool = (t: Tool): t is SymbolTool =>
-  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch"].includes(t);
+  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum"].includes(t);
 const toolDef = (t: Tool): ToolDef => TOOLS.find((d) => d.id === t)!;
 
 const RELATION_NAMES: Record<string, string> = {
@@ -128,6 +137,11 @@ const SUPPORT_NAMES: Record<SupportKind, string> = { pin: "Pin support", roller:
 /** Fill colours offered as swatches: light tones that print well under black lines. */
 const FILL_COLORS = ["#d5dbe1", "#eceff1", "#f6d9a8", "#f4b6a6", "#b9d7ee", "#bfe3c4", "#d9c8ea", "#8f9aa3"];
 const DEFAULT_HATCH = { spacing: 1.3, depth: 1.6 };
+/** Colours offered for datum points: strong ones, so the dot reads on top of the lines. */
+const DATUM_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#17201b"];
+/** Where a datum's name starts out, in mm from its point. */
+const DATUM_LABEL_OFFSET: V = [2.4, 2.4];
+const EXPORT_NAME_KEY = "mech-sketch.exportName";
 
 const AUTOSAVE_KEY = "mech-sketch.autosave";
 const POINT_TOL = 10;  // px
@@ -160,6 +174,13 @@ export class App {
   private freedom: Freedom | null = null;
   private freedomStale = true;
   private fillColor = FILL_COLORS[0];
+  private datumColor = DATUM_COLORS[0];
+  /** Print preview: only what is exported is drawn. */
+  private preview = false;
+  /** File name, without extension, offered for the next export. */
+  private exportName = "figure";
+  /** What the dimension box held when it opened, to tell an edit from a plain close. */
+  private editingInitial = "";
   /** What the Trim tool would remove under the pointer. */
   private trimPlan: TrimPlan | null = null;
   /** What is selected; while a command is active, the geometry picked for it so far. */
@@ -232,6 +253,7 @@ export class App {
     try {
       const saved = localStorage.getItem(AUTOSAVE_KEY);
       if (saved) this.sk = deserialize(saved);
+      this.exportName = localStorage.getItem(EXPORT_NAME_KEY) || this.exportName;
     } catch {
       this.sk = emptySketch();
     }
@@ -285,8 +307,8 @@ export class App {
 
   private draw(): void {
     const mm = mmPerUnit(this.sk);
-    this.prims = buildPrims(this.sk, mm, { editor: true });
-    this.glyphs = layoutGlyphs(this.sk, this.view);
+    this.prims = buildPrims(this.sk, mm, { editor: !this.preview });
+    this.glyphs = this.preview ? [] : layoutGlyphs(this.sk, this.view, this.glyphFilter());
 
     const related = new Set<Id>();
     for (const id of this.selection) {
@@ -299,9 +321,10 @@ export class App {
       sk: this.sk, view: this.view, mm, prims: [...this.prims, ...this.dimensionPreview(mm)], glyphs: this.glyphs,
       selection: this.selection, related, hover: this.hover,
       conflicting: new Set(this.result.conflicting), redundant: new Set(this.result.redundant),
-      freeIds: this.freeIds(), overlaps: findOverlaps(this.sk),
+      freeIds: this.preview ? new Set() : this.freeIds(), overlaps: findOverlaps(this.sk),
       preview: this.previewShapes(), snap: this.snapMark,
       box: this.drag?.kind === "box" ? { a: this.drag.a, b: this.drag.b } : null,
+      grips: this.grips(mm), plain: this.preview,
     });
 
     this.emptyEl.hidden = !this.isBlank() || this.pending !== null || this.tool !== "select";
@@ -311,7 +334,7 @@ export class App {
 
     const m = toModel(this.view, this.cursor);
     this.coordsEl.textContent = `x ${formatNumber(m[0])}   y ${formatNumber(m[1])}`;
-    this.hintEl.textContent = this.hintOverride ?? this.toolHint();
+    this.hintEl.textContent = this.hintOverride ?? (this.preview ? "Print preview: only what is exported is shown. Press Q to go back to editing." : this.toolHint());
 
     if (this.chromeDirty) {
       this.chromeDirty = false;
@@ -320,6 +343,42 @@ export class App {
       this.updateButtons();
     }
     if (this.editing) this.placeDimEditor();
+  }
+
+  /**
+   * Which constraint markers to draw: those on what is selected, the selected
+   * ones themselves, and any that conflict. The rest would only be clutter.
+   */
+  private glyphFilter(): (c: Constraint) => boolean {
+    const sel = this.selection;
+    const flagged = new Set<Id>([...this.result.conflicting, ...this.result.redundant]);
+    const lines: Line[] = [];
+    // Selected geometry, plus the points the selected curves are built on.
+    const active = new Set<Id>();
+    for (const id of sel) {
+      const e = entity(this.sk, id);
+      if (!e) continue;
+      active.add(id);
+      if (e.type === "line") lines.push(e);
+      if (e.type !== "point") curvePoints(e).forEach((p) => active.add(p));
+    }
+    return (c) => {
+      if (sel.has(c.id) || flagged.has(c.id)) return true;
+      if (c.type === "horizontal" || c.type === "vertical") {
+        // Held between two points: it belongs to those points and to the line that joins them,
+        // not to every other line that happens to share an end.
+        return sel.has(c.a) || sel.has(c.b) || lines.some((l) => (l.p1 === c.a && l.p2 === c.b) || (l.p1 === c.b && l.p2 === c.a));
+      }
+      return constraintRefs(c).some((r) => active.has(r));
+    };
+  }
+
+  /** Handles on the selected symbol: the tips of a pair of axes, which can be pulled. Screen pixels. */
+  private grips(mm: number): V[] {
+    const s = this.selectedSymbol();
+    if (!s || s.type !== "frame" || this.tool !== "select") return [];
+    const tips = frameTips(this.sk, s, mm);
+    return [tips.x, tips.y].filter((t): t is V => t !== null).map((t) => toScreen(this.view, [t[0] / mm, t[1] / mm]));
   }
 
   /**
@@ -358,6 +417,11 @@ export class App {
       case "point": return `Click to place a point. ${done}`;
       case "line":
       case "centerline":
+      case "arrow":
+        if (this.tool === "arrow") {
+          return p ? "Click where the arrow points. Hold Alt to switch snapping off."
+            : `Click where the arrow starts. It is constrained and dimensioned like a line. ${done}`;
+        }
         return p ? "Click where the line ends. Hold Alt to switch snapping off."
           : `Click where the ${this.tool === "line" ? "line" : "centre line"} starts. ${done}`;
       case "trim": return `Click the part of a line, circle or arc to remove, up to where other curves cross it. ${done}`;
@@ -376,6 +440,7 @@ export class App {
           : `Click what the balloon points at. ${done}`;
       case "fill": return `Click inside a closed shape to fill it. ${done}`;
       case "hatch": return `Click a line, arc or circle, on the side the hatching should go. ${done}`;
+      case "datum": return `Click where the datum point goes: a joint, a spot on a curve, or anywhere. ${done}`;
       case "dimension":
         return this.canApply("dimension")
           ? "Middle-click, or click empty space, where the dimension should go. Its position picks aligned, horizontal or vertical."
@@ -476,7 +541,7 @@ export class App {
       const d = primDistance(p, q) * pxPerMm - (p.k === "text" ? CURVE_TOL * 0.5 : 0);
       if (d >= CURVE_TOL) continue;
       const kind = p.layer === "dim" ? "dim" : p.layer === "sym" ? "sym" : "curve";
-      offer({ id: p.ref, kind }, 2, d);
+      offer({ id: p.ref, kind, part: p.part, text: p.k === "text" }, 2, d);
     }
     return [...found.values()].sort((a, b) => a.rank - b.rank || a.d - b.d);
   }
@@ -612,7 +677,7 @@ export class App {
       return;
     }
 
-    if (this.tool === "line" || this.tool === "centerline") {
+    if (this.tool === "line" || this.tool === "centerline" || this.tool === "arrow") {
       if (!p || p.tool !== "line") {
         this.pending = { tool: "line", start: snap };
         return;
@@ -624,6 +689,11 @@ export class App {
       const b = this.materialize(snap, autos);
       const line = addLine(this.sk, a, b);
       if (this.tool === "centerline") line.centre = true;
+      if (this.tool === "arrow") {
+        line.arrow = "end";
+        // Left selected, so its name can be typed in the panel straight away.
+        this.selection = new Set([line.id]);
+      }
       let axis = snap.axis;
       if (!axis && snap.pointId) {
         // Ending on an existing joint, such as when closing a rectangle: still
@@ -738,6 +808,23 @@ export class App {
     return String(max + 1);
   }
 
+  /** The next free name for a datum point: A, B, C and so on, then A_1, B_1. */
+  private nextDatumName(): string {
+    const used = new Set(this.sk.symbols.filter((s): s is Datum => s.type === "datum").map((s) => s.label.trim()));
+    for (let round = 0; round < 50; round++) {
+      for (let i = 0; i < 26; i++) {
+        const name = String.fromCharCode(65 + i) + (round ? `_{${round}}` : "");
+        if (!used.has(name)) return name;
+      }
+    }
+    return "";
+  }
+
+  /** The datum mark on a point, if it has one. */
+  private datumOn(pointId: Id): Datum | undefined {
+    return this.sk.symbols.find((s): s is Datum => s.type === "datum" && s.at === pointId);
+  }
+
   private symbolClick(sp: V): void {
     const tool = this.tool as SymbolTool;
     const raw = toModel(this.view, sp);
@@ -795,6 +882,24 @@ export class App {
       return this.commit();
     }
 
+    if (tool === "datum") {
+      const snap = this.snapAt(sp);
+      const autos: ConstraintDraft[] = [];
+      const at = this.materialize(snap, autos, true);
+      const existing = this.sk.symbols.find((x) => x.type === "datum" && x.at === at);
+      if (existing) {
+        this.selection = new Set([existing.id]);
+        return this.toast("That point is a datum point already.");
+      }
+      const d = addSymbol(this.sk, {
+        type: "datum", at, color: this.datumColor, label: this.nextDatumName(),
+        dx: DATUM_LABEL_OFFSET[0], dy: DATUM_LABEL_OFFSET[1],
+      });
+      this.finishDrawing(autos);
+      this.selection = new Set([d.id]);
+      return;
+    }
+
     if (tool === "centermark" || tool === "hatch") {
       const hit = this.hitTest(sp, true);
       const e = hit ? entity(this.sk, hit.id) : undefined;
@@ -830,7 +935,7 @@ export class App {
 
   /** Where a drag of a symbol starts from: its position, or for a balloon its offset. */
   private symbolDragOrigin(s: Sym): V {
-    return s.type === "balloon" ? [s.dx, s.dy] : symbolPosition(this.sk, s);
+    return s.type === "balloon" || s.type === "datum" ? [s.dx, s.dy] : symbolPosition(this.sk, s);
   }
 
   private dragSymbol(d: Extract<DragState, { kind: "sym" }>, sp: V): void {
@@ -846,8 +951,8 @@ export class App {
       const dir = sub(m, centre);
       // A support's ground side follows the pointer; a centre mark's first line points at it.
       s.angle = snapAngle(s.type === "support" ? Math.atan2(dir[0], -dir[1]) : angleOf(dir));
-    } else if (s.type === "balloon") {
-      // The balloon moves; what it points at stays.
+    } else if (s.type === "balloon" || s.type === "datum") {
+      // The balloon, or the datum's name, moves; what it belongs to stays.
       const moved = mul(sub(m, d.startModel), mm);
       s.dx = d.origin[0] + moved[0];
       s.dy = d.origin[1] + moved[1];
@@ -871,6 +976,40 @@ export class App {
         s.y = pos[1];
       }
     }
+  }
+
+  /** Pulls the tip of an axis along its own direction to set its length. */
+  private dragAxis(d: Extract<DragState, { kind: "axis" }>, sp: V): void {
+    const s = symbol(this.sk, d.id);
+    if (!s || s.type !== "frame") return;
+    const mm = mmPerUnit(this.sk);
+    const o = mul(symbolPosition(this.sk, s), mm);
+    const q = mul(toModel(this.view, sp), mm);
+    const ang = s.angle + (d.axis === "y" ? Math.PI / 2 : 0);
+    let size = dot(sub(q, o), [Math.cos(ang), Math.sin(ang)]) - d.slack;
+    if (!this.altKey) size = Math.round(size * 2) / 2; // half millimetres, unless Alt is held
+    size = Math.max(2, Math.min(200, size));
+    if (d.axis === "x") s.xSize = size;
+    else s.ySize = size;
+  }
+
+  /** Which axis tip of a pair of axes is under a screen position, if any. */
+  private axisTipAt(s: Sym, sp: V, hit: Hit): { axis: "x" | "y"; slack: number } | null {
+    if (s.type !== "frame") return null;
+    const mm = mmPerUnit(this.sk);
+    const tips = frameTips(this.sk, s, mm);
+    const o = mul(symbolPosition(this.sk, s), mm);
+    const q = mul(toModel(this.view, sp), mm);
+    for (const axis of ["x", "y"] as const) {
+      const tip = tips[axis];
+      if (!tip) continue;
+      const near = dist(toScreen(this.view, [tip[0] / mm, tip[1] / mm]), sp) < 10;
+      // The label sits at the tip, so grabbing it pulls the tip too.
+      if (!near && !(hit.text && hit.part === axis)) continue;
+      const dir = norm(sub(tip, o));
+      return { axis, slack: dot(sub(q, o), dir) - dist(tip, o) };
+    }
+    return null;
   }
 
   private rotateSelected(by: number): void {
@@ -949,10 +1088,27 @@ export class App {
     if (!wasSelected) this.selection = new Set([hit.id]);
 
     if (hit.kind === "dim") {
-      this.drag = { kind: "dim", id: hit.id, startScreen: sp, moved: false };
+      this.drag = { kind: "dim", id: hit.id, startScreen: sp, moved: false, onText: hit.text === true };
     } else if (hit.kind === "sym") {
       const s = symbol(this.sk, hit.id)!;
-      this.drag = { kind: "sym", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin: this.symbolDragOrigin(s), moved: false };
+      const tip = this.axisTipAt(s, sp, hit);
+      if (tip) {
+        this.drag = { kind: "axis", id: hit.id, axis: tip.axis, startScreen: sp, slack: tip.slack, moved: false };
+      } else if (s.type === "datum" && hit.part !== "label") {
+        // The dot is the point itself: dragging it moves the geometry.
+        this.selection = new Set([s.at]);
+        this.drag = this.startMove(s.at, sp, false);
+      } else {
+        this.drag = { kind: "sym", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin: this.symbolDragOrigin(s), moved: false };
+      }
+    } else if (hit.kind === "curve" && hit.part === "label") {
+      // The name of an arrow: it moves on its own, the arrow stays.
+      const l = entity(this.sk, hit.id) as Line;
+      const mm = mmPerUnit(this.sk);
+      const a = point(this.sk, l.p1), b = point(this.sk, l.p2);
+      const at = arrowLabelAt(this.sk, l, mm) ?? [0, 0];
+      const origin = sub(at, mul(mid([a.x, a.y], [b.x, b.y]), mm));
+      this.drag = { kind: "label", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin, moved: false };
     } else if (hit.kind !== "glyph") {
       this.drag = this.startMove(hit.id, sp, wasSelected && this.selection.size > 1);
     }
@@ -1007,6 +1163,20 @@ export class App {
       if (!d.moved && dist(sp, d.startScreen) < 3) return;
       d.moved = true;
       this.dragSymbol(d, sp);
+    } else if (d?.kind === "axis") {
+      if (!d.moved && dist(sp, d.startScreen) < 3) return;
+      d.moved = true;
+      this.dragAxis(d, sp);
+      this.chromeDirty = true;
+    } else if (d?.kind === "label") {
+      if (!d.moved && dist(sp, d.startScreen) < 3) return;
+      d.moved = true;
+      const l = entity(this.sk, d.id);
+      if (l?.type === "line") {
+        const moved = mul(sub(toModel(this.view, sp), d.startModel), mmPerUnit(this.sk));
+        l.lx = d.origin[0] + moved[0];
+        l.ly = d.origin[1] + moved[1];
+      }
     } else if (this.tool === "select") {
       this.hover = this.hitTest(sp)?.id ?? null;
     } else if (isCommand(this.tool)) {
@@ -1058,7 +1228,10 @@ export class App {
       } else if (d.collapse) {
         this.selection = new Set([d.grabbed]);
       }
-    } else if ((d.kind === "dim" || d.kind === "sym") && d.moved) {
+    } else if (d.kind === "dim" && !d.moved && d.onText && ev.type === "pointerup") {
+      // A click on the number, not a drag: type the new value where it stands.
+      this.openDimEditor(d.id);
+    } else if ((d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label") && d.moved) {
       this.commit();
     }
     this.touch();
@@ -1162,8 +1335,23 @@ export class App {
       const f = angleFrame(this.sk, d, mm);
       if (f) d.radius = Math.max(3, dist(q, f.vertex));
     } else {
+      // The far end of the leader follows the pointer: its direction, its
+      // length, and whether it is inside the circle or outside.
       const f = roundFrame(this.sk, d.target, mm);
-      if (f) d.angle = angleOf(sub(q, f.c));
+      if (!f) return;
+      const reach = dist(q, f.c);
+      if (reach < 1e-9) return;
+      d.angle = angleOf(sub(q, f.c));
+      const half = (v: number) => Math.max(2, this.altKey ? v : Math.round(v * 2) / 2);
+      if (reach > f.r + 1) {
+        d.outside = true;
+        d.len = half(reach - f.r);
+      } else if (reach < f.r - 1) {
+        delete d.outside;
+        // Close to the centre it snaps back to the usual leader from the centre.
+        if (reach < Math.max(1.5, f.r * 0.12)) delete d.len;
+        else d.len = half(f.r - reach);
+      }
     }
   }
 
@@ -1263,7 +1451,11 @@ export class App {
       const e = rounds[0];
       const c = point(this.sk, e.c);
       if (at && dist(at, xy(c)) > 1e-9) {
-        return { type: "radius", target: e.id, value: e.type === "circle" ? e.r : arcRadius(this.sk, e), angle: angleOf(sub(at, xy(c))) };
+        const r = e.type === "circle" ? e.r : arcRadius(this.sk, e);
+        const base = { type: "radius" as const, target: e.id, value: r, angle: angleOf(sub(at, xy(c))) };
+        // Placed beyond the rim, the dimension is drawn outside and reaches to the pointer.
+        const beyond = (dist(at, xy(c)) - r) * mm;
+        return beyond > 1 ? { ...base, outside: true, len: Math.max(2, Math.round(beyond * 2) / 2) } : base;
       }
       if (e.type === "circle") return { type: "radius", target: e.id, value: e.r, angle: Math.PI / 4 };
       const s = point(this.sk, e.p1), t = point(this.sk, e.p2);
@@ -1360,7 +1552,9 @@ export class App {
     if (!d || !isDimension(d)) return;
     this.editing = id;
     this.dimEditor.hidden = false;
-    this.dimEditor.value = this.shownValue(d);
+    // The box shows what the figure shows: the label when there is one, else the number.
+    this.editingInitial = d.label?.trim() || this.shownValue(d);
+    this.dimEditor.value = this.editingInitial;
     this.placeDimEditor();
     // Focus once the click that opened it has run its course; otherwise the
     // browser's own handling of that click takes the focus or the selection back.
@@ -1377,8 +1571,8 @@ export class App {
     const mm = mmPerUnit(this.sk);
     const text = dimensionPrims(this.sk, d, mm).find((p) => p.k === "text");
     if (!text || text.k !== "text") return;
-    const b = textBox(text);
-    const s = toScreen(this.view, [(b.x0 + b.x1) / 2 / mm, (b.y0 + b.y1) / 2 / mm]);
+    const centre = textCentre(text);
+    const s = toScreen(this.view, [centre[0] / mm, centre[1] / mm]);
     this.dimEditor.style.left = `${s[0]}px`;
     this.dimEditor.style.top = `${s[1]}px`;
   }
@@ -1386,9 +1580,28 @@ export class App {
   private commitDimEditor(): void {
     const id = this.editing;
     if (!id) return;
-    const text = this.dimEditor.value;
+    const text = this.dimEditor.value.trim().replace(/^\$+|\$+$/g, "");
+    const unchanged = text === this.editingInitial;
     this.closeDimEditor();
-    this.setDimValue(id, text);
+    const d = constraint(this.sk, id);
+    if (!d || !isDimension(d) || unchanged) return this.touch();
+    const label = d.label;
+    if (text === "") {
+      // Cleared: a label goes, and the number shows again.
+      if (label) { delete d.label; this.commit(); }
+    } else if (Number.isFinite(parseNumber(text))) {
+      // A number drives the geometry, and replaces a label that was shown instead.
+      delete d.label;
+      const same = Math.abs(parseNumber(text) * (d.type === "angle" ? DEG : 1) - d.value) < 1e-12;
+      const ok = this.setDimValue(id, text);
+      const now = constraint(this.sk, id);
+      if (!ok && label && now && isDimension(now)) now.label = label;
+      else if (ok && same && label) this.commit();
+    } else {
+      // Anything else is a label, shown instead of the number.
+      d.label = text;
+      this.commit();
+    }
     this.touch();
   }
 
@@ -1515,9 +1728,11 @@ export class App {
    * Adds constraints the user asked for. If the sketch no longer solves, or
    * they add nothing new, the sketch is put back and the reason is shown.
    */
-  private addManual(drafts: ConstraintDraft[], redundantMessage = "The sketch is already constrained that way."): Constraint[] | null {
+  private addManual(drafts: ConstraintDraft[], redundantMessage = "The sketch is already constrained that way.", replacing: Id[] = []): Constraint[] | null {
     const before = clone(this.sk);
     const baseline = this.result;
+    // Constraints the new ones say again, and more: they are taken out so the new ones are not refused as repeats.
+    if (replacing.length) this.sk.constraints = this.sk.constraints.filter((c) => !replacing.includes(c.id));
     const made = drafts.map((d) => addConstraint(this.sk, d));
     const r = this.solver.solve(this.sk);
     let problem: string | null = null;
@@ -1545,6 +1760,7 @@ export class App {
     }
     const { pts, lines, rounds } = this.picked();
     const drafts: ConstraintDraft[] = [];
+    const replacing: Id[] = [];
     switch (cmd) {
       case "horizontal":
       case "vertical":
@@ -1574,6 +1790,10 @@ export class App {
       case "midpoint":
         if (curvePoints(lines[0]).includes(pts[0].id)) return this.toast("An endpoint cannot be the midpoint of its own line.");
         drafts.push({ type: "midpoint", p: pts[0].id, l: lines[0].id });
+        // A point already held on the line (a member that ends on it, say) is promoted to its midpoint.
+        for (const c of this.sk.constraints) {
+          if (c.type === "pointOn" && c.p === pts[0].id && c.on === lines[0].id) replacing.push(c.id);
+        }
         break;
       case "tangent":
         drafts.push({ type: "tangent", l: lines[0].id, c: rounds[0].id });
@@ -1594,7 +1814,7 @@ export class App {
         break;
       }
     }
-    this.addManual(drafts);
+    this.addManual(drafts, undefined, replacing);
   }
 
   private deleteSelection(): void {
@@ -1645,12 +1865,64 @@ export class App {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
+  /**
+   * Saves an exported file under a name the user chooses. Where the browser
+   * has a save dialog it is used, so the folder can be picked too; elsewhere
+   * the name is asked for here and the file is downloaded.
+   */
+  private async saveAs(text: string, ext: string, mime: string, what: string): Promise<void> {
+    const clean = (name: string) => {
+      let base = name.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, "");
+      if (base.toLowerCase().endsWith(ext)) base = base.slice(0, -ext.length);
+      return base.replace(/[. ]+$/, "");
+    };
+    const remember = (base: string) => {
+      this.exportName = base;
+      try { localStorage.setItem(EXPORT_NAME_KEY, base); } catch { /* storage unavailable */ }
+    };
+    type SaveHandle = { name: string; createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void> }> };
+    const picker = (window as unknown as { showSaveFilePicker?: (o: object) => Promise<SaveHandle> }).showSaveFilePicker;
+    if (picker) {
+      try {
+        const handle = await picker.call(window, { suggestedName: this.exportName + ext, types: [{ description: what, accept: { [mime]: [ext] } }] });
+        const out = await handle.createWritable();
+        await out.write(text);
+        await out.close();
+        remember(clean(handle.name) || this.exportName);
+        return this.toast(`Saved ${handle.name}.`);
+      } catch (err) {
+        if ((err as DOMException)?.name === "AbortError") return; // the dialog was cancelled
+        // The dialog is not allowed here (an embedded page, say): fall through to a download.
+      }
+    }
+    const typed = await this.askName(ext, what);
+    if (typed === null) return;
+    const base = clean(typed) || "figure";
+    remember(base);
+    this.download(base + ext, text, mime);
+  }
+
+  /** Asks for a file name in a small dialog. Resolves to null when it is cancelled. */
+  private askName(ext: string, what: string): Promise<string | null> {
+    const dialog = $<HTMLDialogElement>("#name-dialog");
+    const input = $<HTMLInputElement>("#name-input");
+    $("#name-title").textContent = `Export ${what}`;
+    $("#name-ext").textContent = ext;
+    input.value = this.exportName;
+    return new Promise((resolve) => {
+      dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? input.value : null), { once: true });
+      dialog.returnValue = "";
+      dialog.showModal();
+      input.select();
+    });
+  }
+
   /** Exports the figure. `how` picks the format and whether it is saved or copied. */
   private async exportFigure(how: "svg" | "tikz" | "copy-tikz"): Promise<void> {
     const text = how === "svg" ? toSvg(this.sk) : toTikz(this.sk);
     if (!text) return this.toast("There is nothing to export yet.");
-    if (how === "svg") return this.download("figure.svg", text, "image/svg+xml");
-    if (how === "tikz") return this.download("figure.tex", text, "text/x-tex");
+    if (how === "svg") return this.saveAs(text, ".svg", "image/svg+xml", "SVG image");
+    if (how === "tikz") return this.saveAs(text, ".tex", "text/x-tex", "TikZ picture");
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -1724,6 +1996,7 @@ export class App {
       `<button type="button" class="icon-btn" data-act="undo" aria-label="Undo" title="Undo (Ctrl+Z)">${icon("undo")}</button>` +
       `<button type="button" class="icon-btn" data-act="redo" aria-label="Redo" title="Redo (Ctrl+Y)">${icon("redo")}</button>` +
       `<span class="rule"></span>` +
+      `<button type="button" class="icon-btn" data-act="preview" aria-label="Print preview" title="Print preview: hide everything that is not exported (Q)">${icon("eye")}</button>` +
       `<button type="button" class="icon-btn" data-act="origin" aria-label="Show origin axes" title="Show or hide the axes at the origin">${icon("frame")}</button>` +
       `<button type="button" class="icon-btn" data-act="fit" aria-label="Zoom to fit" title="Zoom to fit (0)">${icon("fit")}</button>`;
     this.buildRibbon();
@@ -1766,6 +2039,7 @@ export class App {
     $<HTMLButtonElement>('[data-act="undo"]').disabled = !this.history.canUndo;
     $<HTMLButtonElement>('[data-act="redo"]').disabled = !this.history.canRedo;
     $<HTMLButtonElement>('[data-act="origin"]').setAttribute("aria-pressed", String(this.sk.showOrigin));
+    $<HTMLButtonElement>('[data-act="preview"]').setAttribute("aria-pressed", String(this.preview));
   }
 
   private drawTitleblock(mm: number): void {
@@ -1817,7 +2091,8 @@ export class App {
     }).join("")}</ul>`;
   }
 
-  private symbolPanel(s: Sym): string {
+  /** `extra` goes in above the Delete button. */
+  private symbolPanel(s: Sym, extra = ""): string {
     const degrees = (angle: number) => formatNumber(Number((angle / DEG).toFixed(2)));
     const mm = (v: number) => formatNumber(Number(v.toFixed(2)));
     const text = (label: string, field: string, value: string, note = "") =>
@@ -1846,7 +2121,7 @@ export class App {
         html += number("Second axis length (mm on paper)", "sym-ysize", mm(s.ySize), "Set a length to 0 to leave that axis out.");
         html += number("Rotation (degrees)", "sym-angle", degrees(s.angle));
         html += rotate;
-        html += `<p class="muted note-block">${s.at ? "Pinned to a joint; it moves with it. Drag it away to free it." : "Drag it anywhere. Dropped on a joint, it stays pinned there."}</p>`;
+        html += `<p class="muted note-block">Drag an arrow tip to make that axis longer or shorter. ${s.at ? "The axes are pinned to a joint and move with it; drag them away to free them." : "Drag the axes anywhere. Dropped on a joint, they stay pinned there."}</p>`;
         break;
       case "centermark":
         html += `<h2>Centre mark</h2>`;
@@ -1859,6 +2134,7 @@ export class App {
         html += text("Text", "sym-text", s.text, "A part number, or any TeX math.");
         html += `<div class="field"><span id="end-label">Leader ends in</span><div class="segmented" role="group" aria-labelledby="end-label">${ends.map(([e, name]) =>
           `<button type="button" data-end="${e}" aria-pressed="${s.end === e}">${name}</button>`).join("")}</div></div>`;
+        html += `<label class="check"><input data-field="sym-circle" type="checkbox"${s.circle !== false ? " checked" : ""}><span>Circle around the text</span></label>`;
         html += `<p class="muted note-block">Drag the balloon to move it; its leader keeps pointing at the same spot.</p>`;
         break;
       }
@@ -1874,9 +2150,19 @@ export class App {
         html += number("Stroke length (mm on paper)", "sym-depth", mm(s.depth), "Dragging the hatching away from the curve sets this too.");
         html += number("Spacing (mm on paper)", "sym-spacing", mm(s.spacing));
         html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
+        html += `<button type="button" class="plain" data-act="lean">Lean the strokes the other way</button>`;
+        break;
+      case "datum":
+        html += `<h2>Datum point</h2>`;
+        html += text("Name", "sym-label", s.label, "Written as TeX math. Leave empty for none. Drag the name on the drawing to move it.");
+        html += `<div class="field"><span id="colour-label">Colour</span><div class="swatches" role="group" aria-labelledby="colour-label">${DATUM_COLORS.map((c) =>
+          `<button type="button" class="swatch" data-color="${c}" aria-pressed="${s.color === c}" aria-label="Colour ${c}" title="${c}" style="background:${c}"></button>`).join("")}` +
+          `<label class="swatch custom" title="Another colour"><input data-field="sym-color" type="color" value="${esc(s.color)}" aria-label="Another colour"></label></div></div>`;
+        html += `<p class="muted note-block">The dot and its name are part of the exported figure. The point under it is constrained and dimensioned like any other.</p>`;
+        html += `<button type="button" class="plain" data-act="undatum">Back to a plain point</button>`;
         break;
     }
-    return html + `<button type="button" class="danger" data-act="delete">Delete</button>`;
+    return html + extra + `<button type="button" class="danger" data-act="delete">Delete</button>`;
   }
 
   private drawPanel(): void {
@@ -1897,16 +2183,34 @@ export class App {
       const d = cons[0];
       html += `<h2>${RELATION_NAMES[d.type]}</h2>`;
       html += `<label class="field"><span>Value${d.type === "angle" ? " (degrees)" : ""}</span><input data-field="value" type="text" inputmode="decimal" value="${this.shownValue(d)}"></label>`;
-      html += `<label class="field"><span>Label</span><input data-field="label" type="text" spellcheck="false" placeholder="2a, F_1, \\alpha" value="${esc(d.label ?? "")}"><small>Shown in the figure instead of the number. Written as TeX math.</small></label>`;
+      html += `<label class="field"><span>Label</span><input data-field="label" type="text" spellcheck="false" placeholder="2a, F_1, \\alpha" value="${esc(d.label ?? "")}"><small>Shown in the figure instead of the number. Written as TeX math; spaces you type are kept. Clicking the number on the drawing edits it in place.</small></label>`;
       if (d.type === "distance") {
         const modes: [DistanceMode, string][] = [["aligned", "Aligned"], ["horizontal", "Horizontal"], ["vertical", "Vertical"]];
         html += `<div class="field"><span id="mode-label">Measured</span><div class="segmented" role="group" aria-labelledby="mode-label">${modes.map(([m, name]) =>
           `<button type="button" data-mode="${m}" aria-pressed="${d.mode === m}">${name}</button>`).join("")}</div></div>`;
+        if (d.mode !== "horizontal") {
+          const along = (d.text ?? (d.mode === "aligned" ? "along" : "upright")) === "along";
+          html += `<label class="check"><input data-field="along" type="checkbox"${along ? " checked" : ""}><span>Turn the text along the dimension line</span></label>`;
+        }
+      }
+      if (d.type === "radius") {
+        html += `<div class="field"><span id="place-label">Drawn</span><div class="segmented" role="group" aria-labelledby="place-label">` +
+          `<button type="button" data-place="inside" aria-pressed="${!d.outside}">Inside</button>` +
+          `<button type="button" data-place="outside" aria-pressed="${!!d.outside}">Outside</button></div></div>`;
+        const shown = d.len !== undefined ? formatNumber(Number(d.len.toFixed(2))) : d.outside ? formatNumber(PAPER.radiusLeader) : "";
+        html += `<label class="field"><span>Arrow length (mm on paper)</span><input data-field="radius-len" type="text" inputmode="decimal" value="${shown}"${d.outside ? "" : ` placeholder="from the centre"`}>` +
+          `<small>${d.outside ? "" : "Empty: the arrow starts at the centre. "}Dragging the dimension sets the length too, and pulling it across the rim moves it inside or outside.</small></label>`;
       }
       html += `<label class="check"><input data-field="hidden" type="checkbox"${d.hidden ? " checked" : ""}><span>Leave out of the figure</span></label>`;
       html += `<button type="button" class="danger" data-act="delete">Delete dimension</button>`;
     } else if (syms.length === 1 && entities === 0 && !cons.length) {
       html += this.symbolPanel(syms[0]);
+    } else if (entities === 1 && pts.length === 1 && !syms.length && !cons.length && this.datumOn(pts[0].id)) {
+      // The dot of a datum point is the point itself: show the datum, with what holds the point.
+      const attached = this.sk.constraints.filter((c) => constraintRefs(c).includes(pts[0].id));
+      const extra = `<p class="muted">x ${formatNumber(pts[0].x)}, y ${formatNumber(pts[0].y)}</p>` +
+        `<h3>Constraints on the point</h3>${attached.length ? this.constraintRows(attached) : `<p class="muted">None yet.</p>`}`;
+      html += this.symbolPanel(this.datumOn(pts[0].id)!, extra);
     } else if (cons.length >= 1 && entities === 0 && !syms.length) {
       html += `<h2>${cons.length === 1 ? RELATION_NAMES[cons[0].type] : `${cons.length} constraints`}</h2>`;
       html += this.constraintRows(cons);
@@ -1929,12 +2233,21 @@ export class App {
       }
       const cs: Curve[] = [...lines, ...rounds];
       if (cs.length) {
-        const styleOf = (c: Curve): LineStyle => (c.construction ? "construction" : c.centre ? "centre" : "solid");
+        const styleOf = (c: Curve): LineStyle => (c.construction ? "construction" : c.type === "line" && c.arrow ? "arrow" : c.centre ? "centre" : "solid");
         const shared = cs.every((c) => styleOf(c) === styleOf(cs[0])) ? styleOf(cs[0]) : null;
         const styles: [LineStyle, string][] = [["solid", "Solid"], ["centre", "Centre line"], ["construction", "Helper"]];
-        html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented" role="group" aria-labelledby="style-label">${styles.map(([st, name]) =>
+        // Only a straight line can be an arrow.
+        if (!rounds.length) styles.splice(2, 0, ["arrow", "Arrow"]);
+        html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented wrap" role="group" aria-labelledby="style-label">${styles.map(([st, name]) =>
           `<button type="button" data-style="${st}" aria-pressed="${shared === st}">${name}</button>`).join("")}</div>` +
           `<small>A centre line is thin and dash-dotted. A helper is dashed here and left out of the exported figure.</small></div>`;
+        const arrow = cs.length === 1 && lines.length === 1 && lines[0].arrow ? lines[0] : null;
+        if (arrow) {
+          const heads: [ArrowEnds, string][] = [["end", "End"], ["start", "Start"], ["both", "Both"]];
+          html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="F, \\vec{v}_0" value="${esc(arrow.label ?? "")}"><small>Written as TeX math. Drag the name on the drawing to move it.</small></label>`;
+          html += `<div class="field"><span id="head-label">Arrowhead at the</span><div class="segmented" role="group" aria-labelledby="head-label">${heads.map(([h, name]) =>
+            `<button type="button" data-head="${h}" aria-pressed="${arrow.arrow === h}">${name}</button>`).join("")}</div></div>`;
+        }
       }
       if (entities > 0) {
         const ids = new Set<Id>([...this.selection]);
@@ -2004,7 +2317,10 @@ export class App {
       else if (ds.kind) this.setSupportKind(ds.kind as SupportKind);
       else if (ds.style) this.setLineStyle(ds.style as LineStyle);
       else if (ds.end) this.editSymbol((x) => { if (x.type === "balloon") x.end = ds.end as LeaderEnd; });
-      else if (ds.color) this.setFillColor(ds.color);
+      else if (ds.color) this.setColor(ds.color);
+      else if (ds.head) this.setArrowHead(ds.head as ArrowEnds);
+      else if (ds.place) this.setRadiusPlace(ds.place === "outside");
+      else if (ds.dialog === "cancel") btn.closest("dialog")?.close("cancel");
       else if (ds.act) this.action(ds.act);
     });
 
@@ -2086,6 +2402,19 @@ export class App {
       case "rotate": return this.rotateSelected(Math.PI / 2);
       case "flip":
         return this.editSymbol((x) => { if (x.type === "hatch") x.side = x.side === 1 ? -1 : 1; });
+      case "lean":
+        return this.editSymbol((x) => { if (x.type === "hatch") x.lean = (x.lean ?? 1) === 1 ? -1 : 1; });
+      case "undatum": {
+        // The mark goes; the point it was on stays.
+        const d = this.selectedSymbol();
+        if (d?.type !== "datum") return;
+        remove(this.sk, [d.id]);
+        this.selection = new Set([d.at]);
+        return this.commit();
+      }
+      case "preview":
+        this.preview = !this.preview;
+        return this.touch();
       case "origin":
         this.sk.showOrigin = !this.sk.showOrigin;
         return this.commit();
@@ -2098,9 +2427,11 @@ export class App {
     return c && isDimension(c) ? c : null;
   }
 
+  /** The one selected symbol. A datum point counts when its point is what is selected. */
   private selectedSymbol(): Sym | null {
     if (this.selection.size !== 1) return null;
-    return symbol(this.sk, [...this.selection][0]) ?? null;
+    const id = [...this.selection][0];
+    return symbol(this.sk, id) ?? this.datumOn(id) ?? null;
   }
 
   /** Sets how the selected curves are drawn. */
@@ -2109,9 +2440,30 @@ export class App {
     for (const c of [...lines, ...rounds]) {
       delete c.construction;
       delete c.centre;
+      if (c.type === "line" && style !== "arrow") delete c.arrow;
       if (style === "construction") c.construction = true;
       if (style === "centre") c.centre = true;
+      if (style === "arrow" && c.type === "line") c.arrow ??= "end";
     }
+    this.commit();
+  }
+
+  /** Sets which end of the selected arrow carries the head. */
+  private setArrowHead(ends: ArrowEnds): void {
+    const { lines } = this.picked();
+    if (lines.length !== 1 || !lines[0].arrow) return;
+    lines[0].arrow = ends;
+    this.commit();
+  }
+
+  /** Moves the selected radius dimension inside or outside its circle. */
+  private setRadiusPlace(outside: boolean): void {
+    const d = this.selectedDimension();
+    if (!d || d.type !== "radius" || !!d.outside === outside) return;
+    if (outside) d.outside = true;
+    else delete d.outside;
+    // A length set for one side would make little sense on the other.
+    delete d.len;
     this.commit();
   }
 
@@ -2123,11 +2475,13 @@ export class App {
     this.commit();
   }
 
-  /** Colours the selected fill, and remembers the colour for the next one. */
-  private setFillColor(color: string): void {
+  /** Colours the selected fill or datum point, and remembers the colour for the next one of its kind. */
+  private setColor(color: string): void {
     if (!/^#[0-9a-f]{6}$/i.test(color)) return;
-    this.fillColor = color;
-    this.editSymbol((x) => { if (x.type === "fill") x.color = color; });
+    const s = this.selectedSymbol();
+    if (s?.type === "datum") this.datumColor = color;
+    else this.fillColor = color;
+    this.editSymbol((x) => { if (x.type === "fill" || x.type === "datum") x.color = color; });
   }
 
   private setSupportKind(kind: SupportKind): void {
@@ -2185,7 +2539,11 @@ export class App {
       } else if (s.type === "frame" && field === "sym-xlabel") s.xLabel = label;
       else if (s.type === "frame" && field === "sym-ylabel") s.yLabel = label;
       else if (s.type === "balloon" && field === "sym-text") s.text = label;
-      else if (s.type === "fill" && field === "sym-color") return this.setFillColor(input.value);
+      else if (s.type === "balloon" && field === "sym-circle") {
+        if (input.checked) delete s.circle;
+        else s.circle = false;
+      } else if (s.type === "datum" && field === "sym-label") s.label = label;
+      else if ((s.type === "fill" || s.type === "datum") && field === "sym-color") return this.setColor(input.value);
       else if (s.type === "hatch" && field === "sym-depth") {
         const depth = length(0.3, 30, "Stroke length");
         if (depth === null) return this.touch();
@@ -2198,8 +2556,28 @@ export class App {
       return this.commit();
     }
 
+    if (field === "arrow-label") {
+      const { lines } = this.picked();
+      if (lines.length !== 1) return;
+      const name = input.value.trim().replace(/^\$+|\$+$/g, "");
+      if (name) lines[0].label = name;
+      else delete lines[0].label;
+      return this.commit();
+    }
+
     const d = this.selectedDimension();
     if (!d) return;
+    if (field === "along" && d.type === "distance") {
+      d.text = input.checked ? "along" : "upright";
+      return this.commit();
+    }
+    if (field === "radius-len" && d.type === "radius") {
+      const v = parseNumber(input.value);
+      if (input.value.trim() === "") delete d.len;
+      else if (Number.isFinite(v) && v >= 1 && v <= 300) d.len = v;
+      else { this.toast("The arrow length must be between 1 and 300 mm."); return this.touch(); }
+      return this.commit();
+    }
     if (field === "value") {
       if (!this.setDimValue(d.id, input.value)) input.value = this.shownValue(d);
       this.touch();
@@ -2303,6 +2681,10 @@ export class App {
     if (key === "R" && this.tool === "select" && this.picked().syms.length) {
       e.preventDefault();
       return this.rotateSelected(e.shiftKey ? -Math.PI / 2 : Math.PI / 2);
+    }
+    if (key === "Q") {
+      e.preventDefault();
+      return this.action("preview");
     }
     const tool = TOOLS.find((t) => t.key === key);
     if (!tool) return;

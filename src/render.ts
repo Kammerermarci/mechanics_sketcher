@@ -5,7 +5,7 @@ import {
   type Sketch, type Id, type Constraint, type Curve, ORIGIN, entity, point, isDimension, arcRadius, isFixed,
 } from "./model";
 import { type V, add, sub, mul, norm, perp, mid, polar, wrap, projectOnSegment, TWO_PI } from "./geom";
-import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_MM, STROKE_DASH, arrowHeads, textBox } from "./prims";
+import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_MM, STROKE_DASH, arrowHeads, strokedEnds, textBox } from "./prims";
 import type { Overlaps } from "./regions";
 import { texEngine } from "./tex";
 import { ICONS } from "./icons";
@@ -66,6 +66,10 @@ export interface Scene {
   snap: SnapMark | null;
   /** Selection rectangle in screen pixels. */
   box: { a: V; b: V } | null;
+  /** Handles to drag on the selected symbol, in screen pixels. */
+  grips: V[];
+  /** Print preview: only what is exported is drawn, with no grid, handles or markers. */
+  plain: boolean;
 }
 
 export const GLYPH_SIZE = 18;
@@ -84,7 +88,8 @@ function upward(n: V): V {
   return n[1] > 1e-9 || (Math.abs(n[1]) <= 1e-9 && n[0] < 0) ? mul(n, -1) : n;
 }
 
-export function layoutGlyphs(sk: Sketch, view: View): Glyph[] {
+/** Lays out a marker for every constraint that `show` lets through. */
+export function layoutGlyphs(sk: Sketch, view: View, show: (c: Constraint) => boolean = () => true): Glyph[] {
   const out: Glyph[] = [];
   const used = new Map<string, number>();
   const S = (id: Id): V => { const p = point(sk, id); return toScreen(view, [p.x, p.y]); };
@@ -130,7 +135,7 @@ export function layoutGlyphs(sk: Sketch, view: View): Glyph[] {
   };
 
   for (const c of sk.constraints) {
-    if (isDimension(c)) continue;
+    if (isDimension(c) || !show(c)) continue;
     switch (c.type) {
       case "fixed": atPoint(c, c.p); break;
       case "coincident": atPoint(c, c.a); break;
@@ -171,7 +176,8 @@ function gridStep(scale: number): number {
   return 10 * pow;
 }
 
-function background(view: View, showOrigin: boolean): string {
+function background(view: View, showOrigin: boolean, plain: boolean): string {
+  if (plain) return `<rect class="sheet" width="${view.w}" height="${view.h}"/>`;
   const step = gridStep(view.scale) * view.scale;
   const o = toScreen(view, [0, 0]);
   const ox = ((o[0] % step) + step) % step - step / 2;
@@ -198,6 +204,7 @@ function primClass(s: Scene, p: Prim): string {
   // rules for drawn shapes do not leak into it.
   const cls = p.k === "text" ? ["tex", p.layer] : p.k === "region" ? ["region"] : ["prim", p.layer, p.stroke];
   if ((p.k === "circle" || p.k === "poly") && p.fill) cls.push(p.fill === "ink" ? "solid" : "filled");
+  if (p.color) cls.push("tinted");
   if (p.ghost) cls.push("ghost");
   const id = p.ref;
   if (p.layer === "geom") cls.push(id && s.freeIds.has(id) ? "free" : "defined");
@@ -265,14 +272,21 @@ function drawPrims(s: Scene): string {
     if (p.k === "text") {
       const b = textBox(p);
       const topLeft = M([b.x0, b.y1]);
-      out += engine.svg(p.tex, topLeft[0], topLeft[1], PAPER.em * pxPerMm, cls);
+      const glyphs = engine.svg(p.tex, topLeft[0], topLeft[1], PAPER.em * pxPerMm, cls);
+      if (p.rot && glyphs) {
+        // Counter-clockwise on paper is a negative angle on the y-down screen.
+        const at = M(p.at);
+        out += `<g transform="rotate(${n2((-p.rot * 180) / Math.PI)} ${n2(at[0])} ${n2(at[1])})">${glyphs}</g>`;
+      } else out += glyphs;
       continue;
     }
     const dash = STROKE_DASH[p.stroke];
+    // The colour goes in as a variable, so the highlight rules for selection and hover still win.
     const sw = `stroke-width="${n2(strokePx(p.stroke, pxPerMm))}"` +
-      (dash ? ` stroke-dasharray="${dash.map((d) => n2(d * pxPerMm)).join(" ")}"` : "");
+      (dash ? ` stroke-dasharray="${dash.map((d) => n2(d * pxPerMm)).join(" ")}"` : "") +
+      (p.color ? ` style="--tint:${p.color}"` : "");
     if (p.k === "line") {
-      const a = M(p.a), b = M(p.b);
+      const [a, b] = strokedEnds(p).map(M);
       out += `<line class="${cls}" x1="${n2(a[0])}" y1="${n2(a[1])}" x2="${n2(b[0])}" y2="${n2(b[1])}" ${sw}/>`;
     } else if (p.k === "circle") {
       const c = M(p.c);
@@ -293,6 +307,9 @@ function drawPrims(s: Scene): string {
 
 function drawHandles(s: Scene): string {
   let out = "";
+  // A datum point shows its coloured dot: its handle is a ring around the dot, not a disc over it.
+  const datums = new Set(s.sk.symbols.filter((x) => x.type === "datum").map((x) => (x as { at: Id }).at));
+  const dotPx = (PAPER.datumRadius * s.view.scale) / s.mm;
   for (const e of s.sk.entities) {
     if (e.type !== "point") continue;
     const p = toScreen(s.view, [e.x, e.y]);
@@ -310,9 +327,18 @@ function drawHandles(s: Scene): string {
     }
     if (isFixed(s.sk, e.id)) cls.push("fixed");
     if (!s.freeIds.has(e.id)) cls.push("defined");
+    if (datums.has(e.id)) {
+      cls.push("ring");
+      out += `<circle class="${cls.join(" ")}" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${n2(Math.max(4.6, dotPx + 2.2) + (lit ? 1.2 : 0))}"/>`;
+      continue;
+    }
     out += `<circle class="${cls.join(" ")}" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${lit ? 4.6 : 3.4}"/>`;
   }
   return out;
+}
+
+function drawGrips(s: Scene): string {
+  return s.grips.map((g) => `<rect class="grip" x="${n2(g[0] - 4)}" y="${n2(g[1] - 4)}" width="8" height="8" rx="1.5"/>`).join("");
 }
 
 /** Red over the stretches where two curves share the same space. */
@@ -395,5 +421,6 @@ export function renderScene(s: Scene): string {
     const x = Math.min(s.box.a[0], s.box.b[0]), y = Math.min(s.box.a[1], s.box.b[1]);
     box = `<rect class="marquee" x="${n2(x)}" y="${n2(y)}" width="${n2(Math.abs(s.box.a[0] - s.box.b[0]))}" height="${n2(Math.abs(s.box.a[1] - s.box.b[1]))}"/>`;
   }
-  return background(s.view, s.sk.showOrigin) + drawPrims(s) + drawOverlaps(s) + drawHandles(s) + drawGlyphs(s) + drawPreview(s) + drawSnap(s) + box;
+  if (s.plain) return background(s.view, false, true) + drawPrims(s) + drawGrips(s) + drawPreview(s) + drawSnap(s) + box;
+  return background(s.view, s.sk.showOrigin, false) + drawPrims(s) + drawOverlaps(s) + drawHandles(s) + drawGlyphs(s) + drawGrips(s) + drawPreview(s) + drawSnap(s) + box;
 }

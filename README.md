@@ -36,30 +36,51 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
    two crossings to be trimmed and becomes an arc.
 2. **Constrain.** Press a constraint, then click the geometry it applies to. It
    is applied as soon as it has what it needs, and the tool stays active for
-   the next one. (Selecting the geometry first works too.)
+   the next one. (Selecting the geometry first works too.) The small green
+   markers of the constraints show only for what is selected, so the drawing
+   stays clean; the side panel lists all of them when nothing is selected.
 3. **Dimension.** Press D, click a line (or two points, two lines, a circle),
    then middle-click where the dimension should go and type the value. For a
    slanted line the position picks the kind: beside it measures its length,
    above or below the horizontal distance, left or right the vertical one.
-   Double-click a dimension to change it later; drag it to move it. In the
-   side panel a dimension can get a TeX label (`2a`, `\alpha`), shown instead
-   of the number, or be left out of the figure.
+   Click the number of a dimension to change it right there: a number sets
+   the value, anything else (`2a`, `\alpha`, `F = 10`) becomes a label shown
+   instead of the number. Spaces typed in a label are kept. Drag a dimension
+   to move it. The text of an aligned dimension is turned to run along its
+   line; a checkbox in the side panel switches that on or off. A radius
+   dimension can sit inside the circle or outside it: drag it across the rim,
+   and drag further to make its arrow longer or shorter. Dimensions can also
+   be left out of the figure.
 4. **Annotate.**
    - *Supports:* pick Pin, Roller or Fixed and click a joint. Drag a support
      around its joint, or press R, to turn it.
    - *Axes:* placed anywhere; dropped on a joint they stay pinned to it. Each
-     axis has its own length and label.
+     axis has its own length and label; drag an arrow tip to change the
+     length.
+   - *Arrow:* drawn with two clicks like a line, and constrained and
+     dimensioned like one. It can have a name (TeX), which is dragged to
+     where it should sit, and a head at either end or both. Any line can be
+     turned into an arrow in the side panel.
+   - *Datum point:* a coloured dot with a name (A, B, C ...) on a joint, on a
+     curve or anywhere. The point under it is ordinary geometry. Pick the
+     colour in the side panel and drag the name to move it.
    - *Centre mark:* click a circle or arc.
    - *Balloon (B):* click what it points at, then where the balloon goes.
-     Numbers count up on their own; the text can be any TeX.
+     Numbers count up on their own; the text can be any TeX, and the circle
+     can be switched off.
    - *Fill:* click inside a closed shape. A circle inside it is left as a hole.
      The shape's lines have to meet at shared points.
    - *Hatching:* click a line, arc or circle on the side the strokes should
-     go. Drag it away from the curve to make the strokes longer.
+     go. Drag it away from the curve to make the strokes longer; the side
+     panel moves it to the other side or leans the strokes the other way.
 
 **The middle mouse button confirms**, as in Creo: it places the dimension,
 accepts a typed value, drops a shape that is only half drawn, and with
 nothing in progress returns to Select. Dragging with it pans. Esc or right-click cancels.
+
+**Print preview.** Q, or the eye button in the top right, hides everything
+that is not exported: helper geometry, point handles, constraint markers, the
+grid and the origin. Press it again to carry on editing.
 
 **Colours while sketching.** A curve is blue while it can still move and
 turns black once it is fully constrained; the box in the corner counts the
@@ -84,11 +105,15 @@ The **Export** menu in the top bar writes the figure as it will appear on
 paper: geometry, centre lines, dimensions, labels and symbols, without helper
 geometry, the origin, constraint markers or hidden dimensions.
 
-- **SVG** saves `figure.svg`, sized in millimetres. Labels are outlines, so
+- **SVG** saves an `.svg` file sized in millimetres. Labels are outlines, so
   it needs no fonts.
-- **TikZ** saves `figure.tex`, a `tikzpicture` to `\input`. **Copy TikZ** puts
-  the same text on the clipboard. Labels are passed on as typed, so LaTeX
-  sets them in the document's own font.
+- **TikZ** saves a `.tex` file with a `tikzpicture` to `\input`. **Copy
+  TikZ** puts the same text on the clipboard. Labels are passed on as typed,
+  so LaTeX sets them in the document's own font.
+
+Saving asks for a file name: with the browser's own save dialog where there
+is one (Chrome, Edge), so the folder can be chosen too, and otherwise with a
+small prompt before the download. The last name is offered again next time.
 
 ```latex
 \usepackage{tikz}
@@ -108,6 +133,7 @@ of the picture and can be changed there.
 | --- | --- | --- | --- |
 | L, C, A, P | Line, circle, arc, point | D | Dimension |
 | X | Trim | B | Balloon |
+| Q | Print preview on and off | | |
 | H, V | Horizontal, vertical | E | Equal |
 | O | Coincident / point on curve | M | Midpoint |
 | T | Tangent | F | Fix or release a point |
@@ -154,11 +180,13 @@ set to the source "GitHub Actions" once.
 ## Status
 
 Working: geometry, centre lines, trim, constraints, distance / angle / radius
-dimensions with labels typeset by MathJax, supports, coordinate axes, centre
-marks, balloons, fills, hatching, the fixed origin, snapping, dragging, undo,
-save and load, SVG and TikZ export, install as an app.
+dimensions with labels typeset by MathJax, supports, coordinate axes, arrows,
+datum points, centre marks, balloons, fills, hatching, the fixed origin,
+snapping, dragging, undo, save and load, print preview, SVG and TikZ export,
+install as an app.
 
-Not built yet: loads (forces, moments, distributed loads). `docs/status-report.pdf` is the plan as of the first build.
+Not built yet: moments and distributed loads as symbols of their own. A
+single force is drawn with the Arrow tool. `docs/status-report.pdf` is the plan as of the first build.
 
 ## Licence note
 

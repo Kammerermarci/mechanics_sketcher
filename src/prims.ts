@@ -5,7 +5,7 @@
 import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
   type Arc, type Line, type Sym, type Support, type Frame, type CenterMark, type Balloon,
-  type Fill as FillSym, type Hatch,
+  type Fill as FillSym, type Hatch, type Datum,
   ORIGIN, entity, point, arcRadius, isDimension, curves, curvePoints,
 } from "./model";
 import {
@@ -45,18 +45,23 @@ export const PAPER = {
   balloonRadius: 2.6,   // smallest balloon
   balloonPad: 0.7,
   leaderDot: 0.45,
+  arrow: 0.21,          // 0.6 pt arrow annotations
+  arrowScale: 1.5,      // their heads, against a dimension's
+  datumRadius: 0.7,
+  radiusLeader: 8,      // default length of a radius leader drawn outside the circle
 };
 
 export type Anchor = "c" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
-export type StrokeStyle = "member" | "construction" | "dim" | "symbol" | "hatch" | "centre" | "centreline";
+export type StrokeStyle = "member" | "construction" | "dim" | "symbol" | "hatch" | "centre" | "centreline" | "arrow";
 /** Line width of each stroke style, in mm. */
 export const STROKE_MM: Record<StrokeStyle, number> = {
   member: PAPER.member, construction: PAPER.construction, dim: PAPER.dim,
   symbol: PAPER.symbol, hatch: PAPER.hatch, centre: PAPER.centre, centreline: PAPER.symbol,
+  arrow: PAPER.arrow,
 };
 /** Dash patterns, as on and off lengths in mm. Styles not listed are solid. */
 export const STROKE_DASH: Partial<Record<StrokeStyle, number[]>> = {
-  centreline: [4, 1, 0.6, 1], // long dash, short dash
+  centreline: [2, 0.6, 0.3, 0.6], // long dash, short dash
 };
 /** "paper" fills a shape with the background, hiding what lies under it; "ink" makes it solid. */
 export type Fill = "paper" | "ink";
@@ -67,15 +72,23 @@ interface Base {
   layer: "fill" | "geom" | "sym" | "dim";
   /** Shown faded in the editor and left out of exports (hidden dimensions). */
   ghost?: boolean;
+  /** Which piece of its owner this is, where the editor treats pieces differently (a name, an axis). */
+  part?: string;
+  /** CSS hex colour, for the few things that are not drawn in black. */
+  color?: string;
 }
-export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeStyle; arrowA?: boolean; arrowB?: boolean }
+/** `head` scales the arrowheads; 1 is the size used on dimensions. */
+export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeStyle; arrowA?: boolean; arrowB?: boolean; head?: number }
 export interface CirclePrim extends Base { k: "circle"; c: V; r: number; stroke: StrokeStyle; fill?: Fill }
 /** A closed outline. */
 export interface PolyPrim extends Base { k: "poly"; pts: V[]; stroke: StrokeStyle; fill?: Fill }
 /** Counter-clockwise from a0 to a1, with a1 > a0. */
-export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a1: number; stroke: StrokeStyle; arrowA?: boolean; arrowB?: boolean }
-/** `anchor` names the side of the text box that sits at `at`, as in TikZ. */
-export interface TextPrim extends Base { k: "text"; at: V; tex: string; anchor: Anchor }
+export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a1: number; stroke: StrokeStyle; arrowA?: boolean; arrowB?: boolean; head?: number }
+/**
+ * `anchor` names the side of the text box that sits at `at`, as in TikZ.
+ * `rot` turns the text about `at`, counter-clockwise in radians.
+ */
+export interface TextPrim extends Base { k: "text"; at: V; tex: string; anchor: Anchor; rot?: number }
 /** One closed outline of a region: a whole circle, or straight and arc pieces end to end. */
 export type Outline =
   | { kind: "circle"; c: V; r: number }
@@ -158,10 +171,35 @@ export function formatNumber(v: number): string {
   return String(Number(v.toFixed(3)));
 }
 
+/**
+ * A typed label as TeX. Math mode drops spaces, so each typed space becomes
+ * "\ " and shows; the one space that ends a command name (\alpha b) is kept
+ * as it is.
+ */
+export function labelTex(typed: string): string {
+  const s = typed.trim();
+  let out = "";
+  for (let i = 0; i < s.length;) {
+    if (s[i] === "\\") {
+      let j = i + 1;
+      if (j < s.length && /[a-zA-Z]/.test(s[j])) {
+        while (j < s.length && /[a-zA-Z]/.test(s[j])) j++;
+        if (s[j] === " ") j++;
+      } else j++; // a control symbol such as "\ " or "\,"
+      out += s.slice(i, j);
+      i = j;
+    } else {
+      out += s[i] === " " ? "\\ " : s[i];
+      i++;
+    }
+  }
+  return out;
+}
+
 /** The TeX shown on a dimension: its label, or else its value. */
 export function dimTex(d: Dimension): string {
   const label = d.label?.trim();
-  if (label) return label;
+  if (label) return labelTex(label);
   if (d.type === "angle") return `${formatNumber((d.value * 180) / Math.PI)}^\\circ`;
   if (d.type === "radius") return `R${formatNumber(d.value)}`;
   return formatNumber(d.value);
@@ -208,7 +246,21 @@ function distancePrims(sk: Sketch, d: DistanceDim, mm: number): Prim[] {
     out.push({ ...base, k: "line", stroke: "dim", a: add(from, mul(dir, PAPER.extGap)), b: add(to, mul(dir, PAPER.extOver)) });
   }
   out.push({ ...base, k: "line", stroke: "dim", a: f.A2, b: f.B2, arrowA: true, arrowB: true });
-  out.push({ ...base, k: "text", at: mid(f.A2, f.B2), tex: dimTex(d), anchor: anchorFor(f.out) });
+  const at = mid(f.A2, f.B2);
+  const along = (d.text ?? (d.mode === "aligned" ? "along" : "upright")) === "along";
+  const span = sub(f.B2, f.A2);
+  if (!along || len(span) < 1e-9) {
+    out.push({ ...base, k: "text", at, tex: dimTex(d), anchor: anchorFor(f.out) });
+    return out;
+  }
+  // Turned to run along the dimension line, the way that reads from below or from the right.
+  let rot = angleOf(span);
+  if (rot > Math.PI / 2 + 1e-9) rot -= Math.PI;
+  else if (rot <= -Math.PI / 2 + 1e-9) rot += Math.PI;
+  const up: V = [-Math.sin(rot), Math.cos(rot)];
+  const text: TextPrim = { ...base, k: "text", at, tex: dimTex(d), anchor: dot(f.out, up) >= 0 ? "s" : "n" };
+  if (Math.abs(rot) > 1e-9) text.rot = rot;
+  out.push(text);
   return out;
 }
 
@@ -251,18 +303,32 @@ export function roundFrame(sk: Sketch, id: Id, mm: number): { c: V; r: number } 
   return null;
 }
 
-function radiusPrims(sk: Sketch, d: RadiusDim, mm: number): Prim[] {
-  const base = { ref: d.id, layer: "dim" as const };
+/**
+ * The leader of a radius dimension, in paper mm: `tip` is on the rim, `far`
+ * its other end. Inside the circle it runs from the centre unless a length
+ * is set; outside it points in at the rim.
+ */
+export function radiusLeader(sk: Sketch, d: RadiusDim, mm: number): { c: V; r: number; dir: V; tip: V; far: V } | null {
   const f = roundFrame(sk, d.target, mm);
-  if (!f) return [];
+  if (!f) return null;
   const dir: V = [Math.cos(d.angle), Math.sin(d.angle)];
   const tip = add(f.c, mul(dir, f.r));
-  let side = perp(dir);
+  const far = d.outside
+    ? add(tip, mul(dir, d.len ?? PAPER.radiusLeader))
+    : d.len === undefined ? f.c : sub(tip, mul(dir, d.len));
+  return { ...f, dir, tip, far };
+}
+
+function radiusPrims(sk: Sketch, d: RadiusDim, mm: number): Prim[] {
+  const base = { ref: d.id, layer: "dim" as const };
+  const f = radiusLeader(sk, d, mm);
+  if (!f) return [];
+  const line: Prim = { ...base, k: "line", stroke: "dim", a: f.far, b: f.tip, arrowB: true };
+  // Outside, the text carries on from the end of the leader.
+  if (d.outside) return [line, { ...base, k: "text", at: f.far, tex: dimTex(d), anchor: anchorFor(f.dir) }];
+  let side = perp(f.dir);
   if (side[1] < -1e-9 || (Math.abs(side[1]) <= 1e-9 && side[0] > 0)) side = mul(side, -1);
-  return [
-    { ...base, k: "line", stroke: "dim", a: f.c, b: tip, arrowB: true },
-    { ...base, k: "text", at: mid(f.c, tip), tex: dimTex(d), anchor: anchorFor(side) },
-  ];
+  return [line, { ...base, k: "text", at: mid(f.far, f.tip), tex: dimTex(d), anchor: anchorFor(side) }];
 }
 
 export function dimensionPrims(sk: Sketch, d: Dimension, mm: number): Prim[] {
@@ -332,7 +398,8 @@ export function balloonAnchor(sk: Sketch, b: Balloon): V {
 /** Where a symbol sits, in model units. */
 export function symbolPosition(sk: Sketch, s: Sym): V {
   switch (s.type) {
-    case "support": {
+    case "support":
+    case "datum": {
       const p = point(sk, s.at);
       return [p.x, p.y];
     }
@@ -400,15 +467,22 @@ function framePrims(sk: Sketch, f: Frame, mm: number): Prim[] {
   const base = { ref: f.id, layer: "sym" as const };
   const o = mul(symbolPosition(sk, f), mm);
   const out: Prim[] = [];
-  const axes: [number, string, number][] = [[f.angle, f.xLabel, f.xSize], [f.angle + Math.PI / 2, f.yLabel, f.ySize]];
-  for (const [ang, label, size] of axes) {
+  const axes: [number, string, number, string][] = [[f.angle, f.xLabel, f.xSize, "x"], [f.angle + Math.PI / 2, f.yLabel, f.ySize, "y"]];
+  for (const [ang, label, size, part] of axes) {
     if (size <= 0) continue;
     const dir: V = [Math.cos(ang), Math.sin(ang)];
     const tip = add(o, mul(dir, size));
-    out.push({ ...base, k: "line", a: o, b: tip, stroke: "symbol", arrowB: true });
-    if (label.trim()) out.push({ ...base, k: "text", at: tip, tex: label.trim(), anchor: anchorFor(dir) });
+    out.push({ ...base, k: "line", a: o, b: tip, stroke: "symbol", arrowB: true, part });
+    if (label.trim()) out.push({ ...base, k: "text", at: tip, tex: labelTex(label), anchor: anchorFor(dir), part });
   }
   return out;
+}
+
+/** The arrow tips of a pair of axes, in paper mm; null for an axis that is left out. */
+export function frameTips(sk: Sketch, f: Frame, mm: number): { x: V | null; y: V | null } {
+  const o = mul(symbolPosition(sk, f), mm);
+  const tip = (ang: number, size: number): V | null => (size > 0 ? polar(o, size, ang) : null);
+  return { x: tip(f.angle, f.xSize), y: tip(f.angle + Math.PI / 2, f.ySize) };
 }
 
 function centerMarkPrims(sk: Sketch, s: CenterMark, mm: number): Prim[] {
@@ -432,18 +506,19 @@ function centerMarkPrims(sk: Sketch, s: CenterMark, mm: number): Prim[] {
   return out;
 }
 
-/** Radius of a balloon that holds its text, in mm. */
-export function balloonRadius(text: string): number {
-  const m = texEngine().measure(text.trim() || "0");
+/** Radius of a balloon that holds its text, in mm. Without its circle, the clearance its leader keeps from the text. */
+export function balloonRadius(text: string, circle = true): number {
+  const m = texEngine().measure(labelTex(text) || "0");
   const half = Math.hypot(m.w, m.asc + m.desc) * PAPER.em * 0.5;
-  return Math.max(PAPER.balloonRadius, half + PAPER.balloonPad);
+  return circle ? Math.max(PAPER.balloonRadius, half + PAPER.balloonPad) : half + PAPER.balloonPad * 0.6;
 }
 
 function balloonPrims(sk: Sketch, s: Balloon, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const };
   const anchor = mul(balloonAnchor(sk, s), mm);
   const centre: V = [anchor[0] + s.dx, anchor[1] + s.dy];
-  const r = balloonRadius(s.text);
+  const ringed = s.circle !== false;
+  const r = balloonRadius(s.text, ringed);
   const out: Prim[] = [];
   const reach = dist(anchor, centre);
   if (reach > r + 0.3) {
@@ -451,8 +526,16 @@ function balloonPrims(sk: Sketch, s: Balloon, mm: number): Prim[] {
     out.push({ ...base, k: "line", a: anchor, b: edge, stroke: "symbol", arrowA: s.end === "arrow" });
     if (s.end === "dot") out.push({ ...base, k: "circle", c: anchor, r: PAPER.leaderDot, stroke: "symbol", fill: "ink" });
   }
-  out.push({ ...base, k: "circle", c: centre, r, stroke: "symbol", fill: "paper" });
-  if (s.text.trim()) out.push({ ...base, k: "text", at: centre, tex: s.text.trim(), anchor: "c" });
+  if (ringed) out.push({ ...base, k: "circle", c: centre, r, stroke: "symbol", fill: "paper" });
+  if (s.text.trim()) out.push({ ...base, k: "text", at: centre, tex: labelTex(s.text), anchor: "c" });
+  return out;
+}
+
+function datumPrims(sk: Sketch, s: Datum, mm: number): Prim[] {
+  const base = { ref: s.id, layer: "sym" as const };
+  const at = P(sk, s.at, mm);
+  const out: Prim[] = [{ ...base, k: "circle", c: at, r: PAPER.datumRadius, stroke: "symbol", fill: "ink", color: s.color }];
+  if (s.label.trim()) out.push({ ...base, k: "text", at: [at[0] + s.dx, at[1] + s.dy], tex: labelTex(s.label), anchor: "c", part: "label" });
   return out;
 }
 
@@ -461,9 +544,10 @@ function hatchPrims(sk: Sketch, s: Hatch, mm: number): Prim[] {
   const c = curveShape(sk, s.on);
   if (!c || s.spacing <= 0) return [];
   const out: Prim[] = [];
-  // Each stroke leaves the curve towards the chosen side, leaning back along it.
+  // Each stroke leaves the curve towards the chosen side, leaning back along it (or forwards).
+  const lean = s.lean ?? 1;
   const stroke = (at: V, along: V, side: V) => {
-    out.push({ ...base, a: at, b: add(at, add(mul(side, s.depth), mul(along, -s.depth * 0.85))) });
+    out.push({ ...base, a: at, b: add(at, add(mul(side, s.depth), mul(along, -s.depth * 0.85 * lean))) });
   };
   if (c.kind === "line") {
     const a = mul(c.a, mm), b = mul(c.b, mm);
@@ -552,7 +636,23 @@ export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
     case "balloon": return balloonPrims(sk, s, mm);
     case "hatch": return hatchPrims(sk, s, mm);
     case "fill": return fillPrims(sk, s, mm);
+    case "datum": return datumPrims(sk, s, mm);
   }
+}
+
+/** Centre of an arrow's name in paper mm, or null when it has none. */
+export function arrowLabelAt(sk: Sketch, l: Line, mm: number): V | null {
+  const tex = labelTex(l.label ?? "");
+  if (!l.arrow || !tex) return null;
+  const a = P(sk, l.p1, mm), b = P(sk, l.p2, mm);
+  const m = mid(a, b);
+  if (l.lx !== undefined && l.ly !== undefined) return [m[0] + l.lx, m[1] + l.ly];
+  // Beside the arrow, on its upper side, just clear of the line.
+  let n = len(sub(b, a)) < 1e-9 ? [0, 1] as V : perp(norm(sub(b, a)));
+  if (n[1] < -1e-9 || (Math.abs(n[1]) <= 1e-9 && n[0] > 0)) n = mul(n, -1);
+  const t = texEngine().measure(tex);
+  const reach = (Math.abs(n[0]) * t.w + Math.abs(n[1]) * (t.asc + t.desc)) * PAPER.em / 2;
+  return add(m, mul(n, reach + PAPER.textSep + 0.6));
 }
 
 // ---- the list -------------------------------------------------------------
@@ -569,10 +669,19 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
   for (const e of sk.entities) {
     if (e.type === "point") continue;
     if (e.construction && !opts.editor) continue;
-    const stroke: StrokeStyle = e.construction ? "construction" : e.centre ? "centreline" : "member";
+    const arrow = e.type === "line" ? e.arrow : undefined;
+    const stroke: StrokeStyle = e.construction ? "construction" : arrow ? "arrow" : e.centre ? "centreline" : "member";
     const base = { ref: e.id, layer: "geom" as const, stroke };
     if (e.type === "line") {
-      out.push({ ...base, k: "line", a: P(sk, e.p1, mm), b: P(sk, e.p2, mm) });
+      const line: LinePrim = { ...base, k: "line", a: P(sk, e.p1, mm), b: P(sk, e.p2, mm) };
+      if (arrow) {
+        line.head = PAPER.arrowScale;
+        if (arrow !== "end") line.arrowA = true;
+        if (arrow !== "start") line.arrowB = true;
+      }
+      out.push(line);
+      const at = arrow ? arrowLabelAt(sk, e, mm) : null;
+      if (at) out.push({ ref: e.id, layer: "geom", k: "text", at, tex: labelTex(e.label ?? ""), anchor: "c", part: "label" });
     } else if (e.type === "circle") {
       out.push({ ...base, k: "circle", c: P(sk, e.c, mm), r: e.r * mm });
     } else {
@@ -591,16 +700,31 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
 
 // ---- shared drawing helpers -------------------------------------------------
 
-/** Outline of an arrowhead whose tip is at `tip`, pointing along `dir`. */
-export function arrowHead(tip: V, dir: V): V[] {
+/** Outline of an arrowhead whose tip is at `tip`, pointing along `dir`. `scale` 1 is the size on dimensions. */
+export function arrowHead(tip: V, dir: V, scale = 1): V[] {
   const u = norm(dir), n = perp(u);
-  const back = sub(tip, mul(u, PAPER.arrowLen));
+  const length = PAPER.arrowLen * scale, width = PAPER.arrowWidth * scale;
+  const back = sub(tip, mul(u, length));
   return [
     tip,
-    add(back, mul(n, PAPER.arrowWidth / 2)),
-    sub(tip, mul(u, PAPER.arrowLen * 0.72)),
-    sub(back, mul(n, PAPER.arrowWidth / 2)),
+    add(back, mul(n, width / 2)),
+    sub(tip, mul(u, length * 0.72)),
+    sub(back, mul(n, width / 2)),
   ];
+}
+
+/**
+ * The ends of a line primitive as they are stroked: an end under an arrowhead
+ * stops inside the head, so the line's round cap does not blunt the tip.
+ */
+export function strokedEnds(p: LinePrim): [V, V] {
+  const span = len(sub(p.b, p.a));
+  const back = PAPER.arrowLen * (p.head ?? 1) * 0.6;
+  if (span < 1e-9 || (!p.arrowA && !p.arrowB)) return [p.a, p.b];
+  const u = norm(sub(p.b, p.a));
+  const heads = (p.arrowA ? 1 : 0) + (p.arrowB ? 1 : 0);
+  if (span <= back * heads) return [p.a, p.b];
+  return [p.arrowA ? add(p.a, mul(u, back)) : p.a, p.arrowB ? sub(p.b, mul(u, back)) : p.b];
 }
 
 /** Arrowhead outlines for a line or arc primitive. */
@@ -608,19 +732,19 @@ export function arrowHeads(p: LinePrim | ArcPrim): V[][] {
   const heads: V[][] = [];
   if (p.k === "line") {
     if (len(sub(p.b, p.a)) < 1e-9) return heads;
-    if (p.arrowA) heads.push(arrowHead(p.a, sub(p.a, p.b)));
-    if (p.arrowB) heads.push(arrowHead(p.b, sub(p.b, p.a)));
+    if (p.arrowA) heads.push(arrowHead(p.a, sub(p.a, p.b), p.head));
+    if (p.arrowB) heads.push(arrowHead(p.b, sub(p.b, p.a), p.head));
     return heads;
   }
   // On an arc the head is turned by half the angle it spans, so it follows the curve.
-  const lean = Math.min(PAPER.arrowLen / (2 * Math.max(p.r, 1e-6)), 0.6);
+  const lean = Math.min((PAPER.arrowLen * (p.head ?? 1)) / (2 * Math.max(p.r, 1e-6)), 0.6);
   if (p.arrowA) {
     const t = p.a0 + lean;
-    heads.push(arrowHead(polar(p.c, p.r, p.a0), [Math.sin(t), -Math.cos(t)]));
+    heads.push(arrowHead(polar(p.c, p.r, p.a0), [Math.sin(t), -Math.cos(t)], p.head));
   }
   if (p.arrowB) {
     const t = p.a1 - lean;
-    heads.push(arrowHead(polar(p.c, p.r, p.a1), [-Math.sin(t), Math.cos(t)]));
+    heads.push(arrowHead(polar(p.c, p.r, p.a1), [-Math.sin(t), Math.cos(t)], p.head));
   }
   return heads;
 }
@@ -638,6 +762,27 @@ export function textBox(p: TextPrim, em = PAPER.em): Box {
   const x0 = a.includes("w") ? p.at[0] + sep : a.includes("e") ? p.at[0] - sep - w : p.at[0] - w / 2;
   const y0 = a.includes("s") ? p.at[1] + sep : a.includes("n") ? p.at[1] - sep - h : p.at[1] - h / 2;
   return { x0, y0, x1: x0 + w, y1: y0 + h };
+}
+
+/** Turns q about `about` by `rot` radians, counter-clockwise. */
+function turn(q: V, about: V, rot: number): V {
+  const c = Math.cos(rot), k = Math.sin(rot);
+  const x = q[0] - about[0], y = q[1] - about[1];
+  return [about[0] + x * c - y * k, about[1] + x * k + y * c];
+}
+
+/** The four corners of a text primitive on paper, with its rotation applied. */
+export function textCorners(p: TextPrim): V[] {
+  const b = textBox(p);
+  const corners: V[] = [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]];
+  return p.rot ? corners.map((q) => turn(q, p.at, p.rot!)) : corners;
+}
+
+/** Centre of a text primitive on paper, with its rotation applied. */
+export function textCentre(p: TextPrim): V {
+  const b = textBox(p);
+  const c: V = [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2];
+  return p.rot ? turn(c, p.at, p.rot) : c;
 }
 
 function insidePolygon(q: V, pts: V[]): boolean {
@@ -678,6 +823,7 @@ export function primDistance(p: Prim, q: V): number {
     }
     case "text": {
       const b = textBox(p);
+      if (p.rot) q = turn(q, p.at, -p.rot); // measure in the text's own frame
       const dx = Math.max(b.x0 - q[0], 0, q[0] - b.x1);
       const dy = Math.max(b.y0 - q[1], 0, q[1] - b.y1);
       return Math.hypot(dx, dy);

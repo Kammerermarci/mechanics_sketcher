@@ -21,8 +21,8 @@
     <div class="group menu" id="export-menu">
       <button type="button" class="text-btn menu-btn" id="export-btn" data-menu="export" aria-haspopup="menu" aria-expanded="false" aria-controls="export-list" title="Save or copy the figure for LaTeX">Export<svg class="caret" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.5l3 3 3-3"/></svg></button>
       <div class="menu-list" id="export-list" role="menu" aria-labelledby="export-btn" hidden>
-        <button type="button" role="menuitem" data-act="export-svg"><span>SVG</span><span class="menu-note">figure.svg</span></button>
-        <button type="button" role="menuitem" data-act="export-tikz"><span>TikZ</span><span class="menu-note">figure.tex</span></button>
+        <button type="button" role="menuitem" data-act="export-svg"><span>SVG</span><span class="menu-note">.svg file</span></button>
+        <button type="button" role="menuitem" data-act="export-tikz"><span>TikZ</span><span class="menu-note">.tex file</span></button>
         <button type="button" role="menuitem" data-act="copy-tikz"><span>Copy TikZ</span><span class="menu-note">to the clipboard</span></button>
       </div>
     </div>
@@ -45,6 +45,18 @@
   <footer class="statusbar"><span id="hint"></span><span id="coords"></span></footer>
 </div>
 <input type="file" id="file-input" accept=".json,application/json" hidden>
+<dialog id="name-dialog" aria-labelledby="name-title">
+  <form method="dialog">
+    <h2 id="name-title">Export</h2>
+    <label class="field"><span>File name</span>
+      <span class="name-row"><input id="name-input" type="text" spellcheck="false" autocomplete="off"><span id="name-ext">.svg</span></span>
+    </label>
+    <div class="dialog-actions">
+      <button type="button" data-dialog="cancel">Cancel</button>
+      <button type="submit" value="ok" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

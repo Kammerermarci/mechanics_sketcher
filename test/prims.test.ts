@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { ORIGIN, emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, addSupport, addFrame } from "../src/model";
-import { mmPerUnit, geometryBox, buildPrims, anchorFor, dimTex, primDistance, textBox, arrowHeads, PAPER, type Prim } from "../src/prims";
+import { ORIGIN, emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, addSupport, addFrame, addSymbol, isEdge } from "../src/model";
+import {
+  mmPerUnit, geometryBox, buildPrims, anchorFor, dimTex, primDistance, textBox, arrowHeads, PAPER, type Prim,
+  labelTex, textCorners, textCentre, frameTips, type TextPrim,
+} from "../src/prims";
 import { texRuns } from "../src/tex";
 
 const text = (runs: ReturnType<typeof texRuns>) => runs.map((r) => `${r.level}${r.italic ? "i" : "u"}:${r.text}`).join(" ");
@@ -211,5 +214,73 @@ describe("label preview", () => {
     expect(() => texRuns("F_{1")).not.toThrow();
     expect(() => texRuns("}a^")).not.toThrow();
     expect(() => texRuns("\\")).not.toThrow();
+  });
+});
+
+describe("new annotations", () => {
+  const fixed = () => { const sk = emptySketch(); sk.scaleMode = "fixed"; sk.mmPerUnit = 10; return sk; };
+
+  it("turns typed spaces into TeX spaces, except the one that ends a command", () => {
+    expect(labelTex("2 a")).toBe("2\\ a");
+    expect(labelTex("\\alpha b")).toBe("\\alpha b");
+    expect(labelTex("\\alpha  b")).toBe("\\alpha \\ b");
+    expect(labelTex("a\\ b")).toBe("a\\ b"); // an explicit TeX space is left alone
+    expect(labelTex("  x_1  ")).toBe("x_1");
+  });
+
+  it("measures picking against rotated text in the text's own frame", () => {
+    const t: TextPrim = { k: "text", layer: "dim", at: [10, 10], tex: "12345", anchor: "s", rot: Math.PI / 2 };
+    const c = textCentre(t);
+    // Turned a quarter turn about its anchor, the text lies to the left of it.
+    expect(c[0]).toBeLessThan(10);
+    expect(c[1]).toBeCloseTo(10, 6);
+    expect(primDistance(t, c)).toBe(0);
+    expect(primDistance({ ...t, rot: undefined }, c)).toBeGreaterThan(0);
+    const xs = textCorners(t).map((q) => q[0]);
+    expect(Math.max(...xs)).toBeLessThanOrEqual(10 - PAPER.textSep + 1e-9);
+  });
+
+  it("reports the tips of a pair of axes", () => {
+    const sk = fixed();
+    const f = addFrame(sk, 1, 2);
+    f.xSize = 12;
+    f.ySize = 0;
+    const tips = frameTips(sk, f, 10);
+    expect(tips.x![0]).toBeCloseTo(22);
+    expect(tips.x![1]).toBeCloseTo(20);
+    expect(tips.y).toBeNull();
+  });
+
+  it("leans hatching the other way when asked", () => {
+    const sk = fixed();
+    const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
+    const l = addLine(sk, a.id, b.id);
+    const h = addSymbol(sk, { type: "hatch", on: l.id, side: -1, spacing: 2, depth: 2 });
+    const firstStroke = () => buildPrims(sk, 10, { editor: false }).find((p) => p.k === "line" && p.stroke === "hatch") as Extract<Prim, { k: "line" }>;
+    const back = firstStroke();
+    expect(back.b[0]).toBeLessThan(back.a[0]); // leaning back towards the start
+    expect(back.b[1]).toBeCloseTo(-2);
+    h.lean = -1;
+    const forward = firstStroke();
+    expect(forward.b[0]).toBeGreaterThan(forward.a[0]);
+    expect(forward.b[1]).toBeCloseTo(-2); // same side
+  });
+
+  it("draws a balloon without its circle when that is switched off", () => {
+    const sk = fixed();
+    const b = addSymbol(sk, { type: "balloon", text: "1", x: 0, y: 0, dx: 10, dy: 10, end: "arrow" });
+    const circles = () => buildPrims(sk, 10, { editor: false }).filter((p) => p.k === "circle").length;
+    expect(circles()).toBe(1);
+    b.circle = false;
+    expect(circles()).toBe(0);
+    expect(buildPrims(sk, 10, { editor: false }).some((p) => p.k === "text")).toBe(true);
+  });
+
+  it("does not let an arrow close a shape", () => {
+    const sk = fixed();
+    const l = addLine(sk, addPoint(sk, 0, 0).id, addPoint(sk, 1, 0).id);
+    expect(isEdge(l)).toBe(true);
+    l.arrow = "end";
+    expect(isEdge(l)).toBe(false);
   });
 });

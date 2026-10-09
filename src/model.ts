@@ -20,7 +20,15 @@ export interface Line {
   construction?: boolean;
   /** A centre line: thin dash-dot, and not an edge of any shape. */
   centre?: boolean;
+  /** An arrow annotation: which end carries the head. p1 is the start, p2 the end. */
+  arrow?: ArrowEnds;
+  /** The arrow's name, as TeX math. */
+  label?: string;
+  /** Where the name sits, in paper mm from the middle of the arrow. Unset: beside it. */
+  lx?: number;
+  ly?: number;
 }
+export type ArrowEnds = "end" | "start" | "both";
 export interface Circle {
   id: Id;
   type: "circle";
@@ -75,6 +83,8 @@ export interface DistanceDim extends DimBase {
   mode: DistanceMode;
   /** Where the dimension line sits, in paper mm from point a. Signed. */
   offset: number;
+  /** Whether the text is turned to run along the dimension line. Unset: along for aligned, upright otherwise. */
+  text?: "along" | "upright";
 }
 export interface AngleDim extends DimBase {
   type: "angle";
@@ -91,6 +101,10 @@ export interface RadiusDim extends DimBase {
   target: Id;
   /** Direction of the leader, in radians. */
   angle: number;
+  /** Drawn outside the circle, pointing in at the rim, instead of from the inside. */
+  outside?: boolean;
+  /** Length of the leader in paper mm. Unset: from the centre when inside, a standard length outside. */
+  len?: number;
 }
 export type Dimension = DistanceDim | AngleDim | RadiusDim;
 export type Relation =
@@ -151,6 +165,8 @@ export interface Balloon {
   dx: number;
   dy: number;
   end: LeaderEnd;
+  /** False leaves out the circle, so only the text and its leader are drawn. */
+  circle?: boolean;
 }
 /** A closed region filled with a colour. */
 export interface Fill {
@@ -179,13 +195,31 @@ export interface Hatch {
   /** Distance between strokes and how far they reach, in paper mm. */
   spacing: number;
   depth: number;
+  /** Which way the strokes lean along the curve: 1 back towards its start, -1 forwards. */
+  lean?: 1 | -1;
 }
-export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch;
+/** A point marked with a coloured dot and a name, such as a joint called A. It is part of the figure. */
+export interface Datum {
+  id: Id;
+  type: "datum";
+  /** The point it marks. */
+  at: Id;
+  /** CSS hex colour of the dot. */
+  color: string;
+  /** Name as TeX math; empty for none. */
+  label: string;
+  /** Centre of the name relative to the point, in paper mm. */
+  dx: number;
+  dy: number;
+}
+export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch | Datum;
 
 /** Everything a symbol needs to exist; it is removed when any of these is. */
 export function symbolRefs(s: Sym): Id[] {
   switch (s.type) {
-    case "support": return [s.at];
+    case "support":
+    case "datum":
+      return [s.at];
     case "frame": return s.at ? [s.at] : [];
     case "centermark":
     case "hatch":
@@ -264,9 +298,9 @@ export function curves(sk: Sketch): Curve[] {
   return sk.entities.filter((e): e is Curve => e.type !== "point");
 }
 
-/** True for curves that form the shapes of the figure: not helpers, not centre lines. */
+/** True for curves that form the shapes of the figure: not helpers, centre lines or arrows. */
 export function isEdge(e: Curve): boolean {
-  return !e.construction && !e.centre;
+  return !e.construction && !e.centre && !(e.type === "line" && e.arrow);
 }
 
 /** Removes a point that no curve is built on any more, unless it was placed on purpose. */

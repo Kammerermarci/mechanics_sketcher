@@ -5,7 +5,7 @@
 import type { Sketch } from "./model";
 import {
   type Prim, type StrokeStyle, type Outline, type Anchor, type LinePrim, type ArcPrim,
-  PAPER, STROKE_MM, STROKE_DASH, mmPerUnit, buildPrims, arrowHeads, textBox, outlinePolygon,
+  PAPER, STROKE_MM, STROKE_DASH, mmPerUnit, buildPrims, arrowHeads, strokedEnds, textBox, textCorners, outlinePolygon,
 } from "./prims";
 import { type V, type Box, emptyBox, grow, boxIsEmpty, polar, wrap, TWO_PI } from "./geom";
 import { texEngine } from "./tex";
@@ -21,9 +21,7 @@ export function figureBounds(prims: Prim[]): Box {
   const b = emptyBox();
   for (const p of prims) {
     if (p.k === "text") {
-      const t = textBox(p);
-      grow(b, [t.x0, t.y0]);
-      grow(b, [t.x1, t.y1]);
+      for (const q of textCorners(p)) grow(b, q);
     } else if (p.k === "region") {
       for (const o of p.outlines) for (const q of outlinePolygon(o)) grow(b, q);
     } else {
@@ -77,14 +75,20 @@ export function toSvg(sk: Sketch): string | null {
       const t = textBox(p);
       const corner = M([t.x0, t.y1]);
       // currentColor would depend on where the file is placed; make it black outright.
-      body.push(engine.svg(p.tex, corner[0], corner[1], PAPER.em, "label").replace(/currentColor/g, "#000").replace(' class="label"', ' fill="#000" stroke="none"'));
+      const glyphs = engine.svg(p.tex, corner[0], corner[1], PAPER.em, "label").replace(/currentColor/g, "#000").replace(' class="label"', ' fill="#000" stroke="none"');
+      if (p.rot && glyphs) {
+        // Counter-clockwise on paper is a negative angle once y points down.
+        const at = M(p.at);
+        body.push(`<g transform="rotate(${num((-p.rot * 180) / Math.PI, 2)} ${num(at[0])} ${num(at[1])})">${glyphs}</g>`);
+      } else body.push(glyphs);
       continue;
     }
     const dash = STROKE_DASH[p.stroke];
-    const stroke = `stroke-width="${num(STROKE_MM[p.stroke])}"` + (dash ? ` stroke-dasharray="${dash.map((d) => num(d)).join(" ")}"` : "");
-    const fill = (p.k === "circle" || p.k === "poly") && p.fill ? ` fill="${p.fill === "ink" ? "#000" : "#fff"}"` : "";
+    const stroke = `stroke-width="${num(STROKE_MM[p.stroke])}"` + (dash ? ` stroke-dasharray="${dash.map((d) => num(d)).join(" ")}"` : "") +
+      (p.color ? ` stroke="${p.color}"` : "");
+    const fill = (p.k === "circle" || p.k === "poly") && p.fill ? ` fill="${p.fill === "ink" ? p.color ?? "#000" : "#fff"}"` : "";
     if (p.k === "line") {
-      const a = M(p.a), b = M(p.b);
+      const [a, b] = strokedEnds(p).map(M);
       body.push(`<line x1="${num(a[0])}" y1="${num(a[1])}" x2="${num(b[0])}" y2="${num(b[1])}" ${stroke}/>`);
     } else if (p.k === "circle") {
       const c = M(p.c);
@@ -116,6 +120,7 @@ export function toSvg(sk: Sketch): string | null {
 /** Line widths in points, as LaTeX users know them. */
 const TIKZ_WIDTH: Record<StrokeStyle, string> = {
   member: "0.8pt", construction: "0.4pt", dim: "0.3pt", symbol: "0.4pt", hatch: "0.3pt", centre: "0.3pt", centreline: "0.4pt",
+  arrow: "0.6pt",
 };
 const TIKZ_ANCHOR: Record<Anchor, string> = {
   c: "center", n: "north", s: "south", e: "east", w: "west",
@@ -146,10 +151,12 @@ function tikzOutline(o: Outline): string {
   return `${s} -- cycle`;
 }
 
+/** Arrow tips as a TikZ option. Heads larger than a dimension's use the "bigtip" tip. */
 function tips(p: LinePrim | ArcPrim): string {
-  if (p.arrowA && p.arrowB) return ", tip-tip";
-  if (p.arrowA) return ", tip-";
-  if (p.arrowB) return ", -tip";
+  const t = (p.head ?? 1) !== 1 ? "bigtip" : "tip";
+  if (p.arrowA && p.arrowB) return `, ${t}-${t}`;
+  if (p.arrowA) return `, ${t}-`;
+  if (p.arrowB) return `, -${t}`;
   return "";
 }
 
@@ -162,7 +169,11 @@ export function toTikz(sk: Sketch): string | null {
   const prims = figurePrims(sk);
   if (!prims.length) return null;
   const used = new Set<StrokeStyle>();
-  let needTip = false, needLabel = false;
+  let needTip = false, needBigTip = false, needLabel = false;
+  const noteTip = (p: LinePrim | ArcPrim) => {
+    if ((p.head ?? 1) !== 1) needBigTip = true;
+    else needTip = true;
+  };
   const lines: string[] = [];
   /** Plain line segments of one style and symbol in a row share a \draw. */
   let run: { style: StrokeStyle; ref: string | undefined; parts: string[] } | null = null;
@@ -185,17 +196,18 @@ export function toTikz(sk: Sketch): string | null {
     if (p.k === "region") {
       lines.push(`  \\fill[fill=${tikzColor(p.color)}, even odd rule] ${p.outlines.map(tikzOutline).join(" ")};`);
     } else if (p.k === "text") {
-      needLabel = true;
-      const where = p.anchor === "c" ? "inner sep=0pt" : `label, anchor=${TIKZ_ANCHOR[p.anchor]}`;
+      const where = (p.anchor === "c" ? "inner sep=0pt" : `label, anchor=${TIKZ_ANCHOR[p.anchor]}`) + (p.rot ? `, rotate=${deg(p.rot)}` : "");
+      if (p.anchor !== "c") needLabel = true;
       lines.push(`  \\node[${where}] at ${co(p.at)} {$${p.tex}$};`);
     } else if (p.k === "line") {
-      needTip = true;
+      noteTip(p);
       lines.push(`  \\draw[${p.stroke}${tips(p)}] ${co(p.a)} -- ${co(p.b)};`);
     } else if (p.k === "arc") {
-      if (p.arrowA || p.arrowB) needTip = true;
+      if (p.arrowA || p.arrowB) noteTip(p);
       lines.push(`  \\draw[${p.stroke}${tips(p)}] ${co(polar(p.c, p.r, p.a0))} arc[start angle=${deg(p.a0)}, end angle=${deg(p.a1)}, radius=${num(p.r, 2)}];`);
     } else {
-      const fill = p.fill ? `, fill=${p.fill === "ink" ? "black" : "white"}` : "";
+      const fill = (p.color ? `, draw=${tikzColor(p.color)}` : "") +
+        (p.fill ? `, fill=${p.fill === "ink" ? (p.color ? tikzColor(p.color) : "black") : "white"}` : "");
       const shape = p.k === "circle" ? `${co(p.c)} circle[radius=${num(p.r, 2)}]` : `${p.pts.map(co).join(" -- ")} -- cycle`;
       lines.push(`  \\draw[${p.stroke}${fill}] ${shape};`);
     }
@@ -210,11 +222,12 @@ export function toTikz(sk: Sketch): string | null {
     styles.push(`${s}/.style={line width=${TIKZ_WIDTH[s]}${pattern}}`);
   }
   if (needLabel) styles.push(`label/.style={inner sep=${num(PAPER.textSep, 2)}mm}`);
-  if (needTip) {
-    styles.push(`tip/.tip={Stealth[length=${num(PAPER.arrowLen, 2)}mm, width=${num(PAPER.arrowWidth, 2)}mm, inset=${num(PAPER.arrowLen * 0.28, 2)}mm]}`);
-  }
+  const tip = (name: string, k: number) =>
+    styles.push(`${name}/.tip={Stealth[length=${num(PAPER.arrowLen * k, 2)}mm, width=${num(PAPER.arrowWidth * k, 2)}mm, inset=${num(PAPER.arrowLen * k * 0.28, 2)}mm]}`);
+  if (needTip) tip("tip", 1);
+  if (needBigTip) tip("bigtip", PAPER.arrowScale);
   return (
-    `% Made with Mech Sketch. Needs \\usepackage{tikz}${needTip ? " and \\usetikzlibrary{arrows.meta}" : ""}.\n` +
+    `% Made with Mech Sketch. Needs \\usepackage{tikz}${needTip || needBigTip ? " and \\usetikzlibrary{arrows.meta}" : ""}.\n` +
     `\\begin{tikzpicture}[x=1mm, y=1mm, line cap=round, line join=round,\n  ${styles.join(",\n  ")}]\n` +
     lines.join("\n") +
     `\n\\end{tikzpicture}\n`
