@@ -1,20 +1,28 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, addSupport, addSymbol, type Sketch } from "../src/model";
-import { toSvg, toTikz, figurePrims, figureBounds } from "../src/export";
+import { geometryExtent } from "../src/model";
+import { toSvg as svgOf, toTikz as tikzOf, figurePrims as primsOf, figureBounds } from "../src/export";
 import { findFaces } from "../src/regions";
 import { createMathJaxEngine } from "../src/mathjax";
 import { setTexEngine, plainEngine } from "../src/tex";
 
 afterEach(() => setTexEngine(plainEngine));
 
+/** Sets the figure width so that one model unit is 10 annotation mm, which keeps the numbers below round. */
+const tenMm = (sk: Sketch): Sketch => {
+  sk.figureWidthMm = geometryExtent(sk) * 10 * sk.dimScale || 80;
+  return sk;
+};
+const toSvg = (sk: Sketch) => svgOf(tenMm(sk));
+const toTikz = (sk: Sketch) => tikzOf(tenMm(sk));
+const figurePrims = (sk: Sketch) => primsOf(tenMm(sk));
+
 /** A 40 mm beam (4 units at 10 mm each) with a length dimension labelled 2a. */
 function beam(): Sketch {
   const sk = emptySketch();
-  sk.scaleMode = "fixed";
-  sk.mmPerUnit = 10;
   const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
   addLine(sk, a.id, b.id);
-  addConstraint(sk, { type: "distance", a: a.id, b: b.id, mode: "aligned", value: 4, offset: -8, label: "2a" });
+  addConstraint(sk, { type: "distance", a: a.id, b: b.id, mode: "aligned", value: 4, offset: -0.8, label: "2a" });
   return sk;
 }
 
@@ -72,8 +80,6 @@ describe("export", () => {
 
   it("writes circles, arcs, supports and fills", () => {
     const sk = emptySketch();
-    sk.scaleMode = "fixed";
-    sk.mmPerUnit = 10;
     const c = addPoint(sk, 0, 0), s = addPoint(sk, 2, 0), e = addPoint(sk, -2, 0);
     addArc(sk, c.id, s.id, e.id);
     addLine(sk, e.id, s.id);
@@ -95,11 +101,9 @@ describe("export", () => {
 
   it("turns the text of a slanted aligned dimension along its line", () => {
     const sk = emptySketch();
-    sk.scaleMode = "fixed";
-    sk.mmPerUnit = 10;
     const a = addPoint(sk, 0, 0), b = addPoint(sk, 3, 3);
     addLine(sk, a.id, b.id);
-    const d = addConstraint(sk, { type: "distance", a: a.id, b: b.id, mode: "aligned", value: Math.hypot(3, 3), offset: 8, label: "\\ell" });
+    const d = addConstraint(sk, { type: "distance", a: a.id, b: b.id, mode: "aligned", value: Math.hypot(3, 3), offset: 0.8, label: "\\ell" });
     const tikz = toTikz(sk)!;
     // 45 degrees, text on the side the dimension line was pulled to.
     expect(tikz).toMatch(/\\node\[label, anchor=south, rotate=45\] at \(9\.34,20\.66\) \{\$\\ell\$\};/);
@@ -120,8 +124,6 @@ describe("export", () => {
 
   it("writes arrows with a larger tip and their names, and datum points in colour", () => {
     const sk = emptySketch();
-    sk.scaleMode = "fixed";
-    sk.mmPerUnit = 10;
     const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
     const l = addLine(sk, a.id, b.id);
     l.arrow = "end";
@@ -148,12 +150,10 @@ describe("export", () => {
 
   it("draws a radius dimension outside the circle when asked", () => {
     const sk = emptySketch();
-    sk.scaleMode = "fixed";
-    sk.mmPerUnit = 10;
     const c = addCircle(sk, addPoint(sk, 0, 0).id, 2);
     const d = addConstraint(sk, { type: "radius", target: c.id, value: 2, angle: 0 });
     expect(toTikz(sk)).toContain("\\draw[dim, -tip] (0,0) -- (20,0);"); // from the centre
-    d.len = 6;
+    d.len = 0.6;
     expect(toTikz(sk)).toContain("\\draw[dim, -tip] (14,0) -- (20,0);");
     d.outside = true;
     const tikz = toTikz(sk)!;
@@ -163,8 +163,6 @@ describe("export", () => {
 
   it("writes a curved arrow with its head on the chosen end, and asks for the bending library", () => {
     const sk = emptySketch();
-    sk.scaleMode = "fixed";
-    sk.mmPerUnit = 10;
     const c = addPoint(sk, 0, 0), s = addPoint(sk, 2, 0), e = addPoint(sk, 0, 2);
     const arc = addArc(sk, c.id, s.id, e.id); // a quarter turn, counter-clockwise
     arc.arrow = "end";
@@ -184,12 +182,35 @@ describe("export", () => {
 
   it("scales a centre mark", () => {
     const sk = emptySketch();
-    sk.scaleMode = "fixed";
-    sk.mmPerUnit = 10;
     const circle = addCircle(sk, addPoint(sk, 0, 0).id, 1);
     const mark = addSymbol(sk, { type: "centermark", on: circle.id, angle: 0 });
     expect(toTikz(sk)).toContain("(1.2,0) (2,0) -- (12,0)"); // cross to 1.2, then from 2 to 2 past the rim
     mark.scale = 2;
     expect(toTikz(sk)).toContain("(2.4,0) (4,0) -- (14,0)");
+  });
+
+  it("enlarges the whole figure by the dimension size, keeping the geometry at the figure width", () => {
+    setTexEngine(createMathJaxEngine());
+    const sk = beam();
+    sk.figureWidthMm = 40;
+    const plain = svgOf(sk)!;
+    const tikz1 = tikzOf(sk)!;
+    sk.dimScale = 2;
+    // Laid out with the geometry at half the width, then everything doubled: 40 mm of beam either way.
+    const big = svgOf(sk)!;
+    const size = (svg: string) => /width="([\d.]+)mm" height="([\d.]+)mm" viewBox="0 0 ([\d.]+) ([\d.]+)"/.exec(svg)!.slice(1).map(Number);
+    const [w1, h1] = size(plain), [w2, h2, vw2] = size(big);
+    expect(w1).toBeCloseTo(40 + 2 + 0.28, 1);
+    expect(w2).toBeCloseTo(40 + 2 + 0.56, 1);    // the line is twice as thick, so are its round ends
+    expect(vw2).toBeCloseTo(w2 / 2, 1);
+    expect(h2).toBeGreaterThan(h1);              // the text and arrows take more room
+    const tikz2 = tikzOf(sk)!;
+    expect(tikz1).toContain("[x=1mm, y=1mm,");
+    expect(tikz1).not.toContain("every node");
+    expect(tikz2).toContain("[x=2mm, y=2mm,");
+    expect(tikz2).toContain("every node/.style={scale=2}");
+    expect(tikz2).toContain("member/.style={line width=1.6pt}");
+    expect(tikz2).toContain("tip/.tip={Stealth[length=3.6mm, width=2.2mm, inset=1.01mm]}");
+    expect(tikz2).toContain("\\draw[member] (0,0) -- (20,0);"); // 20 units of 2 mm
   });
 });

@@ -289,9 +289,11 @@ text.tex { fill: currentColor; font-family: var(--math); }
   font-weight: 500;
 }
 .tb-v input:hover, .tb-v input:focus { border-color: var(--rule); background: var(--board-hi); }
-#fig-scale { width: 3.4em; margin-left: 0; }
-/* The box that follows from the other one is shown lighter; typing in it takes over. */
-.tb-cell.follows input { color: var(--ink-2); border-bottom-style: dashed; }
+/* The dimension size slider, with its value beside it. */
+.tb-size .tb-v { display: flex; align-items: center; gap: 8px; }
+.tb-v input[type="range"] { width: 132px; margin: 0; padding: 0; border: 0; accent-color: var(--ink); cursor: pointer; }
+.tb-v input[type="range"]:hover, .tb-v input[type="range"]:focus { background: none; }
+#dim-scale-out { min-width: 3.2em; text-align: right; }
 
 .toast {
   position: absolute;

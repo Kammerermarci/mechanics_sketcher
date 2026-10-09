@@ -90,9 +90,10 @@ has no name yet to give it one.
 accepts a typed value, drops a shape that is only half drawn, and with
 nothing in progress returns to Select. Dragging with it pans. Esc or right-click cancels.
 
-**Print preview.** Q, or the eye button in the top right, hides everything
-that is not exported: helper geometry, point handles, constraint markers, the
-grid and the origin. Press it again to carry on editing.
+**Print preview.** Q, or the eye button in the top right, shows the figure
+as it is exported: annotations at their size in print, and without helper
+geometry, point handles, constraint markers, the grid and the origin. Press
+it again to go back to editing, with the view where it was.
 
 **Colours while sketching.** A curve is blue while it can still move and
 turns black once it is fully constrained; the box in the corner counts the
@@ -100,12 +101,17 @@ degrees of freedom left in the whole sketch. Where two curves lie on top of
 each other the shared stretch is drawn red; click there again to step through
 them.
 
-**Paper scale.** Text, arrows and symbols have fixed sizes on paper. The box
-in the corner sets how the drawing maps to paper, one of two ways: type a
-*figure width* and the scale follows the drawing so it always comes out that
-wide (annotations then grow or shrink against the geometry as it changes
-size); or type a *paper scale* and it stays put while you draw, with the
-width following instead.
+**Sizes.** While editing, dimensions, arrowheads, supports and every other
+annotation keep one size on screen however far you zoom, as in a CAD
+sketcher; only the geometry grows and shrinks. Where a dimension or a balloon
+sits is part of the drawing and moves with it.
+
+How large annotations are in the exported figure is set by one slider in the
+corner box, *Dimension size in print*. At 100% the text is 10 pt; moving the
+slider scales text, arrows, symbols and line widths together. Because that
+only shows in print, the print preview comes on while you move it.
+Double-click the slider to go back to 100%. *Figure width* next to it is how
+wide the geometry comes out, in centimetres.
 
 The origin is a fixed point at (0, 0) that geometry can be constrained and
 dimensioned against. The button in the top right hides its axes. It is never
@@ -137,9 +143,12 @@ small prompt before the download. The last name is offered again next time.
 \end{figure}
 ```
 
-One TikZ unit is one millimetre, so the figure comes out at the width shown
-in the corner box. Line widths and the arrowhead are named styles at the top
-of the picture and can be changed there.
+The figure comes out at the width shown in the corner box. At a dimension
+size of 100% one TikZ unit is one millimetre and the labels are set at the
+document's font size; at another size the unit, the line widths, the
+arrowheads and the labels (through `every node/.style={scale=...}`) are all
+scaled by it. Line widths and the arrowhead are named styles at the top of
+the picture and can be changed there.
 
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
@@ -165,8 +174,8 @@ of the picture and can be changed there.
   which points are still free, by pinning each in turn and seeing whether
   that uses up a degree of freedom.
 - `src/prims.ts`: breaks the sketch down into lines, circles, arcs, filled
-  regions and text in paper millimetres. The screen and both exporters draw
-  from this list.
+  regions and text, at a given number of annotation millimetres per model
+  unit. The screen and both exporters draw from this list.
 - `src/export.ts`: writes that list as SVG and as TikZ.
 - `src/regions.ts`: finds the closed regions for fills, and the stretches
   where curves overlap.
@@ -178,8 +187,12 @@ of the picture and can be changed there.
 - `src/app.ts`: tools, selection, dragging, commands and panels.
 
 Sizes that should not depend on how big the truss is (line widths, arrowheads,
-text) are fixed in paper units; the paper scale decides how many millimetres
-one model unit is.
+text, symbols) are in annotation millimetres: their size on paper at a
+dimension size of 100%. The editor lays the list out at a scale that follows
+the zoom, which keeps annotations one size on screen; the exporters lay it
+out at the scale that fits the figure width and then enlarge everything by
+the dimension size. Sketches saved before this (file version 1) kept
+placements in paper millimetres and are converted when they are opened.
 
 ## Installing it as an app
 

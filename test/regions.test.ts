@@ -5,7 +5,7 @@ import {
 } from "../src/model";
 import { findFaces, regionAt, findOverlaps } from "../src/regions";
 import {
-  buildPrims, fillOutlines, outlinePolygon, primDistance, mmPerUnit, figureWidth, balloonRadius, PAPER, type Prim,
+  buildPrims, fillOutlines, outlinePolygon, primDistance, printMm, balloonRadius, PAPER, type Prim,
 } from "../src/prims";
 
 const sq = (sk: Sketch, x: number, y: number, s: number): Point[] => {
@@ -179,7 +179,7 @@ describe("annotations", () => {
     const sk = emptySketch();
     const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
     const l = addLine(sk, a.id, b.id);
-    const bal = addSymbol(sk, { type: "balloon", text: "3", on: l.id, t: 0.5, x: 0, y: 0, dx: 0, dy: 10, end: "arrow" });
+    const bal = addSymbol(sk, { type: "balloon", text: "3", on: l.id, t: 0.5, x: 0, y: 0, dx: 0, dy: 1, end: "arrow" }); // one model unit above
     let prims = of(buildPrims(sk, 10, { editor: false }), bal.id);
     const circle = prims.find((p) => p.k === "circle");
     expect(circle).toMatchObject({ c: [20, 10], fill: "paper" });
@@ -236,28 +236,55 @@ describe("annotations", () => {
   it("reads axes saved with one length for both", () => {
     const old = JSON.parse(serialize(emptySketch()));
     old.symbols = [{ id: "s1", type: "frame", x: 0, y: 0, angle: 0, xLabel: "x", yLabel: "y", size: 14 }];
-    delete old.scaleMode;
     const sk = deserialize(JSON.stringify(old));
     expect(sk.symbols[0]).toMatchObject({ xSize: 14, ySize: 14 });
     expect(sk.symbols[0]).not.toHaveProperty("size");
-    expect(sk.scaleMode).toBe("width");
   });
 });
 
-describe("paper scale modes", () => {
-  it("follows the drawing in width mode and stays put in fixed mode", () => {
+describe("print scale", () => {
+  it("fits the geometry to the figure width, and shrinks it as the dimension size grows", () => {
     const sk = emptySketch();
     const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
     addLine(sk, a.id, b.id);
-    expect(mmPerUnit(sk)).toBeCloseTo(20);
-    expect(figureWidth(sk)).toBeCloseTo(80);
+    expect(printMm(sk)).toBeCloseTo(20);
     b.x = 8;
-    expect(mmPerUnit(sk)).toBeCloseTo(10); // annotations grow relative to the geometry
-    sk.scaleMode = "fixed";
-    sk.mmPerUnit = 15;
-    expect(mmPerUnit(sk)).toBe(15);
-    b.x = 16;
-    expect(mmPerUnit(sk)).toBe(15); // unchanged as the drawing grows
-    expect(figureWidth(sk)).toBeCloseTo(240);
+    expect(printMm(sk)).toBeCloseTo(10); // the figure stays 80 mm wide as the drawing grows
+    sk.dimScale = 2;
+    expect(printMm(sk)).toBeCloseTo(5);  // laid out at half the width, to be enlarged by 2
+  });
+
+  it("upgrades a version 1 sketch: placements in paper mm become model units", () => {
+    const sk = emptySketch();
+    const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
+    addLine(sk, a.id, b.id);
+    const v1 = JSON.parse(serialize(sk));
+    v1.version = 1;
+    delete v1.dimScale;
+    v1.scaleMode = "width";
+    v1.mmPerUnit = 10;
+    v1.constraints = [
+      { id: "k1", type: "distance", a: a.id, b: b.id, mode: "aligned", value: 4, offset: -8 },
+      { id: "k2", type: "radius", target: "c9", value: 1, angle: 0, len: 5 },
+    ];
+    v1.symbols = [{ id: "s1", type: "balloon", text: "1", x: 0, y: 0, dx: 10, dy: 20, end: "dot" }];
+    // 80 mm for 4 units: 20 mm per unit.
+    const up = deserialize(JSON.stringify(v1));
+    expect(up.version).toBe(2);
+    expect(up.dimScale).toBe(1);
+    expect(up.figureWidthMm).toBe(80);
+    expect(up.constraints[0]).toMatchObject({ offset: -0.4 });
+    expect(up.constraints[1]).toMatchObject({ len: 0.25 });
+    expect(up.symbols[0]).toMatchObject({ dx: 0.5, dy: 1 });
+    expect(printMm(up)).toBeCloseTo(20); // so it prints as it did
+
+    // A set paper scale becomes the figure width it gave.
+    v1.scaleMode = "fixed";
+    v1.mmPerUnit = 15;
+    const fixed = deserialize(JSON.stringify(v1));
+    expect(fixed.figureWidthMm).toBeCloseTo(60);
+    expect(fixed.constraints[0]).toMatchObject({ offset: -8 / 15 });
+    expect(printMm(fixed)).toBeCloseTo(15);
   });
 });
+

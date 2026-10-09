@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ORIGIN, emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, addSupport, addFrame, addSymbol, isEdge } from "../src/model";
 import {
-  mmPerUnit, geometryBox, buildPrims, anchorFor, dimTex, primDistance, textBox, arrowHeads, PAPER, type Prim,
+  printMm, geometryBox, buildPrims, anchorFor, dimTex, primDistance, textBox, arrowHeads, PAPER, type Prim,
   labelTex, textCorners, textCentre, frameTips, type TextPrim,
 } from "../src/prims";
 import { texRuns } from "../src/tex";
@@ -13,17 +13,17 @@ describe("paper scale", () => {
     const sk = emptySketch();
     const a = addPoint(sk, 1, 0), b = addPoint(sk, 5, 2);
     addLine(sk, a.id, b.id);
-    expect(mmPerUnit(sk)).toBeCloseTo(80 / 4);
+    expect(printMm(sk)).toBeCloseTo(80 / 4);
     sk.figureWidthMm = 120;
-    expect(mmPerUnit(sk)).toBeCloseTo(30);
+    expect(printMm(sk)).toBeCloseTo(30);
   });
 
   it("falls back to height for a vertical member, and to a default when empty", () => {
     const sk = emptySketch();
-    expect(mmPerUnit(sk)).toBe(10);
+    expect(printMm(sk)).toBe(10);
     const a = addPoint(sk, 0, 0), b = addPoint(sk, 0, 10);
     addLine(sk, a.id, b.id);
-    expect(mmPerUnit(sk)).toBeCloseTo(80 / 3);
+    expect(printMm(sk)).toBeCloseTo(80 / 3);
   });
 
   it("includes circles and only the swept part of arcs in the bounding box", () => {
@@ -46,12 +46,12 @@ describe("primitive list", () => {
     const sk = emptySketch();
     const a = addPoint(sk, 0, 0), b = addPoint(sk, 4, 0);
     const l = addLine(sk, a.id, b.id);
-    const d = addConstraint(sk, { type: "distance", a: a.id, b: b.id, mode: "aligned", value: 4, offset: -8 });
+    const d = addConstraint(sk, { type: "distance", a: a.id, b: b.id, mode: "aligned", value: 4, offset: -0.4 }); // model units: 8 mm at 20 mm per unit
     return { sk, l, d };
   }
   const of = (prims: Prim[], id: string) => prims.filter((p) => p.ref === id);
 
-  it("lays out a distance dimension in paper mm", () => {
+  it("lays out a distance dimension, its offset scaling with the drawing", () => {
     const { sk, l, d } = beam();
     const prims = buildPrims(sk, 20, { editor: false });
     expect(of(prims, l.id)).toMatchObject([{ k: "line", a: [0, 0], b: [80, 0], stroke: "member" }]);
@@ -85,7 +85,7 @@ describe("primitive list", () => {
     const sk = emptySketch();
     const o = addPoint(sk, 0, 0), a = addPoint(sk, 4, 0), b = addPoint(sk, 0, 3);
     const l1 = addLine(sk, o.id, a.id), l2 = addLine(sk, o.id, b.id);
-    const d = addConstraint(sk, { type: "angle", l1: l1.id, rev1: false, l2: l2.id, rev2: false, value: Math.PI / 2, radius: 10 });
+    const d = addConstraint(sk, { type: "angle", l1: l1.id, rev1: false, l2: l2.id, rev2: false, value: Math.PI / 2, radius: 1 }); // in model units
     const arc = buildPrims(sk, 10, { editor: false }).find((p) => p.ref === d.id && p.k === "arc");
     expect(arc).toMatchObject({ c: [0, 0], r: 10, a0: 0 });
     expect(arc && arc.k === "arc" && arc.a1).toBeCloseTo(Math.PI / 2);
@@ -218,7 +218,7 @@ describe("label preview", () => {
 });
 
 describe("new annotations", () => {
-  const fixed = () => { const sk = emptySketch(); sk.scaleMode = "fixed"; sk.mmPerUnit = 10; return sk; };
+  const fixed = () => emptySketch();
 
   it("turns typed spaces into TeX spaces, except the one that ends a command", () => {
     expect(labelTex("2 a")).toBe("2\\ a");

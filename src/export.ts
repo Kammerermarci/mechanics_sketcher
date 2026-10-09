@@ -5,15 +5,19 @@
 import type { Sketch } from "./model";
 import {
   type Prim, type StrokeStyle, type Outline, type Anchor, type LinePrim, type ArcPrim,
-  PAPER, STROKE_MM, STROKE_DASH, mmPerUnit, buildPrims, arrowHeads, strokedEnds, strokedSweep, textBox, textCorners, outlinePolygon,
+  PAPER, STROKE_MM, STROKE_DASH, printMm, buildPrims, arrowHeads, strokedEnds, strokedSweep, textBox, textCorners, outlinePolygon,
 } from "./prims";
 import { type V, type Box, emptyBox, grow, boxIsEmpty, polar, wrap, TWO_PI } from "./geom";
 import { texEngine } from "./tex";
 import { outlinePath } from "./render";
 
-/** The figure as primitives: no construction geometry, no hidden dimensions. */
+/**
+ * The figure as primitives: no construction geometry, no hidden dimensions.
+ * They are in annotation mm; enlarged by sk.dimScale they are the figure at
+ * its size on paper.
+ */
 export function figurePrims(sk: Sketch): Prim[] {
-  return buildPrims(sk, mmPerUnit(sk), { editor: false });
+  return buildPrims(sk, printMm(sk), { editor: false });
 }
 
 /** Everything the primitives cover, in paper mm. */
@@ -58,7 +62,8 @@ export function toSvg(sk: Sketch): string | null {
   const prims = figurePrims(sk);
   const box = figureBounds(prims);
   if (boxIsEmpty(box)) return null;
-  const margin = 1;
+  const k = sk.dimScale;
+  const margin = 1 / k; // 1 mm on paper
   const w = box.x1 - box.x0 + 2 * margin, h = box.y1 - box.y0 + 2 * margin;
   // SVG's y axis points down: flip, and put the top-left corner of the figure at the origin.
   const M = ([x, y]: V): V => [x - box.x0 + margin, box.y1 - y + margin];
@@ -108,7 +113,8 @@ export function toSvg(sk: Sketch): string | null {
 
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${num(w, 2)}mm" height="${num(h, 2)}mm" viewBox="0 0 ${num(w)} ${num(h)}">\n` +
+    // The drawing is in annotation mm; the size on paper enlarges all of it by the dimension size.
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${num(w * k, 2)}mm" height="${num(h * k, 2)}mm" viewBox="0 0 ${num(w)} ${num(h)}">\n` +
     `<g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round" font-family="'Latin Modern Math', 'STIX Two Math', 'Times New Roman', serif">\n` +
     body.join("\n") +
     `\n</g>\n</svg>\n`
@@ -118,9 +124,8 @@ export function toSvg(sk: Sketch): string | null {
 // ---- TikZ ---------------------------------------------------------------------
 
 /** Line widths in points, as LaTeX users know them. */
-const TIKZ_WIDTH: Record<StrokeStyle, string> = {
-  member: "0.8pt", construction: "0.4pt", dim: "0.3pt", symbol: "0.4pt", hatch: "0.3pt", centre: "0.3pt", centreline: "0.4pt",
-  arrow: "0.6pt",
+const TIKZ_WIDTH: Record<StrokeStyle, number> = {
+  member: 0.8, construction: 0.4, dim: 0.3, symbol: 0.4, hatch: 0.3, centre: 0.3, centreline: 0.4, arrow: 0.6,
 };
 const TIKZ_ANCHOR: Record<Anchor, string> = {
   c: "center", n: "north", s: "south", e: "east", w: "west",
@@ -162,12 +167,13 @@ function tips(p: LinePrim | ArcPrim): string {
 
 /**
  * The figure as a tikzpicture, or null when there is nothing to draw. One
- * unit is one millimetre. Labels are passed to LaTeX as they were typed, so
+ * unit is one millimetre at a dimension size of 100%. Labels are passed to LaTeX as they were typed, so
  * they come out in the document's own font.
  */
 export function toTikz(sk: Sketch): string | null {
   const prims = figurePrims(sk);
   if (!prims.length) return null;
+  const k = sk.dimScale;
   const used = new Set<StrokeStyle>();
   let needTip = false, needBigTip = false, needLabel = false;
   /** A tip sits on an arc: the bending library turns it to follow the curve. */
@@ -222,17 +228,21 @@ export function toTikz(sk: Sketch): string | null {
   for (const s of Object.keys(TIKZ_WIDTH) as StrokeStyle[]) {
     if (!used.has(s)) continue;
     const dash = STROKE_DASH[s];
-    const pattern = dash ? `, dash pattern=${dash.map((d, i) => `${i % 2 ? "off" : "on"} ${num(d, 2)}mm`).join(" ")}` : "";
-    styles.push(`${s}/.style={line width=${TIKZ_WIDTH[s]}${pattern}}`);
+    const pattern = dash ? `, dash pattern=${dash.map((d, i) => `${i % 2 ? "off" : "on"} ${num(d * k, 2)}mm`).join(" ")}` : "";
+    styles.push(`${s}/.style={line width=${num(TIKZ_WIDTH[s] * k, 2)}pt${pattern}}`);
   }
   if (needLabel) styles.push(`label/.style={inner sep=${num(PAPER.textSep, 2)}mm}`);
-  const tip = (name: string, k: number) =>
-    styles.push(`${name}/.tip={Stealth[length=${num(PAPER.arrowLen * k, 2)}mm, width=${num(PAPER.arrowWidth * k, 2)}mm, inset=${num(PAPER.arrowLen * k * 0.28, 2)}mm]}`);
-  if (needTip) tip("tip", 1);
-  if (needBigTip) tip("bigtip", PAPER.arrowScale);
+  const tip = (name: string, size: number) =>
+    styles.push(`${name}/.tip={Stealth[length=${num(PAPER.arrowLen * size, 2)}mm, width=${num(PAPER.arrowWidth * size, 2)}mm, inset=${num(PAPER.arrowLen * size * 0.28, 2)}mm]}`);
+  if (needTip) tip("tip", k);
+  if (needBigTip) tip("bigtip", PAPER.arrowScale * k);
+  // At another dimension size the whole picture is enlarged: the unit, the
+  // widths and tips above, and the text, which TikZ scales node by node.
+  const unit = `${num(k, 3)}mm`;
+  if (k !== 1) styles.unshift(`every node/.style={scale=${num(k, 3)}}`);
   return (
     `% Made with Mech Sketch. Needs \\usepackage{tikz}${needTip || needBigTip ? ` and \\usetikzlibrary{arrows.meta${bentTip ? ", bending" : ""}}` : ""}.\n` +
-    `\\begin{tikzpicture}[x=1mm, y=1mm, line cap=round, line join=round,\n  ${styles.join(",\n  ")}]\n` +
+    `\\begin{tikzpicture}[x=${unit}, y=${unit}, line cap=round, line join=round,\n  ${styles.join(",\n  ")}]\n` +
     lines.join("\n") +
     `\n\\end{tikzpicture}\n`
   );

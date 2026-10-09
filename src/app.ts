@@ -16,9 +16,9 @@ import {
   projectOnSegment, intersectLines, boxIsEmpty, grow, TWO_PI,
 } from "./geom";
 import {
-  type Prim, PAPER, mmPerUnit, figureWidth, geometryBox, buildPrims, dimensionPrims,
+  type Prim, PAPER, printMm, geometryBox, buildPrims, dimensionPrims,
   primDistance, textCentre, distanceFrame, angleFrame, roundFrame, symbolPosition, balloonAnchor,
-  balloonRadius, curveParam, sideOfCurve, formatNumber, frameTips, arrowLabelAt, arrowAnchor, centerMarkEnds,
+  curveParam, sideOfCurve, formatNumber, frameTips, arrowLabelAt, arrowAnchor, centerMarkEnds,
 } from "./prims";
 import {
   type View, type Glyph, type Preview, type SnapMark, GLYPH_SIZE, PREVIEW_REF, toScreen, toModel,
@@ -156,7 +156,14 @@ const DATUM_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#1
 const DATUM_LABEL_OFFSET: V = [2.4, 2.4];
 const EXPORT_NAME_KEY = "mech-sketch.exportName";
 
+/** Range of the dimension size slider, in percent. */
+const DIM_SCALE_MIN = 30, DIM_SCALE_MAX = 300;
 const AUTOSAVE_KEY = "mech-sketch.autosave";
+/**
+ * Screen pixels per annotation mm while editing. Text, arrowheads and symbols
+ * keep this size however far the view is zoomed, as in a CAD sketcher.
+ */
+const EDIT_PX_PER_MM = 5;
 const POINT_TOL = 10;  // px
 const CURVE_TOL = 7;   // px
 const DEFAULT_SCALE = 40;
@@ -188,8 +195,10 @@ export class App {
   private freedomStale = true;
   private fillColor = FILL_COLORS[0];
   private datumColor = DATUM_COLORS[0];
-  /** Print preview: only what is exported is drawn. */
+  /** Print preview: only what is exported is drawn, with annotations at their size in print. */
   private preview = false;
+  /** The view to go back to when the print preview is left. */
+  private viewBeforePreview: View | null = null;
   /** File name, without extension, offered for the next export. */
   private exportName = "figure";
   /** What the dimension box held when it opened, to tell an edit from a plain close. */
@@ -241,6 +250,15 @@ export class App {
   }
 
   // ---- state ----------------------------------------------------------------
+
+  /**
+   * Annotation mm per model unit for what is on screen. While editing it
+   * follows the zoom, which is what keeps annotations one size on screen; in
+   * the print preview it is the scale of the exported figure.
+   */
+  private mm(): number {
+    return this.preview ? printMm(this.sk) : this.view.scale / EDIT_PX_PER_MM;
+  }
 
   private solve(drags: Drag[] = []): SolveResult {
     this.result = this.solver.solve(this.sk, drags);
@@ -320,7 +338,7 @@ export class App {
   // ---- drawing the screen -----------------------------------------------------
 
   private draw(): void {
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     this.prims = buildPrims(this.sk, mm, { editor: !this.preview });
     this.glyphs = this.preview ? [] : layoutGlyphs(this.sk, this.view, this.glyphFilter());
 
@@ -353,7 +371,7 @@ export class App {
     if (this.chromeDirty) {
       this.chromeDirty = false;
       this.drawPanel();
-      this.drawTitleblock(mm);
+      this.drawTitleblock();
       this.updateButtons();
     }
     if (this.editing) this.placeEditor();
@@ -491,7 +509,7 @@ export class App {
     if (p.tool === "balloon") {
       const raw = toModel(this.view, this.cursor);
       pv.lines.push([p.anchor.pos, raw]);
-      pv.circles.push({ c: raw, r: PAPER.balloonRadius / mmPerUnit(this.sk) });
+      pv.circles.push({ c: raw, r: PAPER.balloonRadius / this.mm() });
       return pv;
     }
     if (p.tool === "line") {
@@ -547,7 +565,7 @@ export class App {
         if (Math.abs(sp[0] - g.x) <= half && Math.abs(sp[1] - g.y) <= half) offer({ id: g.id, kind: "glyph" }, 1, 0);
       }
     }
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     const pxPerMm = this.view.scale / mm;
     const q = mul(toModel(this.view, sp), mm);
     for (const p of this.prims) {
@@ -873,10 +891,9 @@ export class App {
         return;
       }
       const a = p.anchor;
-      const mm = mmPerUnit(this.sk);
       // Placed on the spot it points at, the balloon needs no leader.
       const onSpot = dist(toScreen(this.view, a.pos), sp) < 6;
-      const offset = onSpot ? [0, 0] : mul(sub(raw, a.pos), mm);
+      const offset = onSpot ? [0, 0] : sub(raw, a.pos);
       const b = addSymbol(this.sk, {
         type: "balloon", text: this.nextBalloonNumber(), x: a.pos[0], y: a.pos[1],
         dx: offset[0], dy: offset[1], end: a.curveId || a.pointId ? "arrow" : "dot",
@@ -970,7 +987,7 @@ export class App {
     const s = symbol(this.sk, d.id);
     if (!s) return;
     const m = toModel(this.view, sp);
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     const snapAngle = (a: number) => (this.altKey ? a : Math.round(a / (15 * DEG)) * 15 * DEG);
 
     if (s.type === "support" || s.type === "centermark") {
@@ -980,8 +997,9 @@ export class App {
       // A support's ground side follows the pointer; a centre mark's first line points at it.
       s.angle = snapAngle(s.type === "support" ? Math.atan2(dir[0], -dir[1]) : angleOf(dir));
     } else if (s.type === "balloon" || s.type === "datum") {
-      // The balloon, or the datum's name, moves; what it belongs to stays.
-      const moved = mul(sub(m, d.startModel), mm);
+      // The balloon, or the datum's name, moves; what it belongs to stays. A
+      // balloon is placed in the drawing; a name keeps its distance in annotation mm.
+      const moved = mul(sub(m, d.startModel), s.type === "balloon" ? 1 : mm);
       s.dx = d.origin[0] + moved[0];
       s.dy = d.origin[1] + moved[1];
     } else if (s.type === "hatch") {
@@ -1010,7 +1028,7 @@ export class App {
   private dragAxis(d: Extract<DragState, { kind: "axis" }>, sp: V): void {
     const s = symbol(this.sk, d.id);
     if (!s || s.type !== "frame") return;
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     const o = mul(symbolPosition(this.sk, s), mm);
     const q = mul(toModel(this.view, sp), mm);
     const ang = s.angle + (d.axis === "y" ? Math.PI / 2 : 0);
@@ -1024,7 +1042,7 @@ export class App {
   /** True when a screen position is on one of the four ends of a centre mark. */
   private centerMarkEndAt(s: Sym, sp: V): boolean {
     if (s.type !== "centermark") return false;
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     return centerMarkEnds(this.sk, s, mm).some((e) => dist(toScreen(this.view, [e[0] / mm, e[1] / mm]), sp) < 10);
   }
 
@@ -1032,7 +1050,7 @@ export class App {
   private dragReach(id: Id, sp: V): void {
     const s = symbol(this.sk, id);
     if (!s || s.type !== "centermark") return;
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     const f = roundFrame(this.sk, s.on, mm);
     if (!f) return;
     const over = dist(mul(toModel(this.view, sp), mm), f.c) - f.r;
@@ -1044,7 +1062,7 @@ export class App {
   /** Which axis tip of a pair of axes is under a screen position, if any. */
   private axisTipAt(s: Sym, sp: V, hit: Hit): { axis: "x" | "y"; slack: number } | null {
     if (s.type !== "frame") return null;
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     const tips = frameTips(this.sk, s, mm);
     const o = mul(symbolPosition(this.sk, s), mm);
     const q = mul(toModel(this.view, sp), mm);
@@ -1158,7 +1176,7 @@ export class App {
     } else if (hit.kind === "curve" && hit.part === "label") {
       // The name of an arrow: it moves on its own, the arrow stays.
       const e = entity(this.sk, hit.id) as Line | Arc;
-      const mm = mmPerUnit(this.sk);
+      const mm = this.mm();
       const origin = sub(arrowLabelAt(this.sk, e, mm) ?? [0, 0], arrowAnchor(this.sk, e, mm));
       this.drag = { kind: "label", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin, moved: false, edit: { kind: "arrow", id: hit.id } };
     } else if (hit.kind !== "glyph") {
@@ -1230,7 +1248,7 @@ export class App {
       d.moved = true;
       const l = entity(this.sk, d.id);
       if (l?.type === "line" || l?.type === "arc") {
-        const moved = mul(sub(toModel(this.view, sp), d.startModel), mmPerUnit(this.sk));
+        const moved = mul(sub(toModel(this.view, sp), d.startModel), this.mm());
         l.lx = d.origin[0] + moved[0];
         l.ly = d.origin[1] + moved[1];
       }
@@ -1399,14 +1417,14 @@ export class App {
   private dragDimension(id: Id, sp: V): void {
     const d = constraint(this.sk, id);
     if (!d || !isDimension(d)) return;
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     const q = mul(toModel(this.view, sp), mm);
     if (d.type === "distance") {
       const f = distanceFrame(this.sk, d, mm);
-      d.offset = dot(sub(q, f.A), f.n);
+      d.offset = dot(sub(q, f.A), f.n) / mm;
     } else if (d.type === "angle") {
       const f = angleFrame(this.sk, d, mm);
-      if (f) d.radius = Math.max(3, dist(q, f.vertex));
+      if (f) d.radius = Math.max(3, dist(q, f.vertex)) / mm;
     } else {
       // The far end of the leader follows the pointer: its direction, its
       // length, and whether it is inside the circle or outside.
@@ -1415,25 +1433,27 @@ export class App {
       const reach = dist(q, f.c);
       if (reach < 1e-9) return;
       d.angle = angleOf(sub(q, f.c));
-      const half = (v: number) => Math.max(2, this.altKey ? v : Math.round(v * 2) / 2);
+      // Never shorter than its own arrowhead.
+      const length = (v: number) => Math.max(2, v) / mm;
       if (reach > f.r + 1) {
         d.outside = true;
-        d.len = half(reach - f.r);
+        d.len = length(reach - f.r);
       } else if (reach < f.r - 1) {
         delete d.outside;
         // Close to the centre it snaps back to the usual leader from the centre.
         if (reach < Math.max(1.5, f.r * 0.12)) delete d.len;
-        else d.len = half(f.r - reach);
+        else d.len = length(f.r - reach);
       }
     }
   }
 
   /**
-   * Offset that puts a distance dimension on the outside of the figure: the
-   * side of the two points that faces away from the middle of the geometry.
+   * Offset, in model units, that puts a distance dimension on the outside of
+   * the figure: the side of the two points that faces away from the middle of
+   * the geometry, at the standard distance for the view as it is now.
    */
   private outsideOffset(a: Point, b: Point, mode: DistanceMode): number {
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     const box = geometryBox(this.sk);
     const centre: V = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
     const A: V = [a.x, a.y], B: V = [b.x, b.y];
@@ -1442,12 +1462,12 @@ export class App {
       const n = perp(norm(sub(B, A)));
       const lean = dot(sub(m, centre), n);
       const side = Math.abs(lean) < 1e-9 ? (n[1] > 0 ? -1 : 1) : Math.sign(lean);
-      return side * PAPER.dimOffset;
+      return (side * PAPER.dimOffset) / mm;
     }
     // Horizontal dimensions sit above or below both points, vertical ones left or right.
     const i = mode === "horizontal" ? 1 : 0;
     const lo = Math.min(A[i], B[i]), hi = Math.max(A[i], B[i]);
-    return m[i] <= centre[i] ? (lo - A[i]) * mm - PAPER.dimOffset : (hi - A[i]) * mm + PAPER.dimOffset;
+    return m[i] <= centre[i] ? lo - A[i] - PAPER.dimOffset / mm : hi - A[i] + PAPER.dimOffset / mm;
   }
 
   /**
@@ -1459,7 +1479,7 @@ export class App {
    */
   private dimensionDraft(at?: V): ConstraintDraft | string {
     const { pts, lines, rounds } = this.picked();
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     const xy = (p: Point): V => [p.x, p.y];
 
     if ((pts.length === 2 && !lines.length && !rounds.length) || (lines.length === 1 && !pts.length && !rounds.length)) {
@@ -1476,10 +1496,10 @@ export class App {
       let mode: DistanceMode = "aligned";
       if (slanted && inX && !inY) mode = "horizontal";
       else if (slanted && inY && !inX) mode = "vertical";
-      if (mode === "horizontal") return { type: "distance", a: a.id, b: b.id, mode, value: x1 - x0, offset: (at[1] - A[1]) * mm };
-      if (mode === "vertical") return { type: "distance", a: a.id, b: b.id, mode, value: y1 - y0, offset: (at[0] - A[0]) * mm };
+      if (mode === "horizontal") return { type: "distance", a: a.id, b: b.id, mode, value: x1 - x0, offset: at[1] - A[1] };
+      if (mode === "vertical") return { type: "distance", a: a.id, b: b.id, mode, value: y1 - y0, offset: at[0] - A[0] };
       const n = perp(norm(sub(B, A)));
-      return { type: "distance", a: a.id, b: b.id, mode, value: length, offset: dot(sub(at, A), n) * mm };
+      return { type: "distance", a: a.id, b: b.id, mode, value: length, offset: dot(sub(at, A), n) };
     }
 
     if (lines.length === 2 && !pts.length && !rounds.length) {
@@ -1517,7 +1537,7 @@ export class App {
       if (value < 1e-6 || value > Math.PI - 1e-6) return "Those lines are in line with each other.";
       const reach = Math.min(dist(a1, b1), dist(a2, b2)) * mm;
       const radius = at ? Math.max(3, dist(at, vertex) * mm) : Math.max(6, Math.min(14, reach * 0.35));
-      return { type: "angle", l1: l1.id, rev1, l2: l2.id, rev2, value, radius };
+      return { type: "angle", l1: l1.id, rev1, l2: l2.id, rev2, value, radius: radius / mm };
     }
 
     if (rounds.length === 1 && !pts.length && !lines.length) {
@@ -1528,7 +1548,7 @@ export class App {
         const base = { type: "radius" as const, target: e.id, value: r, angle: angleOf(sub(at, xy(c))) };
         // Placed beyond the rim, the dimension is drawn outside and reaches to the pointer.
         const beyond = (dist(at, xy(c)) - r) * mm;
-        return beyond > 1 ? { ...base, outside: true, len: Math.max(2, Math.round(beyond * 2) / 2) } : base;
+        return beyond > 1 ? { ...base, outside: true, len: Math.max(2, beyond) / mm } : base;
       }
       if (e.type === "circle") return { type: "radius", target: e.id, value: e.r, angle: Math.PI / 4 };
       const s = point(this.sk, e.p1), t = point(this.sk, e.p2);
@@ -1657,7 +1677,7 @@ export class App {
     this.dimEditor.value = value;
     this.dimEditor.setAttribute("aria-label", t.kind === "dim" ? "Dimension value or label" : "Name");
     // The prims on hand may predate the thing being edited (an arrow just drawn).
-    this.prims = buildPrims(this.sk, mmPerUnit(this.sk), { editor: !this.preview });
+    this.prims = buildPrims(this.sk, this.mm(), { editor: !this.preview });
     this.placeEditor();
     // Focus once the click that opened it has run its course; otherwise the
     // browser's own handling of that click takes the focus or the selection back.
@@ -1672,7 +1692,7 @@ export class App {
     const t = this.editing;
     if (!t) return;
     if (this.editValue(t) === null) return this.closeEditor();
-    const mm = mmPerUnit(this.sk);
+    const mm = this.mm();
     const text = this.editPrim(t);
     let at: V | null = text ? textCentre(text) : null;
     if (!at) {
@@ -1681,7 +1701,7 @@ export class App {
       else {
         const s = symbol(this.sk, t.id);
         if (s?.type === "datum") at = add(mul(symbolPosition(this.sk, s), mm), [s.dx, s.dy]);
-        else if (s?.type === "balloon") at = add(mul(balloonAnchor(this.sk, s), mm), [s.dx, s.dy]);
+        else if (s?.type === "balloon") at = mul(add(balloonAnchor(this.sk, s), [s.dx, s.dy]), mm);
         else if (s?.type === "frame" && t.kind === "axis") at = frameTips(this.sk, s, mm)[t.axis];
       }
     }
@@ -2094,28 +2114,58 @@ export class App {
 
   /** Zooms so the whole figure, with room for its dimensions, is in view. */
   private fit(): void {
-    const b = geometryBox(this.sk);
-    // Axes placed away from the geometry belong in view too.
-    const mm0 = mmPerUnit(this.sk);
-    for (const s of this.sk.symbols) {
-      if (s.type === "frame") grow(b, symbolPosition(this.sk, s), boxIsEmpty(b) ? 0 : Math.max(s.xSize, s.ySize) / mm0);
-      if (s.type === "balloon") grow(b, add(balloonAnchor(this.sk, s), [s.dx / mm0, s.dy / mm0]), balloonRadius(s.text) / mm0);
-    }
-    if (boxIsEmpty(b) || (b.x1 - b.x0 < 1e-9 && b.y1 - b.y0 < 1e-9)) {
-      this.view.cx = 0;
-      this.view.cy = 0;
-      this.view.scale = DEFAULT_SCALE;
-    } else {
-      const margin = 18 / mmPerUnit(this.sk); // paper mm kept clear around the geometry
-      const w = b.x1 - b.x0 + 2 * margin, h = b.y1 - b.y0 + 2 * margin;
-      // Keep the figure clear of the title block in the bottom corner.
-      const reserved = Math.min(this.titleblock.offsetHeight + 20, this.view.h / 3);
-      const usable = this.view.h - reserved;
-      this.view.scale = Math.min(this.view.w / w, usable / h);
+    // Keep the figure clear of the title block in the bottom corner.
+    const reserved = Math.min(this.titleblock.offsetHeight + 20, this.view.h / 3);
+    const usable = this.view.h - reserved;
+    // Twice: how much room axes take in the drawing depends on the zoom being worked out.
+    for (let pass = 0; pass < 2; pass++) {
+      const mm = this.mm();
+      const b = geometryBox(this.sk);
+      // Axes and balloons placed away from the geometry belong in view too.
+      for (const s of this.sk.symbols) {
+        if (s.type === "frame") grow(b, symbolPosition(this.sk, s), boxIsEmpty(b) ? 0 : Math.max(s.xSize, s.ySize) / mm);
+        if (s.type === "balloon") grow(b, add(balloonAnchor(this.sk, s), [s.dx, s.dy]));
+      }
+      if (boxIsEmpty(b) || (b.x1 - b.x0 < 1e-9 && b.y1 - b.y0 < 1e-9)) {
+        this.view.cx = 0;
+        this.view.cy = 0;
+        this.view.scale = DEFAULT_SCALE;
+        break;
+      }
+      const bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+      if (this.preview) {
+        // Annotations grow with the view here, so the room they need is a share of the figure.
+        const margin = 18 / mm;
+        this.view.scale = Math.min(this.view.w / (bw + 2 * margin), usable / (bh + 2 * margin));
+      } else {
+        // While editing they keep their size on screen, so the room is a fixed number of pixels.
+        const pad = 18 * EDIT_PX_PER_MM;
+        const fitTo = (px: number, extent: number) => (extent > 1e-9 ? Math.max(px - 2 * pad, px * 0.25) / extent : Infinity);
+        this.view.scale = Math.min(fitTo(this.view.w, bw), fitTo(usable, bh));
+      }
       this.view.cx = (b.x0 + b.x1) / 2;
       this.view.cy = (b.y0 + b.y1) / 2 - reserved / 2 / this.view.scale;
     }
     this.render();
+  }
+
+  /**
+   * Switches the print preview on or off. Going in, the view is fitted to the
+   * figure as it prints; coming back, it returns to where it was.
+   */
+  private setPreview(on: boolean): void {
+    if (on === this.preview) return;
+    this.closeEditor();
+    this.preview = on;
+    if (on) {
+      this.viewBeforePreview = { ...this.view };
+      this.fit();
+    } else if (this.viewBeforePreview) {
+      const { cx, cy, scale } = this.viewBeforePreview;
+      Object.assign(this.view, { cx, cy, scale });
+      this.viewBeforePreview = null;
+    }
+    this.touch();
   }
 
   // ---- chrome ---------------------------------------------------------------
@@ -2174,7 +2224,7 @@ export class App {
     $<HTMLButtonElement>('[data-act="preview"]').setAttribute("aria-pressed", String(this.preview));
   }
 
-  private drawTitleblock(mm: number): void {
+  private drawTitleblock(): void {
     const r = this.result;
     let state: string, cls: string, count: string;
     if (this.sk.entities.length <= 1) { count = "–"; state = "Nothing drawn yet"; cls = ""; }
@@ -2182,21 +2232,20 @@ export class App {
     else if (r.dof === 0) { count = "0"; state = "Fully constrained"; cls = "done"; }
     else { count = String(r.dof); state = r.dof === 1 ? "degree of freedom left" : "degrees of freedom left"; cls = "free"; }
 
-    // The box that was typed in last sets the scale; the other one follows and shows the result.
-    const fixed = this.sk.scaleMode === "fixed";
-    const width = formatNumber(Number(((fixed ? figureWidth(this.sk) : this.sk.figureWidthMm) / 10).toFixed(2)));
-    const scale = formatNumber(Number(mm.toFixed(3)));
-    const typing = this.titleblock.contains(document.activeElement) && document.activeElement?.tagName === "INPUT";
-    if (typing) {
-      // Leave the boxes alone while one is being typed in.
+    const width = formatNumber(Number((this.sk.figureWidthMm / 10).toFixed(2)));
+    const percent = Math.round(this.sk.dimScale * 100);
+    const busy = this.titleblock.contains(document.activeElement) && document.activeElement?.tagName === "INPUT";
+    if (busy) {
+      // Leave the controls alone while one is in use.
       const dof = this.titleblock.querySelector(".tb-dof");
       if (dof) dof.outerHTML = this.dofCell(count, state, cls);
       return;
     }
     this.titleblock.innerHTML =
       this.dofCell(count, state, cls) +
-      `<label class="tb-cell${fixed ? " follows" : ""}"><span class="tb-k">Figure width${fixed ? "" : " (set)"}</span><span class="tb-v"><input id="fig-width" data-scale="width" type="text" inputmode="decimal" value="${width}"> cm</span></label>` +
-      `<label class="tb-cell${fixed ? "" : " follows"}"><span class="tb-k">Paper scale${fixed ? " (set)" : ""}</span><span class="tb-v">1 unit = <input id="fig-scale" data-scale="fixed" type="text" inputmode="decimal" value="${scale}"> mm</span></label>`;
+      `<label class="tb-cell tb-size" title="How large text, arrows and symbols are in the exported figure. Double-click for 100%."><span class="tb-k">Dimension size in print</span>` +
+      `<span class="tb-v"><input id="dim-scale" data-scale="dim" type="range" min="${DIM_SCALE_MIN}" max="${DIM_SCALE_MAX}" step="5" value="${percent}" aria-valuetext="${percent}%"><output id="dim-scale-out" for="dim-scale">${percent}%</output></span></label>` +
+      `<label class="tb-cell" title="How wide the drawn geometry is in the exported figure."><span class="tb-k">Figure width</span><span class="tb-v"><input id="fig-width" data-scale="width" type="text" inputmode="decimal" value="${width}"> cm</span></label>`;
   }
 
   private dofCell(count: string, state: string, cls: string): string {
@@ -2249,8 +2298,8 @@ export class App {
         html += `<h2>Coordinate axes</h2>`;
         html += text("First axis label", "sym-xlabel", s.xLabel);
         html += text("Second axis label", "sym-ylabel", s.yLabel, "Written as TeX math. Leave empty for no label. Clicking a label on the drawing edits it there.");
-        html += number("First axis length (mm on paper)", "sym-xsize", mm(s.xSize));
-        html += number("Second axis length (mm on paper)", "sym-ysize", mm(s.ySize), "Set a length to 0 to leave that axis out.");
+        html += number("First axis length (mm in print at 100%)", "sym-xsize", mm(s.xSize));
+        html += number("Second axis length (mm in print at 100%)", "sym-ysize", mm(s.ySize), "Set a length to 0 to leave that axis out.");
         html += number("Rotation (degrees)", "sym-angle", degrees(s.angle));
         html += rotate;
         html += `<p class="muted note-block">Drag an arrow tip to make that axis longer or shorter. ${s.at ? "The axes are pinned to a joint and move with it; drag them away to free them." : "Drag the axes anywhere. Dropped on a joint, they stay pinned there."}</p>`;
@@ -2280,8 +2329,8 @@ export class App {
         break;
       case "hatch":
         html += `<h2>Hatching</h2>`;
-        html += number("Stroke length (mm on paper)", "sym-depth", mm(s.depth), "Dragging the hatching away from the curve sets this too.");
-        html += number("Spacing (mm on paper)", "sym-spacing", mm(s.spacing));
+        html += number("Stroke length (mm in print at 100%)", "sym-depth", mm(s.depth), "Dragging the hatching away from the curve sets this too.");
+        html += number("Spacing (mm in print at 100%)", "sym-spacing", mm(s.spacing));
         html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
         html += `<button type="button" class="plain" data-act="lean">Lean the strokes the other way</button>`;
         break;
@@ -2330,9 +2379,9 @@ export class App {
         html += `<div class="field"><span id="place-label">Drawn</span><div class="segmented" role="group" aria-labelledby="place-label">` +
           `<button type="button" data-place="inside" aria-pressed="${!d.outside}">Inside</button>` +
           `<button type="button" data-place="outside" aria-pressed="${!!d.outside}">Outside</button></div></div>`;
-        const shown = d.len !== undefined ? formatNumber(Number(d.len.toFixed(2))) : d.outside ? formatNumber(PAPER.radiusLeader) : "";
-        html += `<label class="field"><span>Arrow length (mm on paper)</span><input data-field="radius-len" type="text" inputmode="decimal" value="${shown}"${d.outside ? "" : ` placeholder="from the centre"`}>` +
-          `<small>${d.outside ? "" : "Empty: the arrow starts at the centre. "}Dragging the dimension sets the length too, and pulling it across the rim moves it inside or outside.</small></label>`;
+        const shown = d.len !== undefined ? formatNumber(Number(d.len.toPrecision(4))) : "";
+        html += `<label class="field"><span>Arrow length (in the drawing's units)</span><input data-field="radius-len" type="text" inputmode="decimal" value="${shown}" placeholder="${d.outside ? "standard" : "from the centre"}">` +
+          `<small>${d.outside ? "Empty: a standard length. " : "Empty: the arrow starts at the centre. "}Dragging the dimension sets the length too, and pulling it across the rim moves it inside or outside.</small></label>`;
       }
       html += `<label class="check"><input data-field="hidden" type="checkbox"${d.hidden ? " checked" : ""}><span>Leave out of the figure</span></label>`;
       html += `<button type="button" class="danger" data-act="delete">Delete dimension</button>`;
@@ -2475,20 +2524,28 @@ export class App {
     bar.addEventListener("focusout", unexplain);
 
     this.panel.addEventListener("change", (e) => this.onPanelChange(e.target as HTMLInputElement));
+    // The slider acts as it moves. What it changes only shows in print, so the preview comes on with it.
+    this.titleblock.addEventListener("input", (e) => {
+      const input = e.target as HTMLInputElement;
+      if (input.dataset.scale !== "dim") return;
+      this.setDimScale(Number(input.value));
+    });
+    this.titleblock.addEventListener("dblclick", (e) => {
+      const input = e.target as HTMLInputElement;
+      if (input.dataset?.scale !== "dim") return;
+      input.value = "100";
+      this.setDimScale(100);
+      input.blur();
+      this.commit();
+    });
     this.titleblock.addEventListener("change", (e) => {
       const input = e.target as HTMLInputElement;
-      const v = parseNumber(input.value);
       if (input.dataset.scale === "width") {
-        // A width: the scale follows the drawing so the figure stays this wide.
-        if (Number.isFinite(v) && v >= 1 && v <= 100) {
-          this.sk.figureWidthMm = v * 10;
-          this.sk.scaleMode = "width";
-        } else this.toast("Figure width must be between 1 and 100 cm.");
-      } else if (Number.isFinite(v) && v > 0 && v <= 1e6) {
-        // A scale: it stays put, and the figure width follows the drawing.
-        this.sk.mmPerUnit = v;
-        this.sk.scaleMode = "fixed";
-      } else this.toast("The scale must be a number of millimetres greater than zero.");
+        const v = parseNumber(input.value);
+        if (Number.isFinite(v) && v >= 1 && v <= 100) this.sk.figureWidthMm = v * 10;
+        else this.toast("Figure width must be between 1 and 100 cm.");
+      }
+      // For the slider this is the end of a drag: the size is set already, and is recorded now.
       input.blur();
       this.commit();
     });
@@ -2548,8 +2605,7 @@ export class App {
         return this.commit();
       }
       case "preview":
-        this.preview = !this.preview;
-        return this.touch();
+        return this.setPreview(!this.preview);
       case "origin":
         this.sk.showOrigin = !this.sk.showOrigin;
         return this.commit();
@@ -2615,6 +2671,19 @@ export class App {
     if (!s) return;
     change(s);
     this.commit();
+  }
+
+  /** Sets how large annotations are in print, from the slider's percentage, and shows the result. */
+  private setDimScale(percent: number): void {
+    if (!Number.isFinite(percent)) return;
+    this.sk.dimScale = Math.max(DIM_SCALE_MIN, Math.min(DIM_SCALE_MAX, percent)) / 100;
+    const out = this.titleblock.querySelector("#dim-scale-out");
+    if (out) out.textContent = `${Math.round(this.sk.dimScale * 100)}%`;
+    if (!this.preview) {
+      this.setPreview(true);
+      this.toast("Showing the print preview, where the dimension size applies. Press Q to go back to editing.");
+    }
+    this.render();
   }
 
   /** Colours the selected fill or datum point, and remembers the colour for the next one of its kind. */
@@ -2720,8 +2789,8 @@ export class App {
     if (field === "radius-len" && d.type === "radius") {
       const v = parseNumber(input.value);
       if (input.value.trim() === "") delete d.len;
-      else if (Number.isFinite(v) && v >= 1 && v <= 300) d.len = v;
-      else { this.toast("The arrow length must be between 1 and 300 mm."); return this.touch(); }
+      else if (Number.isFinite(v) && v > 0) d.len = v;
+      else { this.toast("The arrow length must be a number greater than zero."); return this.touch(); }
       return this.commit();
     }
     if (field === "value") {
@@ -2781,7 +2850,7 @@ export class App {
     this.altKey = e.altKey;
     const target = e.target as HTMLElement;
     // Checkboxes and buttons keep focus after a click but take no text.
-    const textInput = target.tagName === "INPUT" && !["checkbox", "radio", "button", "file"].includes((target as HTMLInputElement).type);
+    const textInput = target.tagName === "INPUT" && !["checkbox", "radio", "button", "file", "range"].includes((target as HTMLInputElement).type);
     const typing = textInput || target.tagName === "TEXTAREA" || target.isContentEditable;
     const mod = e.ctrlKey || e.metaKey;
 

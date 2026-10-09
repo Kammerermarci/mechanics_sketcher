@@ -6,15 +6,15 @@ import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
   type Arc, type Line, type Sym, type Support, type Frame, type CenterMark, type Balloon,
   type Fill as FillSym, type Hatch, type Datum,
-  ORIGIN, entity, point, arcRadius, isDimension, curves, curvePoints,
+  entity, point, arcRadius, arcAngles, isDimension, geometryBox, geometryExtent,
 } from "./model";
 import {
   type V, type Box, add, sub, mul, dot, norm, perp, mid, polar, dist, len, angleOf, wrap, inSweep,
-  distToSegment, intersectLines, emptyBox, grow, boxIsEmpty, TWO_PI,
+  distToSegment, intersectLines, TWO_PI,
 } from "./geom";
 import { texEngine } from "./tex";
 
-/** Sizes on paper, in mm. 1 pt = 0.3515 mm. */
+/** Sizes of annotations in annotation mm: what they measure on paper at a dimension size of 100%. 1 pt = 0.3515 mm. */
 export const PAPER = {
   member: 0.28,        // 0.8 pt
   construction: 0.14,  // 0.4 pt
@@ -101,68 +101,21 @@ export type OutlineSeg =
 export interface RegionPrim extends Base { k: "region"; outlines: Outline[]; color: string }
 export type Prim = LinePrim | CirclePrim | PolyPrim | ArcPrim | TextPrim | RegionPrim;
 
-// ---- paper scale ----------------------------------------------------------
+// ---- scale ------------------------------------------------------------------
 
-function arcAngles(sk: Sketch, a: Arc): { a0: number; a1: number } {
-  const c = point(sk, a.c), s = point(sk, a.p1), e = point(sk, a.p2);
-  const a0 = Math.atan2(s.y - c.y, s.x - c.x);
-  let a1 = Math.atan2(e.y - c.y, e.x - c.x);
-  if (a1 <= a0) a1 += TWO_PI;
-  return { a0, a1 };
-}
-
-/** Bounding box of the geometry in model units. Dimensions are not included. */
-export function geometryBox(sk: Sketch): Box {
-  const b = emptyBox();
-  // The origin counts only when something is drawn from it.
-  const originUsed = curves(sk).some((c) => curvePoints(c).includes(ORIGIN));
-  for (const e of sk.entities) {
-    if (e.type === "point") {
-      if (e.id !== ORIGIN || originUsed) grow(b, [e.x, e.y]);
-    }
-    else if (e.type === "circle") {
-      const c = point(sk, e.c);
-      grow(b, [c.x, c.y], e.r);
-    } else if (e.type === "arc") {
-      const c = point(sk, e.c);
-      const r = arcRadius(sk, e);
-      const { a0, a1 } = arcAngles(sk, e);
-      for (let q = 0; q < 4; q++) {
-        const ang = (q * Math.PI) / 2;
-        if (inSweep(ang, a0, a1)) grow(b, polar([c.x, c.y], r, ang));
-      }
-    }
-  }
-  return b;
-}
+export { geometryBox };
 
 const DEFAULT_MM_PER_UNIT = 10;
 
 /**
- * Paper millimetres per model unit that makes the geometry `widthMm` wide.
- * Tall, narrow sketches are limited by height instead, so a single vertical
- * member does not blow the scale up.
+ * Annotation millimetres per model unit for the exported figure. Laid out at
+ * this scale and then enlarged by dimScale as a whole, the geometry comes out
+ * figureWidthMm wide and every annotation dimScale times its standard size.
  */
-export function scaleForWidth(sk: Sketch, widthMm: number): number {
-  const b = geometryBox(sk);
-  if (boxIsEmpty(b)) return DEFAULT_MM_PER_UNIT;
-  const extent = Math.max(b.x1 - b.x0, (b.y1 - b.y0) * 0.3);
+export function printMm(sk: Sketch): number {
+  const extent = geometryExtent(sk);
   if (extent < 1e-9) return DEFAULT_MM_PER_UNIT;
-  return widthMm / extent;
-}
-
-/**
- * Paper millimetres per model unit. Either a set value, or whatever makes the
- * geometry `figureWidthMm` wide.
- */
-export function mmPerUnit(sk: Sketch): number {
-  return sk.scaleMode === "fixed" ? sk.mmPerUnit : scaleForWidth(sk, sk.figureWidthMm);
-}
-
-/** Width of the geometry on paper at the current scale, in mm. */
-export function figureWidth(sk: Sketch): number {
-  const b = geometryBox(sk);
-  return boxIsEmpty(b) ? 0 : (b.x1 - b.x0) * mmPerUnit(sk);
+  return sk.figureWidthMm / sk.dimScale / extent;
 }
 
 // ---- dimension text ---------------------------------------------------------
@@ -223,16 +176,17 @@ const P = (sk: Sketch, id: Id, mm: number): V => {
 export function distanceFrame(sk: Sketch, d: DistanceDim, mm: number) {
   const A = P(sk, d.a, mm), B = P(sk, d.b, mm);
   const side = d.offset < 0 ? -1 : 1;
+  const offset = d.offset * mm;
   if (d.mode === "horizontal") {
-    const y = A[1] + d.offset;
+    const y = A[1] + offset;
     return { A, B, A2: [A[0], y] as V, B2: [B[0], y] as V, n: [0, 1] as V, out: [0, side] as V };
   }
   if (d.mode === "vertical") {
-    const x = A[0] + d.offset;
+    const x = A[0] + offset;
     return { A, B, A2: [x, A[1]] as V, B2: [x, B[1]] as V, n: [1, 0] as V, out: [side, 0] as V };
   }
   const n = perp(norm(sub(B, A)));
-  return { A, B, A2: add(A, mul(n, d.offset)), B2: add(B, mul(n, d.offset)), n, out: mul(n, side) };
+  return { A, B, A2: add(A, mul(n, offset)), B2: add(B, mul(n, offset)), n, out: mul(n, side) };
 }
 
 function distancePrims(sk: Sketch, d: DistanceDim, mm: number): Prim[] {
@@ -281,17 +235,18 @@ function anglePrims(sk: Sketch, d: AngleDim, mm: number): Prim[] {
   const f = angleFrame(sk, d, mm);
   if (!f) return [];
   const out: Prim[] = [];
+  const radius = d.radius * mm;
   // Extension lines where the arc ends beyond a member.
   for (const [seg, ang] of [[f.seg1, f.start], [f.seg2, f.end]] as [[V, V], number][]) {
-    const tip = polar(f.vertex, d.radius, ang);
+    const tip = polar(f.vertex, radius, ang);
     if (distToSegment(tip, seg[0], seg[1]) < 0.3) continue;
     const near = dist(tip, seg[0]) < dist(tip, seg[1]) ? seg[0] : seg[1];
     const dir = norm(sub(tip, near));
     out.push({ ...base, k: "line", stroke: "dim", a: add(near, mul(dir, PAPER.extGap)), b: add(tip, mul(dir, PAPER.extOver)) });
   }
-  out.push({ ...base, k: "arc", stroke: "dim", c: f.vertex, r: d.radius, a0: f.start, a1: f.end, arrowA: true, arrowB: true });
+  out.push({ ...base, k: "arc", stroke: "dim", c: f.vertex, r: radius, a0: f.start, a1: f.end, arrowA: true, arrowB: true });
   const midAng = (f.start + f.end) / 2;
-  out.push({ ...base, k: "text", at: polar(f.vertex, d.radius, midAng), tex: dimTex(d), anchor: anchorFor([Math.cos(midAng), Math.sin(midAng)]) });
+  out.push({ ...base, k: "text", at: polar(f.vertex, radius, midAng), tex: dimTex(d), anchor: anchorFor([Math.cos(midAng), Math.sin(midAng)]) });
   return out;
 }
 
@@ -314,8 +269,8 @@ export function radiusLeader(sk: Sketch, d: RadiusDim, mm: number): { c: V; r: n
   const dir: V = [Math.cos(d.angle), Math.sin(d.angle)];
   const tip = add(f.c, mul(dir, f.r));
   const far = d.outside
-    ? add(tip, mul(dir, d.len ?? PAPER.radiusLeader))
-    : d.len === undefined ? f.c : sub(tip, mul(dir, d.len));
+    ? add(tip, mul(dir, d.len === undefined ? PAPER.radiusLeader : d.len * mm))
+    : d.len === undefined ? f.c : sub(tip, mul(dir, d.len * mm));
   return { ...f, dir, tip, far };
 }
 
@@ -526,7 +481,7 @@ export function balloonRadius(text: string, circle = true): number {
 function balloonPrims(sk: Sketch, s: Balloon, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const };
   const anchor = mul(balloonAnchor(sk, s), mm);
-  const centre: V = [anchor[0] + s.dx, anchor[1] + s.dy];
+  const centre: V = [anchor[0] + s.dx * mm, anchor[1] + s.dy * mm];
   const ringed = s.circle !== false;
   const r = balloonRadius(s.text, ringed);
   const out: Prim[] = [];

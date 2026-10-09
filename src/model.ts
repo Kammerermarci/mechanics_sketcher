@@ -1,6 +1,8 @@
 // The sketch document: geometry, constraints, dimensions and symbols.
 // Coordinates are y-up, in unitless model units.
 
+import { type Box, emptyBox, grow, boxIsEmpty, inSweep, polar, TWO_PI } from "./geom";
+
 export type Id = string;
 
 export interface Point {
@@ -24,7 +26,7 @@ export interface Line {
   arrow?: ArrowEnds;
   /** The arrow's name, as TeX math. */
   label?: string;
-  /** Where the name sits, in paper mm from the middle of the arrow. Unset: beside it. */
+  /** Where the name sits, in annotation mm from the middle of the arrow. Unset: beside it. */
   lx?: number;
   ly?: number;
 }
@@ -54,7 +56,7 @@ export interface Arc {
   arrow?: ArrowEnds;
   /** The arrow's name, as TeX math. */
   label?: string;
-  /** Where the name sits, in paper mm from the middle of the arc. Unset: outside it. */
+  /** Where the name sits, in annotation mm from the middle of the arc. Unset: outside it. */
   lx?: number;
   ly?: number;
 }
@@ -88,7 +90,7 @@ export interface DistanceDim extends DimBase {
   a: Id;
   b: Id;
   mode: DistanceMode;
-  /** Where the dimension line sits, in paper mm from point a. Signed. */
+  /** Where the dimension line sits, in model units from point a. Signed. */
   offset: number;
   /** Whether the text is turned to run along the dimension line. Unset: along for aligned, upright otherwise. */
   text?: "along" | "upright";
@@ -100,7 +102,7 @@ export interface AngleDim extends DimBase {
   rev1: boolean;
   l2: Id;
   rev2: boolean;
-  /** Radius of the dimension arc, in paper mm. */
+  /** Radius of the dimension arc, in model units. */
   radius: number;
 }
 export interface RadiusDim extends DimBase {
@@ -110,7 +112,7 @@ export interface RadiusDim extends DimBase {
   angle: number;
   /** Drawn outside the circle, pointing in at the rim, instead of from the inside. */
   outside?: boolean;
-  /** Length of the leader in paper mm. Unset: from the centre when inside, a standard length outside. */
+  /** Length of the leader in model units. Unset: from the centre when inside, a standard length outside. */
   len?: number;
 }
 export type Dimension = DistanceDim | AngleDim | RadiusDim;
@@ -144,7 +146,7 @@ export interface Frame {
   /** TeX labels of the two axes; empty for none. */
   xLabel: string;
   yLabel: string;
-  /** Length of each axis on paper, in mm. 0 leaves that axis out. */
+  /** Length of each axis in annotation mm (see Sketch.dimScale). 0 leaves that axis out. */
   xSize: number;
   ySize: number;
 }
@@ -170,7 +172,7 @@ export interface Balloon {
   t?: number;
   x: number;
   y: number;
-  /** Centre of the balloon relative to what it points at, in paper mm. */
+  /** Centre of the balloon relative to what it points at, in model units. */
   dx: number;
   dy: number;
   end: LeaderEnd;
@@ -201,7 +203,7 @@ export interface Hatch {
   on: Id;
   /** Which side of the curve, seen along its direction: 1 left, -1 right. */
   side: 1 | -1;
-  /** Distance between strokes and how far they reach, in paper mm. */
+  /** Distance between strokes and how far they reach, in annotation mm. */
   spacing: number;
   depth: number;
   /** Which way the strokes lean along the curve: 1 back towards its start, -1 forwards. */
@@ -217,7 +219,7 @@ export interface Datum {
   color: string;
   /** Name as TeX math; empty for none. */
   label: string;
-  /** Centre of the name relative to the point, in paper mm. */
+  /** Centre of the name relative to the point, in annotation mm. */
   dx: number;
   dy: number;
 }
@@ -238,21 +240,23 @@ export function symbolRefs(s: Sym): Id[] {
   }
 }
 
-/** How the paper scale is chosen: fit a set width, or stay at a set scale. */
-export type ScaleMode = "width" | "fixed";
-
+/**
+ * Sizes come in two kinds. Geometry, and where a dimension or balloon sits,
+ * is in model units. The size of what annotates it (text, arrowheads,
+ * supports, the gaps of a dimension) is in "annotation mm": the size it has
+ * on paper when dimScale is 1. While editing, annotations keep one size on
+ * screen however far the view is zoomed; in print they are scaled by dimScale.
+ */
 export interface Sketch {
-  version: 1;
+  version: 2;
   nextId: number;
   entities: Entity[];
   constraints: Constraint[];
   symbols: Sym[];
-  /** Width of the drawn geometry on paper, in mm. Used when scaleMode is "width". */
+  /** Width of the drawn geometry in the exported figure, in mm. */
   figureWidthMm: number;
-  /** "width": the scale follows the drawing so it stays figureWidthMm wide. "fixed": it stays at mmPerUnit. */
-  scaleMode: ScaleMode;
-  /** Paper mm per model unit. Used when scaleMode is "fixed". */
-  mmPerUnit: number;
+  /** How large annotations are in the exported figure: 1 gives 10 pt text, 2 twice that. */
+  dimScale: number;
   /** Whether the editor draws axes at the origin. They are never exported. */
   showOrigin: boolean;
 }
@@ -269,8 +273,8 @@ function originPoint(): Point {
 
 export function emptySketch(): Sketch {
   return {
-    version: 1, nextId: 1, entities: [originPoint()], constraints: [], symbols: [],
-    figureWidthMm: 80, scaleMode: "width", mmPerUnit: 10, showOrigin: true,
+    version: 2, nextId: 1, entities: [originPoint()], constraints: [], symbols: [],
+    figureWidthMm: 80, dimScale: 1, showOrigin: true,
   };
 }
 
@@ -359,6 +363,50 @@ export function pointInUse(sk: Sketch, pointId: Id): boolean {
 export function arcRadius(sk: Sketch, a: Arc): number {
   const c = point(sk, a.c), s = point(sk, a.p1);
   return Math.hypot(s.x - c.x, s.y - c.y);
+}
+
+/** Start and end angle of an arc, with the end above the start. */
+export function arcAngles(sk: Sketch, a: Arc): { a0: number; a1: number } {
+  const c = point(sk, a.c), s = point(sk, a.p1), e = point(sk, a.p2);
+  const a0 = Math.atan2(s.y - c.y, s.x - c.x);
+  let a1 = Math.atan2(e.y - c.y, e.x - c.x);
+  if (a1 <= a0) a1 += TWO_PI;
+  return { a0, a1 };
+}
+
+/** Bounding box of the geometry in model units. Dimensions are not included. */
+export function geometryBox(sk: Pick<Sketch, "entities">): Box {
+  const all = sk as Sketch;
+  const b = emptyBox();
+  // The origin counts only when something is drawn from it.
+  const originUsed = curves(all).some((c) => curvePoints(c).includes(ORIGIN));
+  for (const e of sk.entities) {
+    if (e.type === "point") {
+      if (e.id !== ORIGIN || originUsed) grow(b, [e.x, e.y]);
+    } else if (e.type === "circle") {
+      const c = point(all, e.c);
+      grow(b, [c.x, c.y], e.r);
+    } else if (e.type === "arc") {
+      const c = point(all, e.c);
+      const r = arcRadius(all, e);
+      const { a0, a1 } = arcAngles(all, e);
+      for (let q = 0; q < 4; q++) {
+        const ang = (q * Math.PI) / 2;
+        if (inSweep(ang, a0, a1)) grow(b, polar([c.x, c.y], r, ang));
+      }
+    }
+  }
+  return b;
+}
+
+/**
+ * How far the geometry reaches for the purpose of fitting it to a width: its
+ * width, or for tall, narrow sketches part of its height, so a single
+ * vertical member does not blow the scale up. 0 when there is nothing to fit.
+ */
+export function geometryExtent(sk: Pick<Sketch, "entities">): number {
+  const b = geometryBox(sk);
+  return boxIsEmpty(b) ? 0 : Math.max(b.x1 - b.x0, (b.y1 - b.y0) * 0.3);
 }
 
 // ---- editing ------------------------------------------------------------
@@ -467,22 +515,67 @@ function upgradeSymbol(s: Sym): Sym {
   return s;
 }
 
+/** A sketch as saved by the first file format, where placements were in paper mm. */
+interface SketchV1 {
+  version: 1;
+  nextId?: number;
+  entities: Entity[];
+  constraints: Constraint[];
+  symbols?: Sym[];
+  figureWidthMm?: number;
+  scaleMode?: "width" | "fixed";
+  mmPerUnit?: number;
+  showOrigin?: boolean;
+}
+
+/**
+ * Brings a version 1 sketch up to date. It kept where dimensions and
+ * balloons sit in paper millimetres, at a paper scale that was either set
+ * or followed from a figure width. Those placements become model units, at
+ * the scale the sketch had, so the figure prints as it did.
+ */
+function upgradeV1(raw: SketchV1, entities: Entity[]): Pick<Sketch, "constraints" | "symbols" | "figureWidthMm"> {
+  const extent = geometryExtent({ entities });
+  let width = raw.figureWidthMm && raw.figureWidthMm > 0 ? raw.figureWidthMm : 80;
+  let mm = extent > 1e-9 ? width / extent : 10;
+  if (raw.scaleMode === "fixed" && raw.mmPerUnit && raw.mmPerUnit > 0) {
+    mm = raw.mmPerUnit;
+    if (extent > 1e-9) width = Math.max(10, Math.min(1000, extent * mm));
+  }
+  const constraints = raw.constraints.map((c): Constraint => {
+    if (c.type === "distance") return { ...c, offset: c.offset / mm };
+    if (c.type === "angle") return { ...c, radius: c.radius / mm };
+    if (c.type === "radius" && c.len !== undefined) return { ...c, len: c.len / mm };
+    return c;
+  });
+  const symbols = (Array.isArray(raw.symbols) ? raw.symbols : []).map((s): Sym =>
+    s.type === "balloon" ? { ...s, dx: s.dx / mm, dy: s.dy / mm } : s);
+  return { constraints, symbols, figureWidthMm: width };
+}
+
 export function deserialize(text: string): Sketch {
-  const raw = JSON.parse(text) as Partial<Sketch>;
-  if (raw.version !== 1 || !Array.isArray(raw.entities) || !Array.isArray(raw.constraints)) {
+  const raw = JSON.parse(text) as Partial<Sketch> | SketchV1;
+  if ((raw.version !== 1 && raw.version !== 2) || !Array.isArray(raw.entities) || !Array.isArray(raw.constraints)) {
     throw new Error("This file is not a sketch saved by this tool.");
   }
   // Files from before the origin existed get one.
   const entities = raw.entities.some((e) => e.id === ORIGIN) ? raw.entities : [originPoint(), ...raw.entities];
+  const body = raw.version === 1
+    ? upgradeV1(raw, entities)
+    : {
+      constraints: raw.constraints,
+      symbols: Array.isArray(raw.symbols) ? raw.symbols : [],
+      figureWidthMm: raw.figureWidthMm && raw.figureWidthMm > 0 ? raw.figureWidthMm : 80,
+    };
+  const dimScale = raw.version === 2 && raw.dimScale && raw.dimScale > 0 ? raw.dimScale : 1;
   return {
-    version: 1,
+    version: 2,
     nextId: raw.nextId ?? 1,
     entities,
-    constraints: raw.constraints,
-    symbols: (Array.isArray(raw.symbols) ? raw.symbols : []).map(upgradeSymbol),
-    figureWidthMm: raw.figureWidthMm ?? 80,
-    scaleMode: raw.scaleMode === "fixed" ? "fixed" : "width",
-    mmPerUnit: raw.mmPerUnit && raw.mmPerUnit > 0 ? raw.mmPerUnit : 10,
+    constraints: body.constraints,
+    symbols: body.symbols.map(upgradeSymbol),
+    figureWidthMm: body.figureWidthMm,
+    dimScale,
     showOrigin: raw.showOrigin ?? true,
   };
 }
