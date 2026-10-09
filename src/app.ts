@@ -155,6 +155,9 @@ const DATUM_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#1
 /** Where a datum's name starts out, in mm from its point. */
 const DATUM_LABEL_OFFSET: V = [2.4, 2.4];
 const EXPORT_NAME_KEY = "mech-sketch.exportName";
+const EDIT_SCALE_KEY = "mech-sketch.editScale";
+/** Range of the slider for the size of annotations while editing, in percent. */
+const EDIT_SCALE_MIN = 50, EDIT_SCALE_MAX = 250;
 
 /** Range of the dimension size slider, in percent. */
 const DIM_SCALE_MIN = 30, DIM_SCALE_MAX = 300;
@@ -197,6 +200,8 @@ export class App {
   private datumColor = DATUM_COLORS[0];
   /** Print preview: only what is exported is drawn, with annotations at their size in print. */
   private preview = false;
+  /** How large annotations are on screen while editing, against the standard size. A setting of this browser, not of the sketch. */
+  private editScale = 1;
   /** The view to go back to when the print preview is left. */
   private viewBeforePreview: View | null = null;
   /** File name, without extension, offered for the next export. */
@@ -257,7 +262,7 @@ export class App {
    * the print preview it is the scale of the exported figure.
    */
   private mm(): number {
-    return this.preview ? printMm(this.sk) : this.view.scale / EDIT_PX_PER_MM;
+    return this.preview ? printMm(this.sk) : this.view.scale / (EDIT_PX_PER_MM * this.editScale);
   }
 
   private solve(drags: Drag[] = []): SolveResult {
@@ -286,6 +291,11 @@ export class App {
       const saved = localStorage.getItem(AUTOSAVE_KEY);
       if (saved) this.sk = deserialize(saved);
       this.exportName = localStorage.getItem(EXPORT_NAME_KEY) || this.exportName;
+      const scale = Number(localStorage.getItem(EDIT_SCALE_KEY));
+      if (scale >= EDIT_SCALE_MIN / 100 && scale <= EDIT_SCALE_MAX / 100) {
+        this.editScale = scale;
+        this.showEditScale();
+      }
     } catch {
       this.sk = emptySketch();
     }
@@ -2139,7 +2149,7 @@ export class App {
         this.view.scale = Math.min(this.view.w / (bw + 2 * margin), usable / (bh + 2 * margin));
       } else {
         // While editing they keep their size on screen, so the room is a fixed number of pixels.
-        const pad = 18 * EDIT_PX_PER_MM;
+        const pad = 18 * EDIT_PX_PER_MM * this.editScale;
         const fitTo = (px: number, extent: number) => (extent > 1e-9 ? Math.max(px - 2 * pad, px * 0.25) / extent : Infinity);
         this.view.scale = Math.min(fitTo(this.view.w, bw), fitTo(usable, bh));
       }
@@ -2178,10 +2188,39 @@ export class App {
       `<button type="button" class="icon-btn" data-act="undo" aria-label="Undo" title="Undo (Ctrl+Z)">${icon("undo")}</button>` +
       `<button type="button" class="icon-btn" data-act="redo" aria-label="Redo" title="Redo (Ctrl+Y)">${icon("redo")}</button>` +
       `<span class="rule"></span>` +
+      `<div class="menu">` +
+      `<button type="button" class="icon-btn" id="view-btn" data-menu="view" aria-label="View settings" title="View settings" aria-haspopup="true" aria-expanded="false" aria-controls="view-list">${icon("sliders")}</button>` +
+      `<div class="menu-list popover" id="view-list" role="group" aria-labelledby="view-btn" hidden>` +
+      `<label class="pop-row" title="Double-click for 100%."><span>Dimension size while editing</span>` +
+      `<span class="pop-ctl"><input id="edit-scale" type="range" min="${EDIT_SCALE_MIN}" max="${EDIT_SCALE_MAX}" step="5" value="100"><output id="edit-scale-out" for="edit-scale">100%</output></span></label>` +
+      `<p class="pop-note">How large text, arrows and symbols look on screen while you draw. The size in print is set in the corner box.</p>` +
+      `</div></div>` +
       `<button type="button" class="icon-btn" data-act="preview" aria-label="Print preview" title="Print preview: hide everything that is not exported (Q)">${icon("eye")}</button>` +
       `<button type="button" class="icon-btn" data-act="origin" aria-label="Show origin axes" title="Show or hide the axes at the origin">${icon("frame")}</button>` +
       `<button type="button" class="icon-btn" data-act="fit" aria-label="Zoom to fit" title="Zoom to fit (0)">${icon("fit")}</button>`;
     this.buildRibbon();
+    this.showEditScale();
+  }
+
+  /** Puts the editing size on its slider. */
+  private showEditScale(): void {
+    const percent = Math.round(this.editScale * 100);
+    $<HTMLInputElement>("#edit-scale").value = String(percent);
+    $("#edit-scale-out").textContent = `${percent}%`;
+  }
+
+  /** Sets how large annotations are on screen while editing, from the slider's percentage. */
+  private setEditScale(percent: number, save: boolean): void {
+    if (!Number.isFinite(percent)) return;
+    this.editScale = Math.max(EDIT_SCALE_MIN, Math.min(EDIT_SCALE_MAX, percent)) / 100;
+    this.showEditScale();
+    // It only shows while editing, so the print preview is left.
+    if (this.preview) this.setPreview(false);
+    if (save) {
+      try { localStorage.setItem(EDIT_SCALE_KEY, String(this.editScale)); } catch { /* storage unavailable */ }
+    }
+    this.closeEditor();
+    this.render();
   }
 
   /** The ribbon shows the tools of the open tab, in groups. */
@@ -2485,8 +2524,10 @@ export class App {
       const btn = (e.target as Element).closest<HTMLElement>("button");
       const menuBtn = btn?.dataset.menu ? btn : null;
       // Any click closes an open menu, other than the one on its own button, which toggles it.
+      // A popover holds controls, not commands: clicks inside it leave it open.
+      const within = (e.target as Element).closest(".menu-list.popover")?.id;
       for (const open of document.querySelectorAll<HTMLElement>('[data-menu][aria-expanded="true"]')) {
-        if (open !== menuBtn) this.setMenu(open, false);
+        if (open !== menuBtn && open.getAttribute("aria-controls") !== within) this.setMenu(open, false);
       }
       if (!btn) return;
       const ds = btn.dataset;
@@ -2524,6 +2565,11 @@ export class App {
     bar.addEventListener("focusout", unexplain);
 
     this.panel.addEventListener("change", (e) => this.onPanelChange(e.target as HTMLInputElement));
+    const editScale = $<HTMLInputElement>("#edit-scale");
+    editScale.addEventListener("input", () => this.setEditScale(Number(editScale.value), false));
+    editScale.addEventListener("change", () => this.setEditScale(Number(editScale.value), true));
+    editScale.addEventListener("dblclick", () => this.setEditScale(100, true));
+
     // The slider acts as it moves. What it changes only shows in print, so the preview comes on with it.
     this.titleblock.addEventListener("input", (e) => {
       const input = e.target as HTMLInputElement;
@@ -2814,7 +2860,7 @@ export class App {
     if (!list) return;
     btn.setAttribute("aria-expanded", String(open));
     list.hidden = !open;
-    if (open && focus) list.querySelector<HTMLElement>("button")?.focus();
+    if (open && focus) list.querySelector<HTMLElement>("button, input")?.focus();
   }
 
   /** Keys for an open menu. Returns true when the key was the menu's to handle. */
@@ -2827,6 +2873,14 @@ export class App {
       return false;
     }
     const list = document.getElementById(btn.getAttribute("aria-controls") ?? "");
+    if (list?.classList.contains("popover")) {
+      // Its controls take the keys themselves (the arrows move a slider); Esc closes it.
+      if (e.key !== "Escape") return true;
+      this.setMenu(btn, false);
+      btn.focus();
+      e.preventDefault();
+      return true;
+    }
     const items = [...(list?.querySelectorAll<HTMLElement>("button") ?? [])];
     const at = items.indexOf(document.activeElement as HTMLElement);
     const go = (i: number) => items[(i + items.length) % items.length]?.focus();

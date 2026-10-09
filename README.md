@@ -104,7 +104,10 @@ them.
 **Sizes.** While editing, dimensions, arrowheads, supports and every other
 annotation keep one size on screen however far you zoom, as in a CAD
 sketcher; only the geometry grows and shrinks. Where a dimension or a balloon
-sits is part of the drawing and moves with it.
+sits is part of the drawing and moves with it. How large they are on
+screen is a slider of its own under the settings button in the top right
+(*Dimension size while editing*); it is remembered by the browser and has no
+effect on the exported figure.
 
 How large annotations are in the exported figure is set by one slider in the
 corner box, *Dimension size in print*. At 100% the text is 10 pt; moving the

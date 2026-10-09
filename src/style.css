@@ -108,6 +108,13 @@ button { cursor: pointer; }
 }
 .menu-list button:hover, .menu-list button:focus-visible { background: var(--board); }
 .menu-note { font-weight: 400; font-size: 12.5px; color: var(--ink-2); }
+/* A popover: the same box, holding controls instead of commands. On the right of the bar, it opens leftwards. */
+.menu-list.popover { left: auto; right: 0; width: 264px; padding: 12px 14px 10px; gap: 8px; }
+.pop-row { display: grid; gap: 5px; font-size: 13px; font-weight: 500; }
+.pop-ctl { display: flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
+.pop-ctl input[type="range"] { flex: 1; min-width: 0; margin: 0; accent-color: var(--ink); cursor: pointer; }
+.pop-ctl output { min-width: 3.2em; text-align: right; }
+.pop-note { margin: 0; font-size: 12.5px; color: var(--ink-2); }
 
 /* ---- tabs and ribbon: the open tab is joined to the strip of tools below it ---- */
 .tabs { display: flex; align-self: stretch; align-items: flex-end; gap: 3px; padding-left: 14px; border-left: 1px solid var(--rule); }
