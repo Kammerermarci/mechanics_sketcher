@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mech Sketch</title>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <span class="brand">Mech Sketch</span>
+    <div class="group" id="file-actions">
+      <button type="button" class="text-btn" data-act="new">New</button>
+      <button type="button" class="text-btn" data-act="open">Open</button>
+      <button type="button" class="text-btn" data-act="save">Save</button>
+    </div>
+    <div class="group" id="constraint-actions" role="toolbar" aria-label="Constraints and dimensions"></div>
+    <div class="spacer"></div>
+    <div class="group" id="view-actions" role="toolbar" aria-label="History and view"></div>
+  </header>
+  <nav class="rail" id="tools" role="toolbar" aria-label="Drawing tools" aria-orientation="vertical"></nav>
+  <main class="stage" id="stage">
+    <svg id="canvas" role="img" aria-label="Sketch"></svg>
+    <div class="empty" id="empty">
+      <p class="empty-title">Start with the Line tool</p>
+      <p>Click to place joints, roughly where you want them. Then select geometry to constrain and dimension it.</p>
+    </div>
+    <div class="titleblock" id="titleblock"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <input class="dim-editor" id="dim-editor" type="text" inputmode="decimal" aria-label="Dimension value" hidden>
+  </main>
+  <aside class="panel" id="panel" aria-label="Selection"></aside>
+  <footer class="statusbar"><span id="hint"></span><span id="coords"></span></footer>
+</div>
+<input type="file" id="file-input" accept=".json,application/json" hidden>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

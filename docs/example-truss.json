@@ -1,0 +1,143 @@
+{
+ "version": 1,
+ "nextId": 22,
+ "entities": [
+  {
+   "id": "p1",
+   "type": "point",
+   "x": -7.725,
+   "y": -3.7
+  },
+  {
+   "id": "p2",
+   "type": "point",
+   "x": -4.725,
+   "y": -3.7
+  },
+  {
+   "id": "l3",
+   "type": "line",
+   "p1": "p1",
+   "p2": "p2"
+  },
+  {
+   "id": "p5",
+   "type": "point",
+   "x": -1.7249999999999996,
+   "y": -3.7
+  },
+  {
+   "id": "l6",
+   "type": "line",
+   "p1": "p2",
+   "p2": "p5"
+  },
+  {
+   "id": "p8",
+   "type": "point",
+   "x": -6.225,
+   "y": -1.101923788646685
+  },
+  {
+   "id": "l9",
+   "type": "line",
+   "p1": "p1",
+   "p2": "p8"
+  },
+  {
+   "id": "l10",
+   "type": "line",
+   "p1": "p8",
+   "p2": "p2"
+  },
+  {
+   "id": "p11",
+   "type": "point",
+   "x": -3.2249999999999996,
+   "y": -1.1019237886466855
+  },
+  {
+   "id": "l12",
+   "type": "line",
+   "p1": "p2",
+   "p2": "p11"
+  },
+  {
+   "id": "l13",
+   "type": "line",
+   "p1": "p11",
+   "p2": "p5"
+  },
+  {
+   "id": "l14",
+   "type": "line",
+   "p1": "p8",
+   "p2": "p11"
+  }
+ ],
+ "constraints": [
+  {
+   "type": "horizontal",
+   "a": "p1",
+   "b": "p2",
+   "id": "k4"
+  },
+  {
+   "type": "horizontal",
+   "a": "p2",
+   "b": "p5",
+   "id": "k7"
+  },
+  {
+   "type": "fixed",
+   "p": "p1",
+   "id": "k15"
+  },
+  {
+   "type": "equal",
+   "a": "l3",
+   "b": "l6",
+   "id": "k16"
+  },
+  {
+   "type": "equal",
+   "a": "l9",
+   "b": "l10",
+   "id": "k17"
+  },
+  {
+   "type": "equal",
+   "a": "l10",
+   "b": "l12",
+   "id": "k18"
+  },
+  {
+   "type": "equal",
+   "a": "l12",
+   "b": "l13",
+   "id": "k19"
+  },
+  {
+   "type": "distance",
+   "a": "p1",
+   "b": "p2",
+   "mode": "aligned",
+   "value": 3,
+   "offset": -8,
+   "id": "k20",
+   "label": "a"
+  },
+  {
+   "type": "angle",
+   "l1": "l3",
+   "rev1": false,
+   "l2": "l9",
+   "rev2": false,
+   "value": 1.0471975511965976,
+   "radius": 14,
+   "id": "k21",
+   "label": "\\alpha"
+  }
+ ],
+ "figureWidthMm": 80
+}

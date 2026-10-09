@@ -1,0 +1,7 @@
+node_modules
+dist
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
