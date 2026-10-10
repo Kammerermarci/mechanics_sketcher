@@ -284,3 +284,43 @@ describe("new annotations", () => {
     expect(isEdge(l)).toBe(false);
   });
 });
+
+describe("tips", () => {
+  it("shows each tip until it is dismissed, and none when they are off", async () => {
+    const { TipBook, TIPS } = await import("../src/guide");
+    const store = new Map<string, string>();
+    (globalThis as unknown as { localStorage: object }).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, v); },
+    };
+    try {
+      const book = new TipBook();
+      expect(book.due("line")).toBe(TIPS.line);
+      expect(book.due("no such tool")).toBeNull();
+      book.dismiss("line");
+      expect(book.due("line")).toBeNull();
+      expect(book.due("circle")).toBe(TIPS.circle);
+      // What was dismissed is remembered by the browser.
+      expect(new TipBook().due("line")).toBeNull();
+      book.setOff(true);
+      expect(new TipBook().due("circle")).toBeNull();
+      book.reset();
+      expect(new TipBook().due("line")).toBe(TIPS.line);
+    } finally {
+      delete (globalThis as unknown as { localStorage?: object }).localStorage;
+    }
+    // With nowhere to remember anything, tips still work for the visit.
+    const loose = new TipBook();
+    loose.dismiss("arc");
+    expect(loose.due("arc")).toBeNull();
+    expect(loose.due("line")).toBe(TIPS.line);
+  });
+
+  it("has a tip for every tool on the ribbon", async () => {
+    const { TIPS } = await import("../src/guide");
+    const app = (await import("../src/app.ts?raw")).default;
+    const ids = [...app.matchAll(/^  \{ id: "([a-z]+)", label:/gm)].map((m) => m[1]).filter((id) => id !== "select");
+    expect(ids.length).toBeGreaterThan(30);
+    expect(ids.filter((id) => !TIPS[id])).toEqual([]);
+  });
+});

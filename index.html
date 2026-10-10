@@ -37,6 +37,22 @@
       <p class="empty-title">GLHF with the homework</p>
       <p>Click to place joints, roughly where you want them. Then select geometry to constrain and dimension it.</p>
     </div>
+    <aside class="tip" id="tip" aria-labelledby="tip-title" hidden>
+      <div class="tip-head"><span id="tip-icon"></span><h2 id="tip-title"></h2></div>
+      <p id="tip-body"></p>
+      <label class="check"><input id="tip-never" type="checkbox" checked><span>Don't show this again</span></label>
+      <div class="tip-actions">
+        <button type="button" class="linkish" data-act="tips-off">Turn off all tips</button>
+        <button type="button" class="primary" data-act="tip-close">Got it</button>
+      </div>
+    </aside>
+    <aside class="support-card" id="support-card" aria-label="Support Mech Sketch" hidden>
+      <p><b>Mech Sketch is free.</b> If it saves you time on your homework, you can support it.</p>
+      <div class="support-actions">
+        <span data-support="Support Mech Sketch"></span>
+        <button type="button" class="linkish" data-act="support-close">Not now</button>
+      </div>
+    </aside>
     <div class="titleblock" id="titleblock"></div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <input class="dim-editor" id="dim-editor" type="text" inputmode="decimal" aria-label="Dimension value" hidden>
@@ -54,6 +70,66 @@
     <div class="dialog-actions">
       <button type="button" data-dialog="cancel">Cancel</button>
       <button type="submit" value="ok" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="welcome-dialog" class="welcome" aria-labelledby="welcome-title">
+  <form method="dialog">
+    <h2 id="welcome-title">Welcome to Mech Sketch</h2>
+    <p class="lead">Figures for mechanics homework, drawn the way a CAD sketch is: roughly first, exact afterwards, and then into LaTeX.</p>
+    <ol class="steps">
+      <li><b>Draw.</b> On the Sketch tab, pick Line (L) and click to place joints, roughly where they belong. Circles, arcs and beams are there too.</li>
+      <li><b>Constrain.</b> Press a constraint such as Horizontal or Equal, then click the geometry it applies to. Blue lines can still move; they turn black once nothing about them can.</li>
+      <li><b>Dimension.</b> On the Annotate tab, press Dimension (D), click a line, middle-click where the dimension should go and type its value. The drawing follows the number.</li>
+      <li><b>Annotate.</b> Supports, axes, arrows, notes, fills and hatching are on the Annotate tab as well.</li>
+      <li><b>Check and export.</b> Q shows the figure as it prints. Export saves it as SVG, or as TikZ for LaTeX.</li>
+    </ol>
+    <p class="muted">Your sketch is kept in this browser; Save writes it to a file to keep, or to take to another computer. A short tip appears the first time you pick up each tool. The question mark in the top right brings this page back.</p>
+    <p class="support-line" data-support-row hidden><span><b>Mech Sketch is free.</b> If it saves you time, you can support it.</span><span data-support="Support"></span></p>
+    <div class="dialog-actions split">
+      <label class="check"><input id="welcome-never" type="checkbox" checked><span>Don't show this again</span></label>
+      <button type="submit" value="ok" class="primary">Start sketching</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="export-dialog" aria-labelledby="export-title">
+  <form method="dialog">
+    <h2 id="export-title">Export</h2>
+    <p class="lead"><b>Mech Sketch is free and has no ads.</b> If it saves you time, please consider supporting it.</p>
+    <p class="support-big"><span data-support="Support Mech Sketch"></span></p>
+    <div class="wait" role="progressbar" aria-labelledby="export-wait" aria-valuemin="0" aria-valuemax="100"><span id="export-bar"></span></div>
+    <p class="muted" id="export-wait" aria-live="polite"></p>
+    <div class="dialog-actions">
+      <button type="button" data-dialog="cancel">Cancel</button>
+      <button type="submit" value="ok" class="primary" id="export-go" disabled>Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="pattern-dialog" aria-labelledby="pattern-title">
+  <form method="dialog">
+    <h2 id="pattern-title">Pattern</h2>
+    <label class="field"><span>How many in all, the original included</span>
+      <input id="pattern-count" type="number" min="2" max="60" step="1" value="3" inputmode="numeric">
+    </label>
+    <div id="pattern-row">
+      <div class="field"><span id="pattern-dir-label">Direction</span>
+        <div class="segmented" role="group" aria-labelledby="pattern-dir-label">
+          <button type="button" data-dir="horizontal" aria-pressed="true">Across</button>
+          <button type="button" data-dir="vertical" aria-pressed="false">Up</button>
+          <button type="button" data-dir="free" aria-pressed="false">Free</button>
+        </div>
+        <small>Across and Up keep the row level or upright with a constraint. The spacing is yours to set afterwards: drag a copy, or dimension from a point to its copy.</small>
+      </div>
+    </div>
+    <div id="pattern-ring">
+      <label class="check"><input id="pattern-full" type="checkbox" checked><span>Spread evenly over a full turn</span></label>
+      <label class="field"><span>Angle between copies (degrees)</span>
+        <input id="pattern-angle" type="text" inputmode="decimal" value="120">
+      </label>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" data-dialog="cancel">Cancel</button>
+      <button type="submit" value="ok" class="primary">Make copies</button>
     </div>
   </form>
 </dialog>

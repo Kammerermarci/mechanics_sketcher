@@ -204,9 +204,12 @@ export function toTikz(sk: Sketch): string | null {
     if (p.k === "region") {
       lines.push(`  \\fill[fill=${tikzColor(p.color)}, even odd rule] ${p.outlines.map(tikzOutline).join(" ")};`);
     } else if (p.k === "text") {
-      const where = (p.anchor === "c" ? "inner sep=0pt" : `label, anchor=${TIKZ_ANCHOR[p.anchor]}`) + (p.rot ? `, rotate=${deg(p.rot)}` : "");
+      const where = (p.anchor === "c" ? "inner sep=0pt" : `label, anchor=${TIKZ_ANCHOR[p.anchor]}`) +
+        (p.rot ? `, rotate=${deg(p.rot)}` : "") +
+        // A node breaks its text into lines only once it is told how to align them.
+        (p.lines ? ", align=left" : "");
       if (p.anchor !== "c") needLabel = true;
-      lines.push(`  \\node[${where}] at ${co(p.at)} {$${p.tex}$};`);
+      lines.push(`  \\node[${where}] at ${co(p.at)} {${p.latex ?? `$${p.tex}$`}};`);
     } else if (p.k === "line") {
       noteTip(p);
       lines.push(`  \\draw[${p.stroke}${tips(p)}] ${co(p.a)} -- ${co(p.b)};`);

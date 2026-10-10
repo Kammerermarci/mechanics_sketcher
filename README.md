@@ -21,9 +21,16 @@ from disk by double-click.
 
 ## Using it
 
+The first time the page is opened it greets you with a short guide to the
+steps below, and the first time each tool is picked up a small tip says how
+it is used. Both have a *Don't show this again* box. The question mark in the
+top right brings the guide back; the settings button next to it switches the
+tips off, or shows them all again from the start.
+
 The tools sit on two tabs. **Sketch** has what shapes the geometry: drawing
-tools and constraints. **Annotate** has what is added to the figure:
-dimensions, supports, axes, centre marks, balloons, fills and hatching.
+tools, copying tools and constraints. **Annotate** has what is added to the
+figure: dimensions, supports, axes, arrows, notes, centre marks, balloons,
+fills and hatching.
 
 1. **Draw.** Pick Line (L): one click starts a line, the next one ends it,
    and the click after that starts a new line, so four clicks give two
@@ -37,6 +44,32 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
    to where other curves cross it; the piece that would go is shown in red
    first. The cut ends stay on the curve they were cut at. A circle needs
    two crossings to be trimmed and becomes an arc.
+   - *Beam:* a bar between two points, like a slot in a CAD sketch. Click
+     where it starts and where it ends (joints that are there already are
+     used), then move away from its middle line and click to set the width.
+     The side panel picks round ends or square ones while the tool is
+     active. A beam is ordinary geometry: two lines closed by two arcs, or
+     four lines, with the constraints that keep its shape. So it is filled,
+     trimmed and dimensioned like the rest: the distance between its two
+     centres for the length, an end's radius (or the end itself) for the
+     width.
+   - *Mirror:* select what to mirror, press Mirror and click the line to
+     mirror about. Points on that line are shared by both halves. The image
+     stays an image: one constraint ties every point of it to its original,
+     so changing one side changes the other.
+   - *Linear pattern:* select what to repeat, press it and say how many
+     there should be, and whether the row runs across, up or freely. The
+     copies follow the original. Their spacing is left free: drag a copy,
+     or dimension from a point to its copy.
+   - *Circular pattern:* select what to repeat, press it, click the point
+     the copies go around (a circle stands for its centre) and say how many.
+     They are spread over a full turn, or set apart by an angle that can be
+     changed later by selecting the pattern's marker.
+
+   Supports, centre marks, hatching, fills and datum points on what is
+   copied are copied with it. Deleting the green marker of a mirror image
+   or pattern lets the copies go their own way; deleting one copy leaves the
+   rest tied.
 2. **Constrain.** Press a constraint, then click the geometry it applies to. It
    is applied as soon as it has what it needs, and the tool stays active for
    the next one. (Selecting the geometry first works too.) The small green
@@ -73,6 +106,10 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
      ...) on a joint, on a curve or anywhere. The point under it is ordinary
      geometry. Pick the colour in the side panel and drag the name to move
      it.
+   - *Note (N):* text placed anywhere. Click where it should start and type
+     it. It is plain text set in the document's font; put math between
+     dollar signs (`Link $AB$, $F_1 = 2a$`) and `\\` where a new line
+     starts. Click a note to change it, drag it to move it.
    - *Centre mark:* click a circle or arc. Its two lines are drawn like a
      centre line, long and short dashes in turn; a slider in the side panel
      sets how many gaps each line has, and a checkbox switches the
@@ -91,7 +128,7 @@ dimensions, supports, axes, centre marks, balloons, fills and hatching.
      you zoom, and neither size slider changes it.
 
 **Text is typed where it stands.** Click a dimension's number, the name of
-an arrow or a datum point, a balloon's text or an axis label, and a box opens
+an arrow or a datum point, a note, a balloon's text or an axis label, and a box opens
 on the spot; Enter accepts, Esc leaves it as it was. Pressing and dragging
 the same text moves it instead. Double-click an arrow or a datum point that
 has no name yet to give it one.
@@ -142,6 +179,11 @@ geometry, the origin, constraint markers or hidden dimensions.
   TikZ** puts the same text on the clipboard. Labels are passed on as typed,
   so LaTeX sets them in the document's own font.
 
+An export first shows a short notice with the Support button and a
+countdown; when it has run out, the button that saves the file (or copies
+the TikZ) comes alive. How long that takes is `EXPORT_WAIT_SECONDS` in
+`src/config.ts`; 0 switches it off.
+
 Saving asks for a file name: with the browser's own save dialog where there
 is one (Chrome, Edge), so the folder can be chosen too, and otherwise with a
 small prompt before the download. The last name is offered again next time.
@@ -167,6 +209,7 @@ the picture and can be changed there.
 | --- | --- | --- | --- |
 | L, C, A, P | Line, circle, arc, point | D | Dimension |
 | X | Trim | B | Balloon |
+| N | Note | | |
 | Q | Print preview on and off | | |
 | H, V | Horizontal, vertical | E | Equal |
 | O | Coincident / point on curve | M | Midpoint |
@@ -193,6 +236,13 @@ the picture and can be changed there.
 - `src/regions.ts`: finds the closed regions for fills, and the stretches
   where curves overlap.
 - `src/trim.ts`: where curves cross, and cutting a curve between crossings.
+- `src/pattern.ts`: mirror images and patterns. A copy is ordinary geometry;
+  one *link* constraint per mirror or pattern holds each copied point to its
+  original. `src/solver.ts` turns a link into equations: two per point, but
+  one for a point the copied arc already ties down, so nothing is said twice.
+- `src/guide.ts`: the tips, and what the browser remembers about which have
+  been seen. `src/config.ts`: where the Support button leads and how long an
+  export waits.
 - `src/render.ts`: the editor canvas (SVG), including point handles and
   constraint markers that are never exported.
 - `src/mathjax.ts`: typesets labels with a bundled MathJax; `src/tex.ts` holds

@@ -39,6 +39,16 @@ export const ICONS: Record<string, string> = {
   sliders: `<path d="M3 6h7.2M14.8 6H17M3 14h2.2M9.8 14H17"/><circle cx="12.5" cy="6" r="2.1"/><circle cx="7.5" cy="14" r="2.1"/>`,
   eye: `<path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10z"/><circle cx="10" cy="10" r="2.4"/>`,
 
+  // A slot: two half-circles joined by two lines, with its two centres.
+  beam: `<path d="M6 6.2h8a3.8 3.8 0 0 1 0 7.6H6a3.8 3.8 0 0 1 0-7.6z"/>${dot(6, 10, 1.1)}${dot(14, 10, 1.1)}`,
+  mirror: `<path d="M10 2.5v15" stroke-dasharray="2 2.2" stroke-width="1.3"/><path d="M7.4 6v8H3z"/><path d="M12.6 6v8H17z" fill="currentColor" fill-opacity="0.3"/>`,
+  // The markers of the links and the buttons that make them share these.
+  shift: `<rect x="2.3" y="7" width="4" height="6" rx="0.6" fill="currentColor" stroke="none"/><rect x="8.2" y="7" width="3.6" height="6" rx="0.6" stroke-width="1.3"/><rect x="13.9" y="7" width="3.6" height="6" rx="0.6" stroke-width="1.3"/>`,
+  turn: `${dot(10, 10, 1.1)}${dot(16, 10, 1.9)}<circle cx="13" cy="15.2" r="1.6" stroke-width="1.2"/><circle cx="7" cy="15.2" r="1.6" stroke-width="1.2"/><circle cx="4" cy="10" r="1.6" stroke-width="1.2"/><circle cx="7" cy="4.8" r="1.6" stroke-width="1.2"/><circle cx="13" cy="4.8" r="1.6" stroke-width="1.2"/>`,
+  note: `<path d="M4.5 6.5V4.5h11v2M10 4.5v11M7.8 15.5h4.4"/>`,
+  help: `<circle cx="10" cy="10" r="7.3"/><path d="M7.7 8.1a2.4 2.4 0 1 1 3.5 2.1c-.8.5-1.2 1-1.2 1.9"/>${dot(10, 14.4, 0.95)}`,
+  close: `<path d="M5 5l10 10M15 5L5 15"/>`,
+
   centerline: `<path d="M3 17l4.2-4.2M8.6 11.4l.8-.8M10.8 9.2L15 5M16.2 3.8l.8-.8"/>`,
   trim: `<path d="M3 15h5.5M11.5 15H17" stroke-dasharray="none"/><path d="M8.5 15h3" stroke-dasharray="1.2 1.6" stroke-width="1.2"/><path d="M6 4l8 9M14 4l-8 9" stroke-width="1.3"/>`,
 

@@ -2,9 +2,10 @@
 
 import { GcsWrapper, SolveStatus, DebugMode, type SketchPrimitive } from "@salusoft89/planegcs";
 import {
-  type Sketch, type Id, type Constraint, type Entity,
+  type Sketch, type Id, type Constraint, type Entity, type Link, type HalfPair,
   ORIGIN, entity, point, isFixed, arcRadius,
 } from "./model";
+import { type V, sub, dot, cross, norm, perp } from "./geom";
 
 /** Something the pointer is pulling on while the sketch is solved. */
 export type Drag =
@@ -31,6 +32,8 @@ export interface SolveResult {
 const TWO_PI = Math.PI * 2;
 
 type Prim = SketchPrimitive;
+/** An unknown of its own that constraints can share, such as the step of a pattern. */
+interface FreeParam { name: string; value: number }
 
 function geometryPrims(sk: Sketch): Prim[] {
   const out: Prim[] = [];
@@ -69,10 +72,105 @@ function kindOf(sk: Sketch, id: Id): Entity["type"] {
   return e.type;
 }
 
-/** Translates one model constraint into zero or more planegcs constraints. */
-function constraintPrims(sk: Sketch, c: Constraint): Prim[] {
+/**
+ * The one direction an image held by half a pair can still move in: along
+ * its arc for an end, along the bisector of the arc's ends for a centre. Null
+ * when the arc is not there to say.
+ */
+function freeDirection(sk: Sketch, h: HalfPair): V | null {
+  const arc = entity(sk, h.arc);
+  if (arc?.type !== "arc") return null;
+  const xy = (id: Id): V => { const p = point(sk, id); return [p.x, p.y]; };
+  const across = h.role === "end" ? sub(xy(h.to), xy(arc.c)) : sub(xy(arc.p2), xy(arc.p1));
+  if (Math.hypot(across[0], across[1]) < 1e-12) return null;
+  return norm(perp(across));
+}
+
+/**
+ * A mirror, shift or turn as planegcs constraints. A whole pair takes two
+ * equations. Half a pair takes the one of the two that acts along the
+ * direction its image can still move in, so it never comes out degenerate.
+ */
+function linkPrims(sk: Sketch, c: Link, params: FreeParam[]): Prim[] {
+  const out: Prim[] = [];
+  const xy = (id: Id): V => { const p = point(sk, id); return [p.x, p.y]; };
+  let n = 0;
+  const next = () => `${c.id}:${n++}`;
+  /** Half pairs whose arc has gone are held like whole ones. */
+  const whole: { from: Id; to: Id; steps: number }[] = c.pairs.map(([from, to, steps]) => ({ from, to, steps: steps ?? 1 }));
+  const halves: { from: Id; to: Id; steps: number; t: V }[] = [];
+  for (const h of c.half) {
+    const t = freeDirection(sk, h);
+    const pair = { from: h.from, to: h.to, steps: h.steps ?? 1 };
+    if (t) halves.push({ ...pair, t });
+    else whole.push(pair);
+  }
+
+  if (c.type === "mirror") {
+    const l = entity(sk, c.l);
+    if (l?.type !== "line") throw new Error("a mirror needs a line");
+    const u = norm(sub(xy(l.p2), xy(l.p1)));
+    const ends = { l2p1_id: l.p1, l2p2_id: l.p2 };
+    for (const { from, to } of whole) out.push({ id: next(), type: "p2p_symmetric_ppl", p1_id: from, p2_id: to, l_id: c.l });
+    for (const { from, to, t } of halves) {
+      // Either the image lies straight across the line, or the middle of the two is on it.
+      const along = Math.abs(dot(t, u)) >= Math.abs(cross(u, t));
+      out.push({ id: next(), type: along ? "perpendicular_pppp" : "midpoint_on_line_pppp", l1p1_id: from, l1p2_id: to, ...ends });
+    }
+  } else if (c.type === "shift") {
+    // The step is an unknown that every pair shares; the second copy is two of it away, and
+    // so on. It starts out as what the first pair makes it.
+    const first = whole[0] ?? halves[0];
+    if (!first) return out;
+    const gap = sub(xy(first.to), xy(first.from));
+    const step = { x: gap[0] / first.steps, y: gap[1] / first.steps };
+    const made = new Set<string>();
+    /**
+     * The name of the unknown for `steps` steps along x or y, made on first
+     * use. Each is the one before it plus one step; the solver's own
+     * "proportional" constraint ignores its ratio, so that is how multiples are said.
+     */
+    const reach = (prop: "x" | "y", steps: number): string => {
+      const name = (k: number) => `${c.id}:d${prop}${k === 1 ? "" : k}`;
+      for (let k = 1; k <= steps; k++) {
+        if (made.has(name(k))) continue;
+        made.add(name(k));
+        params.push({ name: name(k), value: step[prop] * k });
+        if (k > 1) out.push({ id: next(), type: "difference", param1: name(k - 1), param2: name(k), difference: name(1) });
+      }
+      return name(steps);
+    };
+    const eq = (p: { from: Id; to: Id; steps: number }, prop: "x" | "y") =>
+      out.push({ id: next(), type: "difference", param1: { o_id: p.from, prop }, param2: { o_id: p.to, prop }, difference: reach(prop, p.steps) });
+    for (const p of whole) { eq(p, "x"); eq(p, "y"); }
+    for (const p of halves) eq(p, Math.abs(p.t[0]) >= Math.abs(p.t[1]) ? "x" : "y");
+  } else {
+    const centre = xy(c.c);
+    const same = (p: { from: Id; to: Id }): Prim => ({ id: next(), type: "point_on_perp_bisector_ppp", p_id: c.c, lp1_id: p.from, lp2_id: p.to });
+    const turned = (p: { from: Id; to: Id; steps: number }): Prim =>
+      ({ id: next(), type: "l2l_angle_pppp", l1p1_id: c.c, l1p2_id: p.from, l2p1_id: c.c, l2p2_id: p.to, angle: c.angle * p.steps });
+    for (const p of whole) out.push(same(p), turned(p));
+    for (const p of halves) {
+      // As far from the centre as its point, or at the right angle round it.
+      const e = norm(sub(xy(p.to), centre));
+      out.push(Math.abs(dot(p.t, e)) >= Math.abs(cross(e, p.t)) ? same(p) : turned(p));
+    }
+  }
+  for (const [a, b] of c.circles) out.push({ id: next(), type: "equal_radius_cc", c1_id: a, c2_id: b });
+  return out;
+}
+
+/**
+ * Translates one model constraint into zero or more planegcs constraints.
+ * Unknowns it needs beyond the geometry are added to `params`.
+ */
+function constraintPrims(sk: Sketch, c: Constraint, params: FreeParam[]): Prim[] {
   const id = c.id;
   switch (c.type) {
+    case "mirror":
+    case "shift":
+    case "turn":
+      return linkPrims(sk, c, params);
     case "fixed":
       return []; // expressed through the point's fixed flag
     case "coincident":
@@ -106,8 +204,15 @@ function constraintPrims(sk: Sketch, c: Constraint): Prim[] {
       throw new Error("equal needs two lines, or two circles or arcs");
     }
     case "tangent": {
-      const k = kindOf(sk, c.c);
-      if (k === "circle") return [{ id, type: "tangent_lc", l_id: c.l, c_id: c.c }];
+      const round = entity(sk, c.c), l = entity(sk, c.l);
+      if (!round || l?.type !== "line") throw new Error("tangent needs a line and a circle or arc");
+      if (round.type === "circle") return [{ id, type: "tangent_lc", l_id: c.l, c_id: c.c }];
+      if (round.type !== "arc") throw new Error("tangent needs a line and a circle or arc");
+      // Where the line starts at an end of the arc, it is tangent when it is square to the
+      // radius there. Said that way the solver gets a slope to follow; the distance from the
+      // centre to the line has none at the answer.
+      const shared = [round.p1, round.p2].find((p) => p === l.p1 || p === l.p2);
+      if (shared) return [{ id, type: "perpendicular_pppp", l1p1_id: round.c, l1p2_id: shared, l2p1_id: l.p1, l2p2_id: l.p2 }];
       return [{ id, type: "tangent_la", l_id: c.l, a_id: c.c }];
     }
     case "distance": {
@@ -189,7 +294,9 @@ export class SketchSolver {
     const rest: Prim[] = [];
     for (const p of dragPrims(sk, drags)) (p.type === "point" ? helpers : rest).push(p);
     const constraints: Prim[] = [];
-    for (const c of sk.constraints) constraints.push(...constraintPrims(sk, c));
+    const params: FreeParam[] = [];
+    for (const c of sk.constraints) constraints.push(...constraintPrims(sk, c, params));
+    for (const p of params) g.push_sketch_param(p.name, p.value, false);
 
     // Helper points go right after the model points, ahead of every curve.
     const firstCurve = geometry.findIndex((p) => p.type !== "point");
@@ -234,7 +341,9 @@ export class SketchSolver {
     g.clear_data();
     const geometry = geometryPrims(sk).map((p) => (p.type === "point" && p.id === pin ? { ...p, fixed: true } : p));
     const constraints: Prim[] = [];
-    for (const c of sk.constraints) constraints.push(...constraintPrims(sk, c));
+    const params: FreeParam[] = [];
+    for (const c of sk.constraints) constraints.push(...constraintPrims(sk, c, params));
+    for (const p of params) g.push_sketch_param(p.name, p.value, false);
     g.push_primitives_and_params([...geometry, ...constraints, ...extra]);
     const status = g.solve();
     if (status !== SolveStatus.Success && status !== SolveStatus.Converged) return null;

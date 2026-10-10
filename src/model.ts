@@ -75,6 +75,38 @@ export interface Equal { id: Id; type: "equal"; a: Id; b: Id }
 export interface Tangent { id: Id; type: "tangent"; l: Id; c: Id }
 export interface Fixed { id: Id; type: "fixed"; p: Id }
 
+/**
+ * A point of the original and its image under a mirror, a shift or a turn.
+ * In a pattern, `steps` says which copy the image belongs to: the second copy
+ * is two steps from the original. Unset: one.
+ */
+export type Pair = [from: Id, to: Id, steps?: number];
+/**
+ * A pair that is held by one equation only. Its image is an end (or the
+ * centre) of a copied arc, and the arc already ties that point down but for
+ * one direction; a second equation would say the same thing twice.
+ */
+export interface HalfPair { from: Id; to: Id; arc: Id; role: "end" | "centre"; steps?: number }
+/**
+ * Links hold copies to what they were copied from. One link covers a whole
+ * mirror image or pattern: `pairs` are its points, `circles` the circles kept
+ * at the radius of the original. Every copy is tied to the original itself,
+ * so deleting one copy leaves the others as they were.
+ */
+interface LinkBase {
+  id: Id;
+  pairs: Pair[];
+  half: HalfPair[];
+  circles: Pair[];
+}
+/** Each image is the mirror image of its point in line l. */
+export interface Mirror extends LinkBase { type: "mirror"; l: Id }
+/** Each image is its point moved by its number of steps, the same step for every pair. The step itself is free. */
+export interface Shift extends LinkBase { type: "shift" }
+/** Each image is its point turned about c by `angle` radians, counter-clockwise, once for each of its steps. */
+export interface Turn extends LinkBase { type: "turn"; c: Id; angle: number }
+export type Link = Mirror | Shift | Turn;
+
 interface DimBase {
   id: Id;
   /** Driving value. Angles are in radians. */
@@ -118,7 +150,7 @@ export interface RadiusDim extends DimBase {
 export type Dimension = DistanceDim | AngleDim | RadiusDim;
 export type Relation =
   | Coincident | PointOn | Midpoint | Horizontal | Vertical | Parallel
-  | Perpendicular | Equal | Tangent | Fixed;
+  | Perpendicular | Equal | Tangent | Fixed | Link;
 export type Constraint = Relation | Dimension;
 
 // Symbols are drawn on the figure but take no part in solving.
@@ -231,7 +263,17 @@ export interface Datum {
   dx: number;
   dy: number;
 }
-export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch | Datum;
+/** Text placed freely on the figure. */
+export interface Note {
+  id: Id;
+  type: "note";
+  /** Where the text starts: the middle of its left edge, in model units. */
+  x: number;
+  y: number;
+  /** As typed: plain text, with $...$ for math and \\ between lines. */
+  text: string;
+}
+export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch | Datum | Note;
 
 /** Everything a symbol needs to exist; it is removed when any of these is. */
 export function symbolRefs(s: Sym): Id[] {
@@ -240,6 +282,7 @@ export function symbolRefs(s: Sym): Id[] {
     case "datum":
       return [s.at];
     case "frame": return s.at ? [s.at] : [];
+    case "note": return [];
     case "centermark":
     case "hatch":
       return [s.on];
@@ -288,6 +331,9 @@ export function emptySketch(): Sketch {
 
 export function isDimension(c: Constraint): c is Dimension {
   return c.type === "distance" || c.type === "angle" || c.type === "radius";
+}
+export function isLink(c: Constraint): c is Link {
+  return c.type === "mirror" || c.type === "shift" || c.type === "turn";
 }
 
 const PREFIX: Record<string, string> = { point: "p", line: "l", circle: "c", arc: "a", symbol: "s" };
@@ -356,7 +402,38 @@ export function constraintRefs(c: Constraint): Id[] {
     case "distance": return [c.a, c.b];
     case "angle": return [c.l1, c.l2];
     case "radius": return [c.target];
+    case "mirror":
+    case "shift":
+    case "turn": {
+      const ids = new Set<Id>();
+      if (c.type === "mirror") ids.add(c.l);
+      if (c.type === "turn") ids.add(c.c);
+      for (const [a, b] of c.pairs) ids.add(a).add(b);
+      for (const h of c.half) ids.add(h.from).add(h.to);
+      for (const [a, b] of c.circles) ids.add(a).add(b);
+      return [...ids];
+    }
   }
+}
+
+/**
+ * A link after some of what it refers to has gone: the pairs that are still
+ * whole, or null when nothing is left for it to hold.
+ */
+function pruneLink(c: Link, alive: Set<Id>): Link | null {
+  if (c.type === "mirror" && !alive.has(c.l)) return null;
+  if (c.type === "turn" && !alive.has(c.c)) return null;
+  const pairs = c.pairs.filter(([a, b]) => alive.has(a) && alive.has(b));
+  const half: HalfPair[] = [];
+  for (const h of c.half) {
+    if (!alive.has(h.from) || !alive.has(h.to)) continue;
+    // Without its arc the image is an ordinary point again, and needs both equations.
+    if (alive.has(h.arc)) half.push(h);
+    else pairs.push(h.steps === undefined ? [h.from, h.to] : [h.from, h.to, h.steps]);
+  }
+  const circles = c.circles.filter(([a, b]) => alive.has(a) && alive.has(b));
+  if (!pairs.length && !half.length && !circles.length) return null;
+  return { ...c, pairs, half, circles };
 }
 
 export function isFixed(sk: Sketch, pointId: Id): boolean {
@@ -503,7 +580,14 @@ export function remove(sk: Sketch, ids: Iterable<Id>): void {
   sk.entities = sk.entities.filter((e) => !orphans.has(e.id));
 
   const alive = new Set(sk.entities.map((e) => e.id));
-  sk.constraints = sk.constraints.filter((c) => constraintRefs(c).every((r) => alive.has(r)));
+  // A link lives on with the pairs it has left; any other constraint needs everything it names.
+  sk.constraints = sk.constraints.flatMap((c): Constraint[] => {
+    if (isLink(c)) {
+      const kept = pruneLink(c, alive);
+      return kept ? [kept] : [];
+    }
+    return constraintRefs(c).every((r) => alive.has(r)) ? [c] : [];
+  });
   sk.symbols = sk.symbols.filter((s) => symbolRefs(s).every((r) => alive.has(r)));
   for (const s of sk.symbols) if (s.type === "fill") s.holes = s.holes.filter((h) => alive.has(h));
 }

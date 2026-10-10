@@ -202,6 +202,29 @@ describe("export", () => {
     expect(toTikz(sk)).toContain("\\draw[centre] (-12,0) -- (12,0) (0,-12) -- (0,12);");
   });
 
+  it("writes a note as text, with its math in dollar signs and its lines stacked", () => {
+    const sk = beam();
+    addSymbol(sk, { type: "note", x: 1, y: 2, text: "Fixed end, $F_1 = 2a$" });
+    addSymbol(sk, { type: "note", x: 1, y: 1, text: "50% of load & more\\\\ second line_2" });
+    addSymbol(sk, { type: "note", x: 0, y: 3, text: "   " });
+    const tikz = toTikz(sk)!;
+    // Text is set as text in the document's own font; only what was typed as math is math.
+    expect(tikz).toContain("\\node[label, anchor=west] at (10,20) {Fixed end, $F_1 = 2a$};");
+    // What would break a line of LaTeX is escaped, and a node with more than one line says how to align them.
+    expect(tikz).toContain("\\node[label, anchor=west, align=left] at (10,10) {50\\% of load \\& more\\\\second line\\_2};");
+    expect(tikz.match(/\\node/g)).toHaveLength(3); // the two notes and the dimension; the blank one is nothing
+    const texts = figurePrims(sk).filter((p) => p.k === "text" && p.layer === "sym");
+    expect(texts.map((p) => p.k === "text" && p.tex)).toEqual([
+      "\\text{Fixed end, }F_1 = 2a",
+      "\\begin{array}{@{}l@{}}\\text{50\\% of load \\& more}\\\\\\text{second line\\_2}\\end{array}",
+    ]);
+    // On screen and in the SVG it is typeset, so it takes up room there.
+    setTexEngine(createMathJaxEngine());
+    const box = figureBounds(figurePrims(sk));
+    expect(box.x1).toBeGreaterThan(40);
+    expect(toSvg(sk)).toContain("<path");
+  });
+
   it("enlarges the whole figure by the dimension size, keeping the geometry at the figure width", () => {
     setTexEngine(createMathJaxEngine());
     const sk = beam();

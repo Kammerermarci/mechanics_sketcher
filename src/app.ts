@@ -6,7 +6,7 @@ import {
   type ConstraintDraft, type Dimension, type DistanceMode, type Sym, type SupportKind, type LeaderEnd,
   type ArrowEnds, type Datum,
   ORIGIN, emptySketch, entity, point, constraint, symbol, symbolRefs, points, curves, curvePoints,
-  constraintRefs, isDimension, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint,
+  constraintRefs, isDimension, isLink, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint,
   addSupport, addFrame, addSymbol, remove, serialize, deserialize, clone,
 } from "./model";
 import { SketchSolver, type Drag, type SolveResult, type Freedom } from "./solver";
@@ -27,17 +27,23 @@ import {
 } from "./render";
 import { regionAt, findOverlaps } from "./regions";
 import { type TrimPlan, planTrim, applyTrim } from "./trim";
+import { type CopyResult, PATTERN_MAX, mirrorCopy, linearCopy, circularCopy, nextDatumName } from "./pattern";
 import { toSvg, toTikz } from "./export";
 import { icon } from "./icons";
-import { SUPPORT_URL } from "./config";
+import { EXPORT_WAIT_SECONDS, SUPPORT_URL } from "./config";
+import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
 
-type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc";
-type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum";
+type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam";
+type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "note";
+/** Tools that copy what is selected and take one more click to say how: about which line, around which point. */
+type CopyTool = "mirror" | "turn";
 type Command =
   | "horizontal" | "vertical" | "parallel" | "perpendicular" | "equal" | "coincident"
   | "midpoint" | "tangent" | "fixed" | "dimension";
 /** A constraint or the dimension command is a tool too: pick it, then the geometry. */
-type Tool = "select" | DrawTool | "trim" | SymbolTool | Command;
+type Tool = "select" | DrawTool | "trim" | CopyTool | SymbolTool | Command;
+/** What a beam's ends look like: half-circles, as on a slot, or cut off square. */
+type BeamEnds = "round" | "square";
 /** Sketch holds what shapes the geometry; Annotate what is added to the figure. */
 type Tab = "sketch" | "annotate";
 
@@ -57,6 +63,8 @@ type Pending =
   | { tool: "line"; start: Snap }
   | { tool: "circle"; center: Snap }
   | { tool: "arc"; center: Snap; start?: Snap; sweep: number; lastAng: number }
+  /** A beam: its two centres are clicked first, then how wide it is. */
+  | { tool: "beam"; a: Snap; b?: Snap }
   /** A balloon whose leader has been anchored and whose circle is still to be placed. */
   | { tool: "balloon"; anchor: Snap };
 
@@ -83,6 +91,7 @@ type EditTarget =
   | { kind: "dim"; id: Id }
   | { kind: "balloon"; id: Id }
   | { kind: "datum"; id: Id }
+  | { kind: "note"; id: Id }
   /** The name of an arrow; `id` is its line or arc. */
   | { kind: "arrow"; id: Id }
   | { kind: "axis"; id: Id; axis: "x" | "y" };
@@ -91,8 +100,11 @@ type EditTarget =
 interface Hit { id: Id; kind: "point" | "glyph" | "dim" | "curve" | "sym" | "fill"; part?: string; text?: boolean }
 
 interface ToolDef {
-  id: Tool;
+  /** "shift" is not a tool to hold: its button repeats the selection in a row there and then. */
+  id: Tool | "shift";
   label: string;
+  /** What the button says, where the full name is too long for it. */
+  short?: string;
   key?: string;
   icon: string;
   tab: Tab | "both";
@@ -110,7 +122,11 @@ const TOOLS: ToolDef[] = [
   { id: "circle", label: "Circle", key: "C", icon: "circle", tab: "sketch", group: 1 },
   { id: "arc", label: "Arc", key: "A", icon: "arc", tab: "sketch", group: 1 },
   { id: "point", label: "Point", key: "P", icon: "point", tab: "sketch", group: 1 },
+  { id: "beam", label: "Beam", icon: "beam", tab: "sketch", group: 1 },
   { id: "trim", label: "Trim", key: "X", icon: "trim", tab: "sketch", group: 2 },
+  { id: "mirror", label: "Mirror", icon: "mirror", tab: "sketch", group: 2 },
+  { id: "shift", label: "Linear pattern", short: "Linear", icon: "shift", tab: "sketch", group: 2 },
+  { id: "turn", label: "Circular pattern", short: "Circular", icon: "turn", tab: "sketch", group: 2 },
   { id: "horizontal", label: "Horizontal", key: "H", icon: "horizontal", tab: "sketch", group: 3, need: "a line, or two points" },
   { id: "vertical", label: "Vertical", key: "V", icon: "vertical", tab: "sketch", group: 3, need: "a line, or two points" },
   { id: "parallel", label: "Parallel", icon: "parallel", tab: "sketch", group: 3, need: "two lines" },
@@ -129,6 +145,7 @@ const TOOLS: ToolDef[] = [
   { id: "arrow", label: "Arrow", icon: "arrow", tab: "annotate", group: 3 },
   { id: "arcarrow", label: "Curved arrow", icon: "arcarrow", tab: "annotate", group: 3 },
   { id: "datum", label: "Datum point", icon: "datum", tab: "annotate", group: 3 },
+  { id: "note", label: "Note", key: "N", icon: "note", tab: "annotate", group: 3 },
   { id: "centermark", label: "Centre mark", icon: "centermark", tab: "annotate", group: 3 },
   { id: "balloon", label: "Balloon", key: "B", icon: "balloon", tab: "annotate", group: 3 },
   { id: "fill", label: "Fill", icon: "fill", tab: "annotate", group: 4 },
@@ -140,13 +157,15 @@ const COMMAND_IDS: Command[] = [
 ];
 const isCommand = (t: Tool): t is Command => (COMMAND_IDS as Tool[]).includes(t);
 const isSymbolTool = (t: Tool): t is SymbolTool =>
-  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum"].includes(t);
-const toolDef = (t: Tool): ToolDef => TOOLS.find((d) => d.id === t)!;
+  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum", "note"].includes(t);
+const isCopyTool = (t: Tool): t is CopyTool => t === "mirror" || t === "turn";
+const toolDef = (t: Tool | "shift"): ToolDef => TOOLS.find((d) => d.id === t)!;
 
 const RELATION_NAMES: Record<string, string> = {
   coincident: "Coincident", pointOn: "Point on curve", midpoint: "Midpoint", horizontal: "Horizontal",
   vertical: "Vertical", parallel: "Parallel", perpendicular: "Perpendicular", equal: "Equal",
   tangent: "Tangent", fixed: "Fixed point", distance: "Distance", angle: "Angle", radius: "Radius",
+  mirror: "Mirror image", shift: "Linear pattern", turn: "Circular pattern",
 };
 const SUPPORT_NAMES: Record<SupportKind, string> = { pin: "Pin support", roller: "Roller support", fixed: "Fixed support" };
 /** Fill colours offered as swatches: light tones that print well under black lines. */
@@ -217,6 +236,13 @@ export class App {
   private freedom: Freedom | null = null;
   private freedomStale = true;
   private fillColor = FILL_COLORS[0];
+  private beamEnds: BeamEnds = "round";
+  private tips = new TipBook();
+  /** The tip on show, and whether it goes away when its tool is put down. */
+  private tip: { id: string; withTool: boolean } | null = null;
+  /** Seconds an export waits with the Support button on show. */
+  private exportWait = EXPORT_WAIT_SECONDS;
+  private supportTimer = 0;
   private datumColor = DATUM_COLORS[0];
   /** Print preview: only what is exported is drawn, with annotations at their size in print. */
   private preview = false;
@@ -272,6 +298,72 @@ export class App {
     this.solve();
     this.history.reset(this.sk);
     this.render();
+    this.greet();
+  }
+
+  // ---- welcome, tips and support ------------------------------------------------
+
+  /** What someone opening the app is met with: the welcome the first time, a word about support after that. */
+  private greet(): void {
+    // Every place that asks for support gets the same link; without somewhere to send people there is none.
+    for (const slot of document.querySelectorAll<HTMLElement>("[data-support]")) {
+      slot.innerHTML = SUPPORT_URL
+        ? `<a class="support-link" href="${esc(SUPPORT_URL)}" target="_blank" rel="noopener noreferrer">${icon("heart", 18)}${esc(slot.dataset.support ?? "Support")}</a>`
+        : "";
+    }
+    for (const row of document.querySelectorAll<HTMLElement>("[data-support-row]")) row.hidden = !SUPPORT_URL;
+    const first = firstInSession();
+    if (welcomeDue()) this.showWelcome();
+    else if (SUPPORT_URL && first) this.showSupportCard();
+  }
+
+  /** The greeting and the short guide. Also what the Help button opens. */
+  private showWelcome(): void {
+    const dialog = $<HTMLDialogElement>("#welcome-dialog");
+    if (dialog.open) return;
+    const never = $<HTMLInputElement>("#welcome-never");
+    never.checked = true;
+    dialog.addEventListener("close", () => setWelcomeDue(!never.checked), { once: true });
+    dialog.showModal();
+    dialog.querySelector<HTMLElement>("button.primary")?.focus();
+  }
+
+  private showSupportCard(): void {
+    const card = $("#support-card");
+    card.hidden = false;
+    // It has been seen by then; it does not stay in the way.
+    clearTimeout(this.supportTimer);
+    this.supportTimer = window.setTimeout(() => { card.hidden = true; }, 40_000);
+  }
+
+  /**
+   * Shows the tip for a feature, the first time it is used. `withTool`: the
+   * tip belongs to the tool in hand and goes when the tool is put down.
+   */
+  private showTip(id: string, withTool = false): void {
+    const tip = this.tips.due(id);
+    if (!tip) return;
+    this.closeTip();
+    this.tip = { id, withTool };
+    $("#tip-title").textContent = tip.title;
+    $("#tip-body").textContent = tip.body;
+    const def = TOOLS.find((t) => t.id === id);
+    $("#tip-icon").innerHTML = def ? icon(def.icon, 18) : id === "preview" ? icon("eye", 18) : "";
+    $<HTMLInputElement>("#tip-never").checked = true;
+    $("#tip").hidden = false;
+  }
+
+  /** Puts the tip away. Unless its box was unticked, it is not shown again. */
+  private closeTip(): void {
+    if (!this.tip) return;
+    if ($<HTMLInputElement>("#tip-never").checked) this.tips.dismiss(this.tip.id);
+    this.tip = null;
+    $("#tip").hidden = true;
+  }
+
+  /** Puts the tips setting on its checkbox. */
+  private showTipsSetting(): void {
+    $<HTMLInputElement>("#tips-on").checked = !this.tips.off;
   }
 
   // ---- state ----------------------------------------------------------------
@@ -390,7 +482,7 @@ export class App {
     });
 
     this.emptyEl.hidden = !this.isBlank() || this.pending !== null || this.tool !== "select";
-    this.svg.dataset.tool = this.tool === "select" ? "select" : isCommand(this.tool) ? "pick" : "draw";
+    this.svg.dataset.tool = this.tool === "select" ? "select" : isCommand(this.tool) || this.tool === "mirror" ? "pick" : "draw";
     this.svg.classList.toggle("panning", this.drag?.kind === "pan" || this.spaceKey);
     this.svg.classList.toggle("over", this.tool === "select" && this.hover !== null && !this.drag);
 
@@ -491,6 +583,12 @@ export class App {
         return p ? "Click where the line ends. Hold Alt to switch snapping off."
           : `Click where the ${this.tool === "line" ? "line" : "centre line"} starts. ${done}`;
       case "trim": return `Click the part of a line, circle or arc to remove, up to where other curves cross it. ${done}`;
+      case "beam":
+        if (p?.tool !== "beam") return `Click where the beam starts: a joint, or anywhere. ${done}`;
+        return p.b ? "Move away from the beam's middle line to set how wide it is, then click." : "Click where the beam ends. Hold Alt to switch snapping off.";
+      case "mirror": return "Click the line to mirror the selection about. A helper line or a centre line does well. Esc cancels.";
+      case "turn": return "Click the point the copies go around: a joint, a circle to use its centre, or anywhere. Esc cancels.";
+      case "note": return `Click where the note should start, then type it. ${done}`;
       case "circle": return p ? "Click to set the radius." : `Click the centre. ${done}`;
       case "arc":
       case "arcarrow": {
@@ -540,6 +638,26 @@ export class App {
       const raw = toModel(this.view, this.cursor);
       pv.lines.push([p.anchor.pos, raw]);
       pv.circles.push({ c: raw, r: PAPER.balloonRadius / this.mm() });
+      return pv;
+    }
+    if (p.tool === "beam") {
+      if (!p.a.pointId) pv.points.push(p.a.pos);
+      if (!p.b) {
+        pv.lines.push([p.a.pos, snap.pos]);
+        return pv;
+      }
+      if (!p.b.pointId) pv.points.push(p.b.pos);
+      const shape = this.beamShape(p.a.pos, p.b.pos, toModel(this.view, this.cursor));
+      if (!shape) pv.lines.push([p.a.pos, p.b.pos]);
+      else {
+        const [a1, a2, b1, b2] = shape.corners;
+        pv.lines.push([a2, b1], [b2, a1]);
+        if (this.beamEnds === "square") pv.lines.push([a1, a2], [b1, b2]);
+        else {
+          const up = angleOf(shape.n);
+          pv.arcs.push({ c: p.a.pos, r: shape.r, a0: up, a1: up + Math.PI }, { c: p.b.pos, r: shape.r, a0: up - Math.PI, a1: up });
+        }
+      }
       return pv;
     }
     if (p.tool === "line") {
@@ -643,6 +761,7 @@ export class App {
   private snapAnchor(): V | undefined {
     const p = this.pending;
     if (p?.tool === "line") return p.start.pos;
+    if (p?.tool === "beam" && !p.b) return p.a.pos;
     return undefined;
   }
 
@@ -780,6 +899,20 @@ export class App {
       return;
     }
 
+    if (this.tool === "beam") {
+      if (!p || p.tool !== "beam") {
+        this.pending = { tool: "beam", a: snap };
+        return;
+      }
+      if (!p.b) {
+        const same = snap.pointId !== undefined && snap.pointId === p.a.pointId;
+        if (same || dist(toScreen(this.view, p.a.pos), toScreen(this.view, snap.pos)) < 3) return; // no length yet
+        p.b = snap;
+        return;
+      }
+      return this.makeBeam(p.a, p.b, toModel(this.view, sp));
+    }
+
     if (this.tool === "circle") {
       if (!p || p.tool !== "circle") {
         this.pending = { tool: "circle", center: snap };
@@ -831,18 +964,208 @@ export class App {
   }
 
   private setTool(t: Tool): void {
+    if (isCopyTool(t) && !this.copyReady(toolDef(t).label)) {
+      // Not picked up, but asked for: this is when its tip is wanted.
+      return this.showTip(t);
+    }
+    // A tip about the tool in hand goes with the tool.
+    if (this.tip?.withTool) this.closeTip();
+    if (t !== "select") this.showTip(t, true);
     this.tool = t;
     const home = toolDef(t).tab;
     if (home !== "both") this.tab = home;
     this.pending = null;
     this.snapMark = null;
     this.trimPlan = null;
-    if (t !== "select") {
-      this.selection.clear();
-      this.hover = null;
-    }
+    // A copy tool works on what is selected, so the selection stays.
+    if (t !== "select" && !isCopyTool(t)) this.selection.clear();
+    if (t !== "select") this.hover = null;
     this.closeEditor();
     this.touch();
+  }
+
+  // ---- beams ---------------------------------------------------------------------
+
+  /**
+   * A beam around the centres a and b, as wide as the pointer at q is far from
+   * its middle line. Corners in order: left and right of a, then right and left
+   * of b, seen from a towards b. Null while it has no width to speak of.
+   */
+  private beamShape(a: V, b: V, q: V): { r: number; n: V; corners: [V, V, V, V] } | null {
+    if (dist(a, b) < 1e-12) return null;
+    const u = norm(sub(b, a)), n = perp(u);
+    const r = Math.abs(dot(sub(q, a), n));
+    if (r * this.view.scale < 3) return null;
+    const off = mul(n, r);
+    return { r, n, corners: [add(a, off), sub(a, off), sub(b, off), add(b, off)] };
+  }
+
+  /**
+   * Draws a beam: two lines either side of the centres, closed by half-circles
+   * about them or by square ends. It is ordinary geometry, held in shape by
+   * ordinary constraints, so it is dimensioned, filled and trimmed like the rest.
+   */
+  private makeBeam(sa: Snap, sb: Snap, q: V): void {
+    const shape = this.beamShape(sa.pos, sb.pos, q);
+    if (!shape) return; // no width yet
+    const autos: ConstraintDraft[] = [];
+    const square = this.beamEnds === "square";
+    // With square ends no curve is built on the centres, so they are kept as points of their own.
+    const a = this.materialize(sa, autos, square), b = this.materialize(sb, autos, square);
+    if (sb.axis) autos.push({ type: sb.axis === "h" ? "horizontal" : "vertical", a, b });
+    const [a1, a2, b1, b2] = shape.corners.map((c) => addPoint(this.sk, c[0], c[1]).id);
+    const low = addLine(this.sk, a2, b1), high = addLine(this.sk, b2, a1);
+    const made: Id[] = [low.id, high.id];
+    if (square) {
+      const endA = addLine(this.sk, a1, a2), endB = addLine(this.sk, b1, b2);
+      made.push(endA.id, endB.id);
+      autos.push(
+        { type: "midpoint", p: a, l: endA.id }, { type: "midpoint", p: b, l: endB.id },
+        { type: "perpendicular", l1: low.id, l2: endA.id }, { type: "perpendicular", l1: low.id, l2: endB.id },
+        { type: "parallel", l1: low.id, l2: high.id },
+      );
+    } else {
+      // Counter-clockwise round the outside of each end.
+      const arcA = addArc(this.sk, a, a1, a2), arcB = addArc(this.sk, b, b1, b2);
+      made.push(arcA.id, arcB.id);
+      for (const line of [low, high]) for (const arc of [arcA, arcB]) autos.push({ type: "tangent", l: line.id, c: arc.id });
+      autos.push({ type: "equal", a: arcA.id, b: arcB.id });
+    }
+    this.pending = null;
+    this.finishDrawing(autos);
+  }
+
+  // ---- mirror and patterns ---------------------------------------------------------
+
+  /** True when there is geometry selected to copy; says what to do when there is not. */
+  private copyReady(what: string): boolean {
+    if (this.tool === "select" && this.picked().entities > 0 && !(this.selection.size === 1 && this.selection.has(ORIGIN))) return true;
+    this.toast(`${what}: select what to copy first, then press this.`);
+    if (this.tool !== "select") this.setTool("select");
+    return false;
+  }
+
+  /**
+   * Makes copies with `build` and keeps them if the sketch still solves.
+   * `build` may add constraints worth having to `autos`; each is kept only if
+   * it fits. The copies end up selected.
+   */
+  private applyCopy(build: (autos: ConstraintDraft[]) => CopyResult | string): void {
+    const before = clone(this.sk);
+    const baseline = this.result;
+    const autos: ConstraintDraft[] = [];
+    const made = build(autos);
+    const r = typeof made === "string" ? null : this.solver.solve(this.sk);
+    if (!r || !r.ok || r.conflicting.length > baseline.conflicting.length) {
+      this.sk = before;
+      this.solve();
+      this.toast(typeof made === "string" ? made : "The copies could not be tied to the original as the sketch is constrained now.");
+      return this.touch();
+    }
+    this.setTool("select");
+    this.selection = new Set((made as CopyResult).made);
+    this.finishDrawing(autos);
+    this.keepInView();
+    // The keyboard goes back to the drawing, not to the button a dialog was opened from.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  }
+
+  /** A click with a copy tool: the line to mirror about, or the point to go around. */
+  private copyClick(sp: V): void {
+    const picked = [...this.selection];
+    if (this.tool === "mirror") {
+      const hit = this.hitTest(sp, true);
+      const e = hit ? entity(this.sk, hit.id) : undefined;
+      if (e?.type !== "line") return this.toast("Click a line to mirror about.");
+      return this.applyCopy((autos) => {
+        const made = mirrorCopy(this.sk, picked, e.id);
+        // A point the image shares with the original has to stay on the line for the two to match.
+        if (typeof made !== "string") for (const p of made.shared) autos.push({ type: "pointOn", p, on: e.id });
+        return made;
+      });
+    }
+    const snap = this.snapAt(sp);
+    const on = snap.curveId ? entity(this.sk, snap.curveId) : undefined;
+    // A circle or arc stands for its centre.
+    const centre: Snap = on && (on.type === "circle" || on.type === "arc")
+      ? { pos: [point(this.sk, on.c).x, point(this.sk, on.c).y], pointId: on.c } : snap;
+    void this.askPattern("turn").then((want) => {
+      if (!want || this.tool !== "turn") return;
+      this.applyCopy((autos) => circularCopy(this.sk, picked, this.materialize(centre, autos, true), want.count, want.angle));
+    });
+  }
+
+  /** Repeats the selection in a row, after asking how many copies and which way. */
+  private async linearPattern(): Promise<void> {
+    this.showTip("shift");
+    if (!this.copyReady(toolDef("shift").label)) return;
+    const picked = [...this.selection];
+    const want = await this.askPattern("shift");
+    if (!want) return;
+    // A first spacing that keeps the copies clear of each other; from then on it is dragged or dimensioned.
+    const b = geometryBox({ entities: this.copyExtent(picked) });
+    const w = boxIsEmpty(b) ? 0 : b.x1 - b.x0, h = boxIsEmpty(b) ? 0 : b.y1 - b.y0;
+    const gap = Math.max(0.25 * Math.max(w, h), 36 / this.view.scale);
+    const step: V = want.direction === "vertical" ? [0, h + gap] : [w + gap, 0];
+    this.applyCopy((autos) => {
+      const made = linearCopy(this.sk, picked, want.count, step);
+      if (typeof made === "string" || want.direction === "free") return made;
+      const link = constraint(this.sk, made.link);
+      // Level or upright between a point and its first copy keeps the whole row that way.
+      const first = link && isLink(link) ? link.pairs.find((p) => (p[2] ?? 1) === 1) : undefined;
+      if (first) autos.push({ type: want.direction, a: first[0], b: first[1] });
+      return made;
+    });
+  }
+
+  /** The picked curves and points, with the points the curves are built on, for measuring how much room they take. */
+  private copyExtent(picked: Id[]): Sketch["entities"] {
+    const ids = new Set<Id>();
+    for (const id of picked) {
+      const e = entity(this.sk, id);
+      if (!e) continue;
+      ids.add(id);
+      if (e.type !== "point") curvePoints(e).forEach((p) => ids.add(p));
+    }
+    return this.sk.entities.filter((e) => ids.has(e.id));
+  }
+
+  /** Asks how a pattern should be laid out. Resolves to null when the dialog is cancelled. */
+  private askPattern(kind: "shift"): Promise<{ count: number; direction: "horizontal" | "vertical" | "free" } | null>;
+  private askPattern(kind: "turn"): Promise<{ count: number; angle: number } | null>;
+  private askPattern(kind: "shift" | "turn"): Promise<{ count: number; direction?: string; angle?: number } | null> {
+    const dialog = $<HTMLDialogElement>("#pattern-dialog");
+    const count = $<HTMLInputElement>("#pattern-count"), angle = $<HTMLInputElement>("#pattern-angle");
+    const full = $<HTMLInputElement>("#pattern-full");
+    $("#pattern-title").textContent = toolDef(kind).label;
+    $("#pattern-row").hidden = kind !== "shift";
+    $("#pattern-ring").hidden = kind !== "turn";
+    this.syncPatternDialog();
+    return new Promise((resolve) => {
+      dialog.addEventListener("close", () => {
+        if (dialog.returnValue !== "ok") return resolve(null);
+        const n = Math.max(2, Math.min(PATTERN_MAX, Math.round(parseNumber(count.value)) || 2));
+        if (kind === "shift") {
+          const pressed = dialog.querySelector<HTMLElement>('[data-dir][aria-pressed="true"]')?.dataset.dir;
+          return resolve({ count: n, direction: pressed ?? "horizontal" });
+        }
+        let deg = full.checked ? 360 / n : parseNumber(angle.value);
+        if (!Number.isFinite(deg) || Math.abs(deg) < 1e-6 || Math.abs(deg) > 360) deg = 360 / n;
+        resolve({ count: n, angle: deg * DEG });
+      }, { once: true });
+      dialog.returnValue = "";
+      dialog.showModal();
+      count.select();
+    });
+  }
+
+  /** Keeps the angle box of the pattern dialog in step with the count while the copies fill a full turn. */
+  private syncPatternDialog(): void {
+    const count = $<HTMLInputElement>("#pattern-count"), angle = $<HTMLInputElement>("#pattern-angle");
+    const full = $<HTMLInputElement>("#pattern-full").checked;
+    angle.disabled = full;
+    const n = Math.round(parseNumber(count.value));
+    if (full && n >= 2) angle.value = formatNumber(Number((360 / n).toFixed(3)));
   }
 
   // ---- trim --------------------------------------------------------------------
@@ -884,18 +1207,6 @@ export class App {
     return String(max + 1);
   }
 
-  /** The next free name for a datum point: A, B, C and so on, then A_1, B_1. */
-  private nextDatumName(): string {
-    const used = new Set(this.sk.symbols.filter((s): s is Datum => s.type === "datum").map((s) => s.label.trim()));
-    for (let round = 0; round < 50; round++) {
-      for (let i = 0; i < 26; i++) {
-        const name = String.fromCharCode(65 + i) + (round ? `_{${round}}` : "");
-        if (!used.has(name)) return name;
-      }
-    }
-    return "";
-  }
-
   /** The datum mark on a point, if it has one. */
   private datumOn(pointId: Id): Datum | undefined {
     return this.sk.symbols.find((s): s is Datum => s.type === "datum" && s.at === pointId);
@@ -913,6 +1224,15 @@ export class App {
       this.commit();
       this.setTool("select");
       this.selection = new Set([f.id]);
+      return;
+    }
+
+    if (tool === "note") {
+      // The note is typed where it was clicked; one left empty is not kept.
+      const n = addSymbol(this.sk, { type: "note", x: raw[0], y: raw[1], text: "" });
+      this.setTool("select");
+      this.selection = new Set([n.id]);
+      this.openEditor({ kind: "note", id: n.id });
       return;
     }
 
@@ -969,7 +1289,7 @@ export class App {
         return this.toast("That point is a datum point already.");
       }
       const d = addSymbol(this.sk, {
-        type: "datum", at, color: this.datumColor, label: this.nextDatumName(),
+        type: "datum", at, color: this.datumColor, label: nextDatumName(this.sk),
         dx: DATUM_LABEL_OFFSET[0], dy: DATUM_LABEL_OFFSET[1],
       });
       this.finishDrawing(autos);
@@ -1042,6 +1362,10 @@ export class App {
       s.side = off >= 0 ? 1 : -1;
       const whole = curveLength(this.sk, s.on);
       s.depth = Math.max(whole * HATCH_REACH[0], Math.min(whole * HATCH_REACH[1], Math.abs(off)));
+    } else if (s.type === "note") {
+      const pos = add(d.origin, sub(m, d.startModel));
+      s.x = pos[0];
+      s.y = pos[1];
     } else if (s.type === "frame") {
       // Axes move freely; dropped on a joint they pin to it.
       const pos = add(d.origin, sub(m, d.startModel));
@@ -1155,6 +1479,11 @@ export class App {
       this.touch();
       return;
     }
+    if (isCopyTool(this.tool)) {
+      this.copyClick(sp);
+      this.touch();
+      return;
+    }
     if (isSymbolTool(this.tool)) {
       this.symbolClick(sp);
       this.updateSnapMark();
@@ -1205,7 +1534,8 @@ export class App {
       } else {
         const edit: EditTarget | undefined = !hit.text ? undefined
           : s.type === "balloon" ? { kind: "balloon", id: hit.id }
-          : s.type === "datum" ? { kind: "datum", id: hit.id } : undefined;
+          : s.type === "datum" ? { kind: "datum", id: hit.id }
+          : s.type === "note" ? { kind: "note", id: hit.id } : undefined;
         this.drag = { kind: "sym", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin: this.symbolDragOrigin(s), moved: false, edit };
       }
     } else if (hit.kind === "curve" && hit.part === "label") {
@@ -1289,7 +1619,7 @@ export class App {
       }
     } else if (this.tool === "select") {
       this.hover = this.hitTest(sp)?.id ?? null;
-    } else if (isCommand(this.tool)) {
+    } else if (isCommand(this.tool) || this.tool === "mirror") {
       this.hover = this.hitTest(sp, true)?.id ?? null;
     } else if (this.tool === "trim") {
       this.trimPlan = this.trimAt(sp);
@@ -1309,7 +1639,12 @@ export class App {
   }
 
   private updateSnapMark(): void {
-    if (this.tool === "select" || this.tool === "trim" || isCommand(this.tool)) {
+    if (this.tool === "select" || this.tool === "trim" || this.tool === "mirror" || isCommand(this.tool)) {
+      this.snapMark = null;
+      return;
+    }
+    // The third click of a beam sets its width; it lands nowhere in particular.
+    if (this.pending?.tool === "beam" && this.pending.b) {
       this.snapMark = null;
       return;
     }
@@ -1410,7 +1745,7 @@ export class App {
       if (d) target = { kind: "datum", id: d.id };
     } else if (hit.kind === "sym") {
       const s = symbol(this.sk, hit.id);
-      if (s?.type === "balloon" || s?.type === "datum") target = { kind: s.type, id: hit.id };
+      if (s?.type === "balloon" || s?.type === "datum" || s?.type === "note") target = { kind: s.type, id: hit.id };
     }
     if (!target) return;
     if (target.kind === "dim") this.selection = new Set([hit.id]);
@@ -1698,6 +2033,7 @@ export class App {
     }
     const s = symbol(this.sk, t.id);
     if (t.kind === "balloon") return s?.type === "balloon" ? s.text : null;
+    if (t.kind === "note") return s?.type === "note" ? s.text : null;
     if (t.kind === "datum") return s?.type === "datum" ? s.label : null;
     return s?.type === "frame" ? (t.axis === "x" ? s.xLabel : s.yLabel) : null;
   }
@@ -1710,7 +2046,9 @@ export class App {
     this.dimEditor.hidden = false;
     this.editingInitial = value;
     this.dimEditor.value = value;
-    this.dimEditor.setAttribute("aria-label", t.kind === "dim" ? "Dimension value or label" : "Name");
+    this.dimEditor.setAttribute("aria-label", t.kind === "dim" ? "Dimension value or label" : t.kind === "note" ? "Note text" : "Name");
+    // A note is a line of text, typed from where it starts; everything else is short and centred.
+    this.dimEditor.classList.toggle("wide", t.kind === "note");
     // The prims on hand may predate the thing being edited (an arrow just drawn).
     this.prims = buildPrims(this.sk, this.mm(), { editor: !this.preview });
     this.placeEditor();
@@ -1730,7 +2068,10 @@ export class App {
     const mm = this.mm();
     const text = this.editPrim(t);
     let at: V | null = text ? textCentre(text) : null;
-    if (!at) {
+    if (t.kind === "note") {
+      const s = symbol(this.sk, t.id);
+      at = s?.type === "note" ? [s.x * mm, s.y * mm] : null;
+    } else if (!at) {
       // Nothing is shown yet (an empty name): the box goes where the text will appear.
       if (t.kind === "arrow") at = arrowLabelAt(this.sk, entity(this.sk, t.id) as Line | Arc, mm, true);
       else {
@@ -1749,13 +2090,23 @@ export class App {
   private commitEditor(): void {
     const t = this.editing;
     if (!t) return;
-    const text = this.dimEditor.value.trim().replace(/^\$+|\$+$/g, "");
+    // Names are math already, so dollar signs around them are dropped. In a note they mark the math.
+    const text = t.kind === "note" ? this.dimEditor.value.trim() : this.dimEditor.value.trim().replace(/^\$+|\$+$/g, "");
     const unchanged = text === this.editingInitial.trim();
-    this.closeEditor();
+    this.closeEditor(text !== "");
     if (unchanged || this.editValue(t) === null) return this.touch();
     if (t.kind !== "dim") {
       // A name: what was typed is what is shown.
-      if (t.kind === "arrow") {
+      if (t.kind === "note") {
+        const s = symbol(this.sk, t.id);
+        if (s?.type !== "note") return;
+        // Emptied, a note that was there before is deleted.
+        if (text) s.text = text;
+        else {
+          remove(this.sk, [s.id]);
+          this.selection.delete(s.id);
+        }
+      } else if (t.kind === "arrow") {
         const e = entity(this.sk, t.id) as Line | Arc;
         if (text) e.label = text;
         else delete e.label;
@@ -1792,11 +2143,19 @@ export class App {
     this.touch();
   }
 
-  private closeEditor(): void {
-    if (!this.editing) return;
+  /** Closes the box on the drawing. A note that was left empty goes with it, unless `keep`: its text is about to be set. */
+  private closeEditor(keep = false): void {
+    const t = this.editing;
+    if (!t) return;
     clearTimeout(this.focusTimer);
     this.editing = null;
     this.dimEditor.hidden = true;
+    if (t.kind !== "note" || keep) return;
+    const s = symbol(this.sk, t.id);
+    if (s?.type !== "note" || s.text.trim()) return;
+    remove(this.sk, [s.id]);
+    this.selection.delete(s.id);
+    this.touch();
   }
 
   // ---- constraint commands ------------------------------------------------------
@@ -1904,6 +2263,7 @@ export class App {
    */
   private activate(cmd: Command): void {
     if (this.tool === "select" && this.picked().entities > 0 && this.canApply(cmd)) {
+      this.showTip(cmd);
       if (cmd === "dimension") this.createDimension();
       else this.run(cmd);
       return;
@@ -2104,10 +2464,55 @@ export class App {
     });
   }
 
+  /**
+   * Holds an export back for a few seconds with the Support button on show.
+   * The button that finishes the export comes alive when the wait is over;
+   * pressing it is what lets the browser save a file or fill the clipboard.
+   * Resolves to false when the export is called off.
+   */
+  private waitToExport(title: string, verb: string): Promise<boolean> {
+    const total = this.exportWait * 1000;
+    if (!SUPPORT_URL || !(total > 0)) return Promise.resolve(true);
+    const dialog = $<HTMLDialogElement>("#export-dialog");
+    const go = $<HTMLButtonElement>("#export-go"), bar = $("#export-bar"), wait = $("#export-wait");
+    const meter = bar.parentElement!;
+    $("#export-title").textContent = title;
+    go.textContent = verb;
+    go.disabled = true;
+    return new Promise((resolve) => {
+      const started = performance.now();
+      const tick = () => {
+        const left = total - (performance.now() - started);
+        const done = Math.max(0, Math.min(1, 1 - left / total));
+        bar.style.width = `${(done * 100).toFixed(1)}%`;
+        meter.setAttribute("aria-valuenow", String(Math.round(done * 100)));
+        if (left > 0) {
+          const s = Math.ceil(left / 1000);
+          wait.textContent = `Ready in ${s} ${s === 1 ? "second" : "seconds"}.`;
+          return;
+        }
+        clearInterval(timer);
+        wait.textContent = `Ready. Press ${verb} to finish.`;
+        go.disabled = false;
+        go.focus();
+      };
+      const timer = window.setInterval(tick, 100);
+      dialog.addEventListener("close", () => {
+        clearInterval(timer);
+        resolve(dialog.returnValue === "ok");
+      }, { once: true });
+      dialog.returnValue = "";
+      dialog.showModal();
+      tick();
+    });
+  }
+
   /** Exports the figure. `how` picks the format and whether it is saved or copied. */
   private async exportFigure(how: "svg" | "tikz" | "copy-tikz"): Promise<void> {
     const text = how === "svg" ? toSvg(this.sk) : toTikz(this.sk);
     if (!text) return this.toast("There is nothing to export yet.");
+    const title = how === "svg" ? "Export SVG" : how === "tikz" ? "Export TikZ" : "Copy TikZ";
+    if (!(await this.waitToExport(title, how === "copy-tikz" ? "Copy" : "Save"))) return;
     if (how === "svg") return this.saveAs(text, ".svg", "image/svg+xml", "SVG image");
     if (how === "tikz") return this.saveAs(text, ".tex", "text/x-tex", "TikZ picture");
     try {
@@ -2160,6 +2565,7 @@ export class App {
       for (const s of this.sk.symbols) {
         if (s.type === "frame") grow(b, symbolPosition(this.sk, s), boxIsEmpty(b) ? 0 : Math.max(s.xSize, s.ySize));
         if (s.type === "balloon") grow(b, add(balloonAnchor(this.sk, s), [s.dx, s.dy]));
+        if (s.type === "note") grow(b, [s.x, s.y]);
       }
       if (boxIsEmpty(b) || (b.x1 - b.x0 < 1e-9 && b.y1 - b.y0 < 1e-9)) {
         this.view.cx = 0;
@@ -2192,6 +2598,8 @@ export class App {
     if (on === this.preview) return;
     this.closeEditor();
     this.preview = on;
+    if (on) this.showTip("preview");
+    else if (this.tip?.id === "preview") this.closeTip();
     if (on) {
       this.viewBeforePreview = { ...this.view };
       this.fit();
@@ -2221,13 +2629,17 @@ export class App {
       `<label class="pop-row" title="Double-click for 100%."><span>Dimension size while editing</span>` +
       `<span class="pop-ctl"><input id="edit-scale" type="range" min="${EDIT_SCALE_MIN}" max="${EDIT_SCALE_MAX}" step="5" value="100"><output id="edit-scale-out" for="edit-scale">100%</output></span></label>` +
       `<p class="pop-note">How large text, arrows and symbols look on screen while you draw. The size in print is set in the corner box.</p>` +
+      `<label class="check pop-check pop-rule"><input id="tips-on" type="checkbox"><span>Show a tip the first time a tool is used</span></label>` +
+      `<button type="button" class="linkish" data-act="tips-reset">Show the tips again from the start</button>` +
       `<p class="pop-note pop-build">${esc(buildLabel())}</p>` +
       `</div></div>` +
       `<button type="button" class="icon-btn" data-act="preview" aria-label="Print preview" title="Print preview: hide everything that is not exported (Q)">${icon("eye")}</button>` +
       `<button type="button" class="icon-btn" data-act="origin" aria-label="Show origin axes" title="Show or hide the axes at the origin">${icon("frame")}</button>` +
-      `<button type="button" class="icon-btn" data-act="fit" aria-label="Zoom to fit" title="Zoom to fit (0)">${icon("fit")}</button>`;
+      `<button type="button" class="icon-btn" data-act="fit" aria-label="Zoom to fit" title="Zoom to fit (0)">${icon("fit")}</button>` +
+      `<button type="button" class="icon-btn" data-act="help" aria-label="Help" title="How to use Mech Sketch">${icon("help")}</button>`;
     this.buildRibbon();
     this.showEditScale();
+    this.showTipsSetting();
   }
 
   /** Puts the editing size on its slider. */
@@ -2259,8 +2671,8 @@ export class App {
     for (const t of tools) {
       if (t.group !== group && group !== -1) html += `<span class="ribbon-rule"></span>`;
       group = t.group;
-      const attr = isCommand(t.id) ? `data-cmd="${t.id}"` : `data-tool="${t.id}"`;
-      html += `<button type="button" class="tool" ${attr} aria-label="${t.label}" title="${t.label}${t.key ? ` (${t.key})` : ""}">${icon(t.icon, 22)}<span>${t.label}</span></button>`;
+      const attr = t.id === "shift" ? `data-act="shift"` : isCommand(t.id) ? `data-cmd="${t.id}"` : `data-tool="${t.id}"`;
+      html += `<button type="button" class="tool" ${attr} aria-label="${t.label}" title="${t.label}${t.key ? ` (${t.key})` : ""}">${icon(t.icon, 22)}<span>${t.short ?? t.label}</span></button>`;
     }
     const ribbon = $("#ribbon");
     ribbon.innerHTML = html;
@@ -2275,6 +2687,11 @@ export class App {
     const home = toolDef(this.tool).tab;
     if (home !== "both" && home !== tab) return this.setTool("select");
     this.touch();
+  }
+
+  /** The tool or command a key stands for. */
+  private keyTool(key: string): ToolDef | undefined {
+    return TOOLS.find((t) => t.key === key);
   }
 
   private updateButtons(): void {
@@ -2325,6 +2742,7 @@ export class App {
       const label = c.label?.trim() ? ` shown as ${c.label.trim()}` : "";
       return `${RELATION_NAMES[c.type]} ${this.shownValue(c)}${unit}${label}`;
     }
+    if (c.type === "turn") return `${RELATION_NAMES[c.type]}, ${formatNumber(Number((c.angle / DEG).toFixed(3)))}° apart`;
     return RELATION_NAMES[c.type];
   }
 
@@ -2423,6 +2841,10 @@ export class App {
         html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
         html += `<button type="button" class="plain" data-act="lean">Lean the strokes the other way</button>`;
         break;
+      case "note":
+        html += `<h2>Note</h2>`;
+        html += text("Text", "sym-text", s.text, "Plain text. Put math between dollar signs, as in $F_1 = 2a$, and \\\\ where a new line starts. Clicking the note on the drawing edits it there; dragging moves it.");
+        break;
       case "datum":
         html += `<h2>Datum point</h2>`;
         html += text("Name", "sym-label", s.label, "Written as TeX math. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.");
@@ -2441,7 +2863,24 @@ export class App {
     const { pts, lines, rounds, cons, syms, entities } = this.picked();
     let html = "";
 
-    if (isCommand(this.tool) && !(cons.length === 1 && isDimension(cons[0]))) {
+    if (this.tool === "beam") {
+      html += `<h2>Beam</h2>`;
+      html += `<div class="field"><span id="beam-label">Ends</span><div class="segmented" role="group" aria-labelledby="beam-label">` +
+        `<button type="button" data-beam="round" aria-pressed="${this.beamEnds === "round"}">Round</button>` +
+        `<button type="button" data-beam="square" aria-pressed="${this.beamEnds === "square"}">Square</button></div></div>`;
+      html += `<ol class="steps"><li>Click where the beam starts and where it ends. Joints that are there already are used.</li>` +
+        `<li>Move away from its middle line and click to set the width.</li></ol>`;
+      html += `<p class="muted note-block">The beam is made of lines${this.beamEnds === "round" ? " and arcs" : ""} with the constraints that keep its shape. ` +
+        `Dimension the distance between its two centres for the length${this.beamEnds === "round" ? ", and an end's radius for the width" : ", and an end for the width"}.</p>`;
+    } else if (isCopyTool(this.tool)) {
+      html += `<h2>${toolDef(this.tool).label}</h2>`;
+      html += this.tool === "mirror"
+        ? `<p class="muted">Click the line to mirror the selection about. Points on that line are shared by both halves.</p>` +
+          `<p class="muted">The image stays a mirror image: change the original and it follows.</p>`
+        : `<p class="muted">Click the point the copies go around. You are then asked how many there should be.</p>` +
+          `<p class="muted">The copies stay copies: change the original and they follow.</p>`;
+      html += `<p class="muted">Esc returns to Select.</p>`;
+    } else if (isCommand(this.tool) && !(cons.length === 1 && isDimension(cons[0]))) {
       const info = toolDef(this.tool);
       html += `<h2>${info.label}</h2>`;
       html += this.tool === "dimension"
@@ -2485,6 +2924,15 @@ export class App {
     } else if (cons.length >= 1 && entities === 0 && !syms.length) {
       html += `<h2>${cons.length === 1 ? RELATION_NAMES[cons[0].type] : `${cons.length} constraints`}</h2>`;
       html += this.constraintRows(cons);
+      const only = cons.length === 1 ? cons[0] : null;
+      if (only?.type === "turn") {
+        html += `<label class="field note-block"><span>Angle between copies (degrees)</span><input data-field="turn-angle" type="text" inputmode="decimal" value="${formatNumber(Number((only.angle / DEG).toFixed(3)))}"></label>`;
+      }
+      if (only && isLink(only)) {
+        const n = only.pairs.length + only.half.length;
+        html += `<p class="muted note-block">Holds ${n} ${n === 1 ? "point" : "points"}${only.circles.length ? ` and ${only.circles.length} ${only.circles.length === 1 ? "radius" : "radii"}` : ""} of the ${only.type === "mirror" ? "image" : "copies"} to the original. ` +
+          `${only.type === "shift" ? "The spacing is free: drag a copy, or dimension from a point to its copy. " : ""}Delete it to let the ${only.type === "mirror" ? "image" : "copies"} go their own way.</p>`;
+      }
       html += `<button type="button" class="danger" data-act="delete">Delete</button>`;
     } else if (entities === 1 && pts.length === 1 && pts[0].id === ORIGIN && !syms.length) {
       html += `<h2>Origin</h2><p class="muted">Fixed at (0, 0). Constrain or dimension geometry against it like any other point. It is not part of the exported figure.</p>`;
@@ -2595,6 +3043,8 @@ export class App {
       else if (ds.color) this.setColor(ds.color);
       else if (ds.head) this.setArrowHead(ds.head as ArrowEnds);
       else if (ds.place) this.setRadiusPlace(ds.place === "outside");
+      else if (ds.beam) { this.beamEnds = ds.beam as BeamEnds; this.touch(); }
+      else if (ds.dir) btn.parentElement?.querySelectorAll("[data-dir]").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
       else if (ds.dialog === "cancel") btn.closest("dialog")?.close("cancel");
       else if (ds.act) this.action(ds.act);
     });
@@ -2665,6 +3115,14 @@ export class App {
     });
     this.dimEditor.addEventListener("blur", () => { if (this.editing) this.commitEditor(); });
 
+    const tipsOn = $<HTMLInputElement>("#tips-on");
+    tipsOn.addEventListener("change", () => {
+      this.tips.setOff(!tipsOn.checked);
+      if (!tipsOn.checked && this.tip) { this.tip = null; $("#tip").hidden = true; }
+    });
+    $("#pattern-count").addEventListener("input", () => this.syncPatternDialog());
+    $("#pattern-full").addEventListener("change", () => this.syncPatternDialog());
+
     this.fileInput.addEventListener("change", () => {
       const f = this.fileInput.files?.[0];
       if (f) void this.open(f);
@@ -2695,6 +3153,22 @@ export class App {
       case "export-svg": return void this.exportFigure("svg");
       case "export-tikz": return void this.exportFigure("tikz");
       case "copy-tikz": return void this.exportFigure("copy-tikz");
+      case "shift": return void this.linearPattern();
+      case "help": return this.showWelcome();
+      case "tip-close": return this.closeTip();
+      case "tips-off":
+        this.tip = null;
+        $("#tip").hidden = true;
+        this.tips.setOff(true);
+        this.showTipsSetting();
+        return this.toast("Tips are off. The settings button in the top right switches them back on.");
+      case "tips-reset":
+        this.tips.reset();
+        this.showTipsSetting();
+        return this.toast("Every tip will be shown once more.");
+      case "support-close":
+        $("#support-card").hidden = true;
+        return;
       case "delete": return this.deleteSelection();
       case "rotate": return this.rotateSelected(Math.PI / 2);
       case "flip":
@@ -2791,6 +3265,37 @@ export class App {
     this.render();
   }
 
+  /** Sets the angle between the copies of a circular pattern, in degrees, if the sketch can follow. */
+  private setTurnAngle(id: Id, degrees: number): void {
+    if (!Number.isFinite(degrees) || Math.abs(degrees) < 1e-6 || Math.abs(degrees) > 360) {
+      return this.toast("The angle must be a number of degrees, not zero and at most 360.");
+    }
+    const before = clone(this.sk);
+    const c = constraint(this.sk, id);
+    if (c?.type !== "turn") return;
+    const old = c.angle, want = degrees * DEG;
+    // The original is asked to stay where it is, so it is the copies that move.
+    const stay: Drag[] = [...new Set([c.c, ...c.pairs.map((x) => x[0]), ...c.half.map((h) => h.from)])]
+      .map((p) => ({ kind: "point", id: p, x: point(this.sk, p).x, y: point(this.sk, p).y }));
+    // Walked there in steps: from far away the solver may not find the turned copies.
+    const STEPS = 24;
+    let r = this.result;
+    for (let k = 1; k <= STEPS; k++) {
+      c.angle = old + ((want - old) * k) / STEPS;
+      r = this.solver.solve(this.sk, stay);
+      if (!r.ok) break;
+    }
+    if (r.ok) r = this.solver.solve(this.sk);
+    if (!r.ok || r.conflicting.length > this.result.conflicting.length) {
+      this.sk = before;
+      this.solve();
+      return this.toast("No solution with that angle. Another constraint or dimension rules it out.");
+    }
+    this.result = r;
+    this.commit();
+    this.keepInView();
+  }
+
   /** Colours the selected fill or datum point, and remembers the colour for the next one of its kind. */
   private setColor(color: string): void {
     if (!/^#[0-9a-f]{6}$/i.test(color)) return;
@@ -2870,6 +3375,11 @@ export class App {
       } else if (s.type === "frame" && field === "sym-xlabel") s.xLabel = label;
       else if (s.type === "frame" && field === "sym-ylabel") s.yLabel = label;
       else if (s.type === "balloon" && field === "sym-text") s.text = label;
+      else if (s.type === "note" && field === "sym-text") {
+        // Dollar signs mark the math in a note, so the text is taken as typed.
+        if (!input.value.trim()) { this.toast("A note needs some text. Delete removes it."); return this.touch(); }
+        s.text = input.value.trim();
+      }
       else if (s.type === "balloon" && field === "sym-circle") {
         if (input.checked) delete s.circle;
         else s.circle = false;
@@ -2883,6 +3393,12 @@ export class App {
         return slide(this.hatchLabel(s, field === "sym-depth" ? "depth" : "freq"));
       }
       return this.commit();
+    }
+
+    if (field === "turn-angle") {
+      const c = this.selection.size === 1 ? constraint(this.sk, [...this.selection][0]) : undefined;
+      if (c?.type === "turn") this.setTurnAngle(c.id, parseNumber(input.value));
+      return this.touch();
     }
 
     if (field === "arrow-label") {
@@ -2928,6 +3444,7 @@ export class App {
     if (!list) return;
     btn.setAttribute("aria-expanded", String(open));
     list.hidden = !open;
+    if (open && btn.dataset.menu === "export") this.showTip("export");
     if (open && focus) list.querySelector<HTMLElement>("button, input")?.focus();
   }
 
@@ -2970,6 +3487,8 @@ export class App {
 
   private onKeyDown(e: KeyboardEvent): void {
     this.altKey = e.altKey;
+    // A dialog has the keyboard to itself: no tool is picked up behind it.
+    if (document.querySelector("dialog[open]")) return;
     const target = e.target as HTMLElement;
     // Checkboxes and buttons keep focus after a click but take no text.
     const textInput = target.tagName === "INPUT" && !["checkbox", "radio", "button", "file", "range"].includes((target as HTMLInputElement).type);
@@ -3023,8 +3542,8 @@ export class App {
       e.preventDefault();
       return this.action("preview");
     }
-    const tool = TOOLS.find((t) => t.key === key);
-    if (!tool) return;
+    const tool = this.keyTool(key);
+    if (!tool || tool.id === "shift") return;
     // Without this the letter would be typed into the dimension box a command opens.
     e.preventDefault();
     if (isCommand(tool.id)) this.activate(tool.id);

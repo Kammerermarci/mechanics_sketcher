@@ -80,7 +80,7 @@ const n2 = (v: number) => v.toFixed(2);
 const GLYPH_ICON: Record<string, string> = {
   coincident: "coincident", pointOn: "pointOn", midpoint: "midpoint", horizontal: "horizontal",
   vertical: "vertical", parallel: "parallel", perpendicular: "perpendicular", equal: "equal",
-  tangent: "tangent", fixed: "fixed",
+  tangent: "tangent", fixed: "fixed", mirror: "mirror", shift: "shift", turn: "turn",
 };
 
 /** Keeps a marker on the upper side of whatever it annotates. */
@@ -154,6 +154,17 @@ export function layoutGlyphs(sk: Sketch, view: View, show: (c: Constraint) => bo
         atCurve(c, c.a);
         atCurve(c, c.b);
         break;
+      // One marker for a whole mirror image or pattern: on the mirror line, between the
+      // original and its first copy, or at the point the copies go around.
+      case "mirror": atCurve(c, c.l); break;
+      case "shift": {
+        // Between a point of the original and its nearest copy.
+        const first = [...c.pairs.map(([from, to, steps]) => ({ from, to, steps })), ...c.half]
+          .sort((a, b) => (a.steps ?? 1) - (b.steps ?? 1))[0];
+        if (first) atSpan(c, S(first.from), S(first.to));
+        break;
+      }
+      case "turn": atPoint(c, c.c); break;
       case "tangent": {
         const l = entity(sk, c.l), round = entity(sk, c.c);
         if (l?.type !== "line" || !round || round.type === "point" || round.type === "line") break;

@@ -5,7 +5,7 @@
 import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
   type Arc, type Line, type Sym, type Support, type Frame, type CenterMark, type Balloon,
-  type Fill as FillSym, type Hatch, type Datum,
+  type Fill as FillSym, type Hatch, type Datum, type Note,
   entity, point, arcRadius, arcAngles, isDimension, geometryBox, geometryExtent,
 } from "./model";
 import {
@@ -88,7 +88,13 @@ export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a
  * `anchor` names the side of the text box that sits at `at`, as in TikZ.
  * `rot` turns the text about `at`, counter-clockwise in radians.
  */
-export interface TextPrim extends Base { k: "text"; at: V; tex: string; anchor: Anchor; rot?: number }
+export interface TextPrim extends Base {
+  k: "text"; at: V; tex: string; anchor: Anchor; rot?: number;
+  /** Plain LaTeX to put in the TikZ picture in place of the math in `tex`: a note's text, set as text. */
+  latex?: string;
+  /** How many lines the text has, when more than one. */
+  lines?: number;
+}
 /** One closed outline of a region: a whole circle, or straight and arc pieces end to end. */
 export type Outline =
   | { kind: "circle"; c: V; r: number }
@@ -147,6 +153,80 @@ export function labelTex(typed: string): string {
     }
   }
   return out;
+}
+
+/** The lines of a note, each cut into text and math by turns: even pieces are text, odd ones math. */
+function noteLines(typed: string): string[][] {
+  const lines: string[][] = [];
+  let line: string[] = [""];
+  for (let i = 0; i < typed.length; i++) {
+    const ch = typed[i];
+    const math = line.length % 2 === 0;
+    if (ch === "\\" && typed[i + 1] === "$" && !math) {
+      line[line.length - 1] += "\\$"; // a dollar sign meant as one
+      i++;
+    } else if (ch === "$") line.push("");
+    else if (ch === "\n" || (ch === "\\" && typed[i + 1] === "\\" && !math)) {
+      if (ch === "\\") i++;
+      lines.push(line);
+      line = [""];
+    } else line[line.length - 1] += ch;
+  }
+  lines.push(line);
+  return lines.map((l) => l.map((piece, i) => {
+    if (i % 2) return piece.trim();
+    // Spaces at either end of a line are not part of it.
+    if (i === 0) piece = piece.trimStart();
+    return i === l.length - 1 ? piece.trimEnd() : piece;
+  }));
+}
+
+/**
+ * The text pieces of one line of a note, made safe for LaTeX. Commands such
+ * as \textbf{...} are left to work; characters that would break the line
+ * (% & # _ ^ ~) are escaped unless they already are, and braces too when
+ * they do not pair up.
+ */
+function noteText(pieces: string[]): string[] {
+  let depth = 0, balanced = true;
+  for (let i = 0; i < pieces.length; i += 2) {
+    const t = pieces[i];
+    for (let j = 0; j < t.length; j++) {
+      if (t[j] === "\\") { j++; continue; }
+      if (t[j] === "{") depth++;
+      else if (t[j] === "}" && --depth < 0) balanced = false;
+    }
+  }
+  if (depth !== 0) balanced = false;
+  const SAFE: Record<string, string> = { "%": "\\%", "&": "\\&", "#": "\\#", "_": "\\_", "^": "\\^{}", "~": "\\~{}" };
+  return pieces.map((t, i) => {
+    if (i % 2) return t;
+    let out = "";
+    for (let j = 0; j < t.length; j++) {
+      const ch = t[j];
+      if (ch === "\\" && j + 1 < t.length) { out += ch + t[++j]; continue; }
+      if (ch === "\\") continue; // a lone one at the very end: the start of something not typed yet
+      if (ch in SAFE) out += SAFE[ch];
+      else if ((ch === "{" || ch === "}") && !balanced) out += "\\" + ch;
+      else out += ch;
+    }
+    return out;
+  });
+}
+
+/** A note as TeX math for the screen and the SVG: its text upright, its math as typed, its lines stacked. */
+export function noteTex(typed: string): string {
+  const lines = noteLines(typed.trim()).map((pieces) =>
+    noteText(pieces).map((t, i) => (i % 2 ? t : t ? `\\text{${t}}` : "")).join(""));
+  if (lines.length === 1) return lines[0];
+  return `\\begin{array}{@{}l@{}}${lines.join("\\\\")}\\end{array}`;
+}
+
+/** A note as LaTeX text for the TikZ picture, and how many lines it has. */
+export function noteLatex(typed: string): { latex: string; lines: number } {
+  const lines = noteLines(typed.trim()).map((pieces) =>
+    noteText(pieces).map((t, i) => (i % 2 ? `$${t}$` : t)).join("").trim());
+  return { latex: lines.join("\\\\"), lines: lines.length };
 }
 
 /** The TeX shown on a dimension: its label, or else its value. */
@@ -364,6 +444,7 @@ export function symbolPosition(sk: Sketch, s: Sym): V {
         return [p.x, p.y];
       }
       return [s.x, s.y];
+    case "note": return [s.x, s.y];
     case "centermark": return curveShape(sk, s.on)?.kind === "round" ? (curveShape(sk, s.on) as { c: V }).c : [0, 0];
     case "balloon": return balloonAnchor(sk, s);
     case "hatch": return pointOnCurve(sk, s.on, curveShape(sk, s.on)?.kind === "round" && (curveShape(sk, s.on) as { full: boolean }).full ? 0 : 0.5) ?? [0, 0];
@@ -522,6 +603,14 @@ function datumPrims(sk: Sketch, s: Datum, mm: number): Prim[] {
   return out;
 }
 
+function notePrims(s: Note, mm: number): Prim[] {
+  if (!s.text.trim()) return [];
+  const { latex, lines } = noteLatex(s.text);
+  const text: TextPrim = { ref: s.id, layer: "sym", k: "text", at: [s.x * mm, s.y * mm], tex: noteTex(s.text), anchor: "w", latex };
+  if (lines > 1) text.lines = lines;
+  return [text];
+}
+
 /** Most strokes a hatching is drawn with, however fine its spacing. */
 const HATCH_MAX = 2000;
 
@@ -638,6 +727,7 @@ export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
     case "hatch": return hatchPrims(sk, s, mm);
     case "fill": return fillPrims(sk, s, mm);
     case "datum": return datumPrims(sk, s, mm);
+    case "note": return notePrims(s, mm);
   }
 }
 
