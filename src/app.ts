@@ -29,6 +29,7 @@ import { regionAt, findOverlaps } from "./regions";
 import { type TrimPlan, planTrim, applyTrim } from "./trim";
 import { toSvg, toTikz } from "./export";
 import { icon } from "./icons";
+import { SUPPORT_URL } from "./config";
 
 type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc";
 type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum";
@@ -2212,6 +2213,8 @@ export class App {
       `<button type="button" class="icon-btn" data-act="undo" aria-label="Undo" title="Undo (Ctrl+Z)">${icon("undo")}</button>` +
       `<button type="button" class="icon-btn" data-act="redo" aria-label="Redo" title="Redo (Ctrl+Y)">${icon("redo")}</button>` +
       `<span class="rule"></span>` +
+      // A plain link, so it opens in the browser like any other; it is left out until there is somewhere to send people.
+      (SUPPORT_URL ? `<a class="icon-btn support" href="${esc(SUPPORT_URL)}" target="_blank" rel="noopener noreferrer" aria-label="Support Mech Sketch" title="Support Mech Sketch with a donation">${icon("heart")}</a>` : "") +
       `<div class="menu">` +
       `<button type="button" class="icon-btn" id="view-btn" data-menu="view" aria-label="View settings" title="View settings" aria-haspopup="true" aria-expanded="false" aria-controls="view-list">${icon("sliders")}</button>` +
       `<div class="menu-list popover" id="view-list" role="group" aria-labelledby="view-btn" hidden>` +

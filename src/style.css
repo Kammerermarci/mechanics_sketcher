@@ -72,6 +72,10 @@ button { cursor: pointer; }
 .text-btn:hover, .icon-btn:hover { background: var(--board-lo); }
 .icon-btn:disabled { color: var(--ink-2); opacity: 0.42; cursor: default; }
 .icon-btn[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+/* The Support link looks like the buttons beside it, with a little colour of its own. */
+a.icon-btn { color: inherit; text-decoration: none; }
+a.icon-btn.support { color: #c2334d; }
+a.icon-btn.support:hover { background: #f6dde2; }
 .icon { display: block; flex: none; }
 
 /* ---- drop-down menu in the top bar ---- */
