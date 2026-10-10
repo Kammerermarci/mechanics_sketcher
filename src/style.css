@@ -233,6 +233,7 @@ text.tex { fill: currentColor; font-family: var(--math); }
 .preview { fill: none; stroke: var(--blue); stroke-width: 1.5; opacity: 0.75; }
 .preview-pt { stroke: var(--blue); opacity: 0.75; }
 .preview.danger { stroke: var(--bad); stroke-width: 4; stroke-linecap: round; opacity: 0.7; }
+.trail { fill: none; stroke: var(--bad); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 2 4; opacity: 0.8; }
 
 .glyph { color: var(--mark); }
 .glyph > rect { fill: var(--mark-bg); }

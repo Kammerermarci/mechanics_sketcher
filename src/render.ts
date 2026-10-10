@@ -36,6 +36,8 @@ export interface Preview {
   points: V[];
   /** Drawn as something about to be removed, not added. */
   danger?: boolean;
+  /** The path the pointer has taken while trimming, drawn as a thin trail. */
+  trail?: V[];
 }
 
 export interface SnapMark {
@@ -402,6 +404,9 @@ function drawPreview(s: Scene): string {
     out += `<circle class="${cls}" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${n2(c.r * s.view.scale)}"/>`;
   }
   for (const a of pv.arcs) out += `<path class="${cls}" d="${arcPath(s.view, a.c, a.r, a.a0, a.a1)}"/>`;
+  if (pv.trail && pv.trail.length > 1) {
+    out += `<polyline class="trail" points="${pv.trail.map((q) => toScreen(s.view, q).map(n2).join(",")).join(" ")}"/>`;
+  }
   for (const q of pv.points) {
     const p = toScreen(s.view, q);
     out += `<circle class="pt preview-pt" cx="${n2(p[0])}" cy="${n2(p[1])}" r="3.4"/>`;

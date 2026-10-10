@@ -2,7 +2,7 @@
 // two crossings with other curves.
 
 import {
-  type Sketch, type Id, type Curve, type Arc, type ConstraintDraft,
+  type Sketch, type Id, type Curve, type Arc, type Constraint, type ConstraintDraft,
   entity, point, points, curves, curvePoints, arcRadius, addPoint, addLine, addArc, remove, dropIfUnused,
 } from "./model";
 import { type V, add, sub, mul, dot, dist, angleOf, polar, wrap, TWO_PI } from "./geom";
@@ -34,9 +34,8 @@ function within(s: Shape, q: V, eps: number): boolean {
   return off < s.sweep + slack || off > TWO_PI - slack;
 }
 
-/** The points where two curves meet, in model units. Lines running along each other give none. */
-export function intersections(sk: Sketch, e1: Curve, e2: Curve, eps: number): V[] {
-  const s = shapeOf(sk, e1), t = shapeOf(sk, e2);
+/** The points where two shapes meet. Lines running along each other give none. */
+function crossings(s: Shape, t: Shape, eps: number): V[] {
   let found: V[] = [];
   if (s.kind === "line" && t.kind === "line") {
     const d = sub(s.b, s.a), e = sub(t.b, t.a);
@@ -50,11 +49,16 @@ export function intersections(sk: Sketch, e1: Curve, e2: Curve, eps: number): V[
     const round = (s.kind === "line" ? t : s) as Extract<Shape, { kind: "round" }>;
     const d = sub(line.b, line.a), f = sub(line.a, round.c);
     const A = dot(d, d), B = 2 * dot(f, d), C = dot(f, f) - round.r * round.r;
-    const disc = B * B - 4 * A * C;
-    if (A > 1e-18 && disc >= -1e-9 * A * round.r * round.r) {
-      const root = Math.sqrt(Math.max(0, disc));
-      found = [(-B - root) / (2 * A), (-B + root) / (2 * A)].map((u) => add(line.a, mul(d, u)));
-      if (root < 1e-9 * Math.sqrt(A) * round.r) found = [found[0]]; // tangent: one point
+    if (A > 1e-18) {
+      // How far the line passes from the centre. Within a hair of the radius it touches: a
+      // tangent line is only as exact as the solver left it, and must still count as meeting.
+      const off = Math.abs(f[0] * d[1] - f[1] * d[0]) / Math.sqrt(A);
+      const touch = eps * 10;
+      if (off >= round.r - touch && off <= round.r + touch) found = [add(line.a, mul(d, -B / (2 * A)))];
+      else if (off < round.r) {
+        const root = Math.sqrt(Math.max(0, B * B - 4 * A * C));
+        found = [(-B - root) / (2 * A), (-B + root) / (2 * A)].map((u) => add(line.a, mul(d, u)));
+      }
     }
   } else {
     const gap = dist(s.c, t.c);
@@ -67,6 +71,11 @@ export function intersections(sk: Sketch, e1: Curve, e2: Curve, eps: number): V[
     }
   }
   return found.filter((q) => within(s, q, eps) && within(t, q, eps));
+}
+
+/** The points where two curves meet, in model units. Lines running along each other give none. */
+export function intersections(sk: Sketch, e1: Curve, e2: Curve, eps: number): V[] {
+  return crossings(shapeOf(sk, e1), shapeOf(sk, e2), eps);
 }
 
 /** A place where the curve being trimmed is crossed. */
@@ -95,6 +104,21 @@ function scaleOf(sk: Sketch): number {
   return Math.max(1e-9, size * 1e-7);
 }
 
+/**
+ * The curves a stroke of the pointer from a to b passes over, nearest to a
+ * first, with the place it crosses each.
+ */
+export function strokeHits(sk: Sketch, a: V, b: V): { id: Id; at: V }[] {
+  if (dist(a, b) < 1e-12) return [];
+  const eps = scaleOf(sk);
+  const stroke: Shape = { kind: "line", a, b };
+  const out: { id: Id; at: V }[] = [];
+  for (const e of curves(sk)) {
+    for (const q of crossings(stroke, shapeOf(sk, e), eps)) out.push({ id: e.id, at: q });
+  }
+  return out.sort((x, y) => dist(a, x.at) - dist(a, y.at));
+}
+
 /** Works out what a click on `curveId` near `at` would trim away. */
 export function planTrim(sk: Sketch, curveId: Id, at: V): TrimPlan | null {
   const target = entity(sk, curveId);
@@ -121,7 +145,11 @@ export function planTrim(sk: Sketch, curveId: Id, at: V): TrimPlan | null {
   }
   cuts.sort((x, y) => x.t - y.t);
 
-  const tc = Math.max(0, Math.min(end, param(at)));
+  let tc = param(at);
+  // Beside an arc but past one of its ends, the click belongs to the end it is nearer to:
+  // just before the start is not the far end, though the angle there has come all the way round.
+  if (s.kind === "round" && !s.full && tc > end) tc = tc - end < TWO_PI - tc ? end : 0;
+  tc = Math.max(0, Math.min(end, tc));
   const posAt = (t: number): V => (s.kind === "line" ? add(s.a, mul(sub(s.b, s.a), t)) : polar(s.c, s.r, s.a0 + t));
 
   if (s.kind === "round" && s.full) {
@@ -152,7 +180,7 @@ export function applyTrim(sk: Sketch, plan: TrimPlan): ConstraintDraft[] {
     return [];
   }
   const eps = scaleOf(sk);
-  const autos: ConstraintDraft[] = [];
+  const autos: ConstraintDraft[] = [], collinear: ConstraintDraft[] = [];
   // The point a new end lands on: one that is already there, or a new one tied to the cutting curve.
   const endAt = (cut: Cut): Id => {
     const there = points(sk).find((p) => Math.hypot(p.x - cut.pos[0], p.y - cut.pos[1]) < eps * 10);
@@ -179,6 +207,18 @@ export function applyTrim(sk: Sketch, plan: TrimPlan): ConstraintDraft[] {
     sk.constraints.find((c) => (c.type === "horizontal" || c.type === "vertical") && ((c.a === a && c.b === b) || (c.a === b && c.b === a)))?.type as "horizontal" | "vertical" | undefined;
 
   if (target.type === "line") {
+    // What was said about the line's length or its middle is no longer true of what is left
+    // of it, and would pull the sketch about. Equal length goes; a point at the middle stays on the line.
+    sk.constraints = sk.constraints.flatMap((c): Constraint[] => {
+      if (c.type === "equal" && (c.a === target.id || c.b === target.id)) return [];
+      if (c.type === "midpoint" && c.l === target.id) return [{ id: c.id, type: "pointOn", p: c.p, on: target.id }];
+      return [c];
+    });
+  }
+  // A fill bounded by the curve has lost its outline.
+  if (target.type !== "circle") sk.symbols = sk.symbols.filter((s) => !(s.type === "fill" && s.curves.includes(target.id)));
+
+  if (target.type === "line") {
     const { p1, p2 } = target;
     const level = levelOf(p1, p2);
     if (plan.lo && plan.hi) {
@@ -188,6 +228,8 @@ export function applyTrim(sk: Sketch, plan: TrimPlan): ConstraintDraft[] {
       const rest = addLine(sk, q1, p2);
       flags(target, rest);
       if (level) autos.push({ type: level, a: q1, b: p2 });
+      // The two pieces were one line, and stay in line with each other.
+      else collinear.push({ type: "pointOn", p: q1, on: target.id }, { type: "pointOn", p: p2, on: target.id });
     } else if (plan.hi) {
       const q = endAt(plan.hi);
       target.p1 = q;
@@ -213,7 +255,10 @@ export function applyTrim(sk: Sketch, plan: TrimPlan): ConstraintDraft[] {
     if (plan.lo && plan.hi) {
       const q0 = endAt(plan.lo), q1 = endAt(plan.hi);
       target.p2 = q0;
-      flags(target, addArc(sk, target.c, q1, p2));
+      const rest = addArc(sk, target.c, q1, p2);
+      flags(target, rest);
+      // The two pieces were one arc, and keep one radius.
+      collinear.push({ type: "equal", a: target.id, b: rest.id });
     } else if (plan.hi) {
       target.p1 = endAt(plan.hi);
       dropIfUnused(sk, p1);
@@ -229,8 +274,9 @@ export function applyTrim(sk: Sketch, plan: TrimPlan): ConstraintDraft[] {
     const on = entity(sk, c.type === "pointOn" ? c.on : c.l);
     return !on || on.type === "point" || !curvePoints(on).includes(c.p);
   });
-  // The same for the constraints about to be tried.
-  return autos.filter((a) => {
+  // The same for the constraints about to be tried. Those that keep the pieces together come last:
+  // where a piece is already held some other way, they are the ones to do without.
+  return [...autos, ...collinear].filter((a) => {
     if (a.type !== "pointOn") return true;
     const on = entity(sk, a.on);
     return !!on && on.type !== "point" && !curvePoints(on).includes(a.p);

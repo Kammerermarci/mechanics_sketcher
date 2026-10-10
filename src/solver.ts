@@ -72,6 +72,16 @@ function kindOf(sk: Sketch, id: Id): Entity["type"] {
   return e.type;
 }
 
+/** Equal radius for two circles or arcs, in any mix. Null when one of them is neither. */
+function equalRadius(sk: Sketch, id: string, a: Id, b: Id): Prim | null {
+  const ka = entity(sk, a)?.type, kb = entity(sk, b)?.type;
+  if (ka === "circle" && kb === "circle") return { id, type: "equal_radius_cc", c1_id: a, c2_id: b };
+  if (ka === "arc" && kb === "arc") return { id, type: "equal_radius_aa", a1_id: a, a2_id: b };
+  if (ka === "circle" && kb === "arc") return { id, type: "equal_radius_ca", c1_id: a, a2_id: b };
+  if (ka === "arc" && kb === "circle") return { id, type: "equal_radius_ca", c1_id: b, a2_id: a };
+  return null;
+}
+
 /**
  * The one direction an image held by half a pair can still move in: along
  * its arc for an end, along the bisector of the arc's ends for a centre. Null
@@ -156,7 +166,11 @@ function linkPrims(sk: Sketch, c: Link, params: FreeParam[]): Prim[] {
       out.push(Math.abs(dot(p.t, e)) >= Math.abs(cross(e, p.t)) ? same(p) : turned(p));
     }
   }
-  for (const [a, b] of c.circles) out.push({ id: next(), type: "equal_radius_cc", c1_id: a, c2_id: b });
+  // A copied circle may since have been trimmed into an arc.
+  for (const [a, b] of c.circles) {
+    const same = equalRadius(sk, next(), a, b);
+    if (same) out.push(same);
+  }
   return out;
 }
 
@@ -195,13 +209,10 @@ function constraintPrims(sk: Sketch, c: Constraint, params: FreeParam[]): Prim[]
     case "perpendicular":
       return [{ id, type: "perpendicular_ll", l1_id: c.l1, l2_id: c.l2 }];
     case "equal": {
-      const ka = kindOf(sk, c.a), kb = kindOf(sk, c.b);
-      if (ka === "line" && kb === "line") return [{ id, type: "equal_length", l1_id: c.a, l2_id: c.b }];
-      if (ka === "circle" && kb === "circle") return [{ id, type: "equal_radius_cc", c1_id: c.a, c2_id: c.b }];
-      if (ka === "arc" && kb === "arc") return [{ id, type: "equal_radius_aa", a1_id: c.a, a2_id: c.b }];
-      if (ka === "circle" && kb === "arc") return [{ id, type: "equal_radius_ca", c1_id: c.a, a2_id: c.b }];
-      if (ka === "arc" && kb === "circle") return [{ id, type: "equal_radius_ca", c1_id: c.b, a2_id: c.a }];
-      throw new Error("equal needs two lines, or two circles or arcs");
+      if (kindOf(sk, c.a) === "line" && kindOf(sk, c.b) === "line") return [{ id, type: "equal_length", l1_id: c.a, l2_id: c.b }];
+      const same = equalRadius(sk, id, c.a, c.b);
+      if (!same) throw new Error("equal needs two lines, or two circles or arcs");
+      return [same];
     }
     case "tangent": {
       const round = entity(sk, c.c), l = entity(sk, c.l);

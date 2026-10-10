@@ -15,7 +15,7 @@ export const TIPS: Record<string, Tip> = {
   arc: { title: "Arc", body: "Click the centre, then where the arc starts. Sweep round the centre and click where it ends." },
   point: { title: "Point", body: "Click to place a point of its own: on a line, on a circle or anywhere. Constrain and dimension against it like any joint." },
   beam: { title: "Beam", body: "Click where the beam starts and where it ends, then move away from its middle line and click to set the width. Round or square ends are chosen in the side panel while the tool is active." },
-  trim: { title: "Trim", body: "Point at the piece of a line, circle or arc that should go; it turns red. Click to remove it, up to where other curves cross it." },
+  trim: { title: "Trim", body: "Point at the piece of a line, circle or arc that should go; it turns red. Click to remove it, up to where other curves cross it. Or hold the button down and drag: everything the pointer crosses is trimmed." },
   mirror: { title: "Mirror", body: "Select what to mirror first, then press Mirror and click the line to mirror about. The image stays tied to the original: change one side and the other follows." },
   shift: { title: "Linear pattern", body: "Select what to repeat first, then press this and say how many there should be. The copies follow the original. To set the spacing, drag a copy or dimension from a point to its copy." },
   turn: { title: "Circular pattern", body: "Select what to repeat first, then press this, click the point the copies go around and say how many there should be. The copies follow the original." },

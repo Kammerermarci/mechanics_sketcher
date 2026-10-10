@@ -53,7 +53,12 @@ fills and hatching.
    *Trim (X)* removes the piece of a line, arc or circle under the cursor, up
    to where other curves cross it; the piece that would go is shown in red
    first. The cut ends stay on the curve they were cut at. A circle needs
-   two crossings to be trimmed and becomes an arc.
+   two crossings to be trimmed and becomes an arc. Holding the button down
+   and dragging trims everything the pointer crosses, in one undo step. The
+   two pieces of a line cut in the middle stay in line with each other. An
+   equal-length constraint on a trimmed line is dropped and a midpoint on it
+   becomes a point on the line, since neither is true of the piece that is
+   left; a fill bounded by the trimmed curve goes too.
    - *Beam:* a bar between two points, like a slot in a CAD sketch. Click
      where it starts and where it ends (joints that are there already are
      used), then move away from its middle line and click to set the width.

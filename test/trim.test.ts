@@ -4,7 +4,7 @@ import { SketchSolver } from "../src/solver";
 import {
   emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, addSymbol, entity, point, type Sketch, type Line, type Arc,
 } from "../src/model";
-import { planTrim, applyTrim, intersections } from "../src/trim";
+import { planTrim, applyTrim, intersections, strokeHits } from "../src/trim";
 
 let solver: SketchSolver;
 beforeAll(async () => { solver = new SketchSolver(await make_gcs_wrapper()); });
@@ -132,5 +132,91 @@ describe("trim", () => {
     line(sk, 7, -2, 7, 2);
     trim(sk, h.id, [5, 0]);
     expect(lines(sk).filter((l) => l.centre)).toHaveLength(2);
+  });
+
+  it("counts a tangent line as meeting the circle, as exactly as a solver leaves it", () => {
+    const sk = emptySketch();
+    const c = addCircle(sk, addPoint(sk, 0, 0).id, 2);
+    // A hair short of touching, and a hair too deep: both are tangent for all practical purposes.
+    for (const y of [2 + 3e-9, 2 - 3e-9]) {
+      const t = line(sk, -5, y, 5, y);
+      const hits = intersections(sk, t, c, 1e-6);
+      expect(hits).toHaveLength(1);
+      expect(hits[0][0]).toBeCloseTo(0, 6);
+    }
+    expect(intersections(sk, line(sk, -5, 2.01, 5, 2.01), c, 1e-6)).toHaveLength(0);
+    // So a line is cut where an arc is tangent to it.
+    const base = line(sk, -5, -2, 5, -2);
+    const plan = planTrim(sk, base.id, [3, -2])!;
+    expect(plan.whole).toBe(false);
+    expect(plan.gone).toMatchObject({ kind: "line", b: [5, -2] });
+    expect((plan.gone as { a: number[] }).a[0]).toBeCloseTo(0, 6);
+  });
+
+  it("drops what was said about a line's length and middle, so nothing is pulled about", () => {
+    const sk = emptySketch();
+    const h = line(sk, 0, 0, 10, 0), other = line(sk, 0, 3, 10, 3);
+    line(sk, 4, -3, 4, 2);
+    const m = addPoint(sk, 5, 0, true);
+    addConstraint(sk, { type: "equal", a: h.id, b: other.id });
+    addConstraint(sk, { type: "midpoint", p: m.id, l: h.id });
+    const { result } = trim(sk, h.id, [8, 0]);
+    expect(result.ok).toBe(true);
+    expect(sk.constraints.map((c) => c.type).sort()).toEqual(["pointOn", "pointOn"]);
+    // Everything is where it was: the line just ends at the crossing now.
+    expect(ends(sk, h)).toEqual([[0, 0], [4, 0]]);
+    expect(ends(sk, other)).toEqual([[0, 3], [10, 3]]);
+    expect([point(sk, m.id).x, point(sk, m.id).y]).toEqual([5, 0]);
+  });
+
+  it("keeps the two pieces of a line cut in the middle in line with each other", () => {
+    const sk = emptySketch();
+    const slant = line(sk, 0, 0, 10, 5);
+    line(sk, 3, -2, 3, 6);
+    line(sk, 7, -2, 7, 8);
+    addConstraint(sk, { type: "fixed", p: slant.p1 });
+    const { autos, result } = trim(sk, slant.id, [5, 2.5]);
+    expect(autos.filter((a) => a.type === "pointOn" && a.on === slant.id)).toHaveLength(2);
+    expect(result.ok).toBe(true);
+    // What is left of the line itself, and the new line made of its far part.
+    const first = slant, rest = lines(sk)[lines(sk).length - 1];
+    expect(rest.id).not.toBe(slant.id);
+    // Pull the far end of the second piece: both pieces turn together about the fixed start.
+    solver.solve(sk, [{ kind: "point", id: rest.p2, x: 10, y: 8 }]);
+    const [a, b] = ends(sk, first), [c, d] = ends(sk, rest);
+    const cross = (p: number[], q: number[], r: number[]) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    expect(cross(a, b, c)).toBeCloseTo(0, 6);
+    expect(cross(a, b, d)).toBeCloseTo(0, 6);
+    expect(d[1]).toBeGreaterThan(6);
+  });
+
+  it("gives a click just past the start of an arc to the start, not to the far end", () => {
+    const sk = emptySketch();
+    const o = addPoint(sk, 0, 0), s = addPoint(sk, 5, 0), e = addPoint(sk, -5, 0);
+    const upper = addArc(sk, o.id, s.id, e.id);
+    line(sk, 0, 1, 0, 9); // crosses the arc at its top
+    // A click beside the arc, a little below where it starts on the right.
+    const plan = planTrim(sk, upper.id, [5, -0.05])!;
+    expect(plan.gone).toMatchObject({ kind: "round" });
+    const g = plan.gone as { a0: number; a1: number };
+    expect(g.a0).toBeCloseTo(0, 9);
+    expect(g.a1).toBeCloseTo(Math.PI / 2, 9);
+    // And one just past the end, on the left, to the end.
+    const far = planTrim(sk, upper.id, [-5, -0.05])!.gone as { a0: number; a1: number };
+    expect(far.a0).toBeCloseTo(Math.PI / 2, 9);
+    expect(far.a1).toBeCloseTo(Math.PI, 9);
+  });
+
+  it("lists what a stroke of the pointer passes over, in the order it meets them", () => {
+    const sk = emptySketch();
+    const a = line(sk, 2, -1, 2, 1), b = line(sk, 6, -1, 6, 1);
+    const c = addCircle(sk, addPoint(sk, 4, 0).id, 0.5);
+    line(sk, 0, 5, 10, 5); // out of the way
+    const hits = strokeHits(sk, [0, 0], [10, 0]);
+    expect(hits.map((h) => h.id)).toEqual([a.id, c.id, c.id, b.id]);
+    expect(hits.map((h) => h.at[0])).toEqual([2, 3.5, 4.5, 6]);
+    // Only as far as the stroke goes.
+    expect(strokeHits(sk, [0, 0], [3, 0]).map((h) => h.id)).toEqual([a.id]);
+    expect(strokeHits(sk, [1, 0], [1, 0])).toEqual([]);
   });
 });

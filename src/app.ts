@@ -26,7 +26,7 @@ import {
   layoutGlyphs, renderScene,
 } from "./render";
 import { regionAt, findOverlaps } from "./regions";
-import { type TrimPlan, planTrim, applyTrim } from "./trim";
+import { type TrimPlan, planTrim, applyTrim, strokeHits } from "./trim";
 import { type CopyResult, PATTERN_MAX, mirrorCopy, linearCopy, circularCopy, nextDatumName } from "./pattern";
 import { toSvg, toTikz } from "./export";
 import { icon } from "./icons";
@@ -83,6 +83,8 @@ type DragState =
   | { kind: "axis"; id: Id; axis: "x" | "y"; startScreen: V; slack: number; moved: boolean; edit?: EditTarget }
   /** Pulling an end of a centre mark to make the mark larger or smaller. */
   | { kind: "reach"; id: Id; startScreen: V; moved: boolean }
+  /** Trimming with the button held: everything the pointer passes over goes. `cut`: something has been trimmed. */
+  | { kind: "trim"; last: V; cut: boolean; trail: V[] }
   /** Moving the name of an arrow; `origin` is its offset from the arrow's middle when the drag began. */
   | { kind: "label"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean; edit?: EditTarget };
 // `edit`, where present: the press was on a piece of text, so a plain click opens it for typing.
@@ -650,7 +652,7 @@ export class App {
         }
         return p ? "Click where the line ends. Hold Alt to switch snapping off."
           : `Click where the ${this.tool === "line" ? "line" : "centre line"} starts. ${done}`;
-      case "trim": return `Click the part of a line, circle or arc to remove, up to where other curves cross it. ${done}`;
+      case "trim": return `Click the part of a line, circle or arc to remove, up to where other curves cross it. Or hold the button and drag across everything that should go. ${done}`;
       case "beam":
         if (p?.tool !== "beam") return `Click where the beam starts: a joint, or anywhere. ${done}`;
         return p.b ? "Move away from the beam's middle line to set how wide it is, then click." : "Click where the beam ends. Hold Alt to switch snapping off.";
@@ -690,6 +692,7 @@ export class App {
 
   private previewShapes(): Preview | null {
     if (this.tool === "trim") {
+      if (this.drag?.kind === "trim") return { lines: [], circles: [], arcs: [], points: [], trail: this.drag.trail };
       const g = this.trimPlan?.gone;
       if (!g || this.drag) return null;
       return {
@@ -909,6 +912,12 @@ export class App {
    * sketch still solves cleanly with it, then records the edit.
    */
   private finishDrawing(autos: ConstraintDraft[]): void {
+    this.settle(autos);
+    this.commit();
+  }
+
+  /** Adds each of the constraints that fits, and solves. The edit is not recorded yet. */
+  private settle(autos: ConstraintDraft[]): void {
     const baseline = this.solver.solve(this.sk);
     for (const a of autos) {
       const c = addConstraint(this.sk, a);
@@ -918,7 +927,6 @@ export class App {
       }
     }
     this.solve();
-    this.commit();
   }
 
   private toolClick(sp: V): void {
@@ -1240,18 +1248,43 @@ export class App {
 
   /** What a trim at this screen position would remove, if there is a curve there. */
   private trimAt(sp: V): TrimPlan | null {
-    const hit = this.hitTest(sp, true);
-    if (!hit || hit.kind !== "curve") return null;
-    return planTrim(this.sk, hit.id, toModel(this.view, sp));
+    // The nearest curve, whatever joints are close by: a point under the pointer is not in the
+    // way of the piece of line beside it.
+    const hit = this.hitCandidates(sp, true).find((h) => h.kind === "curve");
+    return hit ? planTrim(this.sk, hit.id, toModel(this.view, sp)) : null;
   }
 
-  private trimClick(sp: V): void {
-    const plan = this.trimAt(sp);
-    this.trimPlan = null;
-    if (!plan) return;
+  /** Carries out a trim and settles the sketch. It is recorded when the button is let go. */
+  private trimNow(plan: TrimPlan): void {
     const autos = applyTrim(this.sk, plan);
     this.pruneSelection();
-    this.finishDrawing(autos);
+    this.settle(autos);
+    this.freedomStale = true;
+    this.chromeDirty = true;
+  }
+
+  /** The button goes down with the Trim tool: the piece under the pointer goes, and a stroke begins. */
+  private trimPress(sp: V): void {
+    const plan = this.trimAt(sp);
+    this.trimPlan = null;
+    if (plan) this.trimNow(plan);
+    this.drag = { kind: "trim", last: sp, cut: plan !== null, trail: [toModel(this.view, sp)] };
+  }
+
+  /** The pointer moves with the button held: every curve it has passed over since the last move is trimmed where it crossed. */
+  private trimStroke(d: Extract<DragState, { kind: "trim" }>, sp: V): void {
+    let from = toModel(this.view, d.last);
+    const to = toModel(this.view, sp);
+    // One at a time, nearest first: each trim changes what the rest of the stroke will meet.
+    for (let guard = 0; guard < 60; guard++) {
+      const next = strokeHits(this.sk, from, to).map((h) => ({ h, plan: planTrim(this.sk, h.id, h.at) })).find((x) => x.plan);
+      if (!next?.plan) break;
+      this.trimNow(next.plan);
+      d.cut = true;
+      from = next.h.at;
+    }
+    d.last = sp;
+    d.trail.push(to);
   }
 
   // ---- symbols ----------------------------------------------------------------
@@ -1559,7 +1592,7 @@ export class App {
       return;
     }
     if (this.tool === "trim") {
-      this.trimClick(sp);
+      this.trimPress(sp);
       this.touch();
       return;
     }
@@ -1648,6 +1681,8 @@ export class App {
       d.last = sp;
     } else if (d?.kind === "box") {
       d.b = sp;
+    } else if (d?.kind === "trim") {
+      this.trimStroke(d, sp);
     } else if (d?.kind === "move") {
       if (!d.moved && dist(sp, d.startScreen) < 3) return;
       d.moved = true;
@@ -1734,6 +1769,9 @@ export class App {
       }
     } else if (d.kind === "box") {
       this.finishBox(d);
+    } else if (d.kind === "trim") {
+      // One stroke is one edit, however much it took off.
+      if (d.cut) this.commit();
     } else if (d.kind === "move") {
       if (d.moved) {
         this.solve();
