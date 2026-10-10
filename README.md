@@ -4,6 +4,9 @@ A constraint sketcher for truss and beam figures. Draw roughly, then constrain
 and dimension; changing a dimension re-solves the whole drawing. Figures are
 meant for LaTeX: they export to TikZ and to SVG.
 
+**Use it at [mech-sketch.org](https://mech-sketch.org).** It is free; if it saves
+you time, you can [support it on Ko-fi](https://ko-fi.com/mech_sketch).
+
 ## Run it
 
 ```
