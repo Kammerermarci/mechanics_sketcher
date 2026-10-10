@@ -40,7 +40,7 @@ export const TIPS: Record<string, Tip> = {
   datum: { title: "Datum point", body: "Click a joint, a spot on a curve or anywhere to mark it with a coloured dot and a name. Click the name to change it, and drag it to move it." },
   note: { title: "Note", body: "Click where the text should start and type it. Put math between dollar signs, as in $F_1 = 2a$, and \\\\ where a new line should start. Drag a note to move it." },
   centermark: { title: "Centre mark", body: "Click a circle or arc to give it centre lines. Drag an end of the mark to make it larger or smaller; the side panel sets how it is dashed." },
-  balloon: { title: "Balloon", body: "Click what the balloon points at, then where it should sit. The numbers count up by themselves; click the text to change it." },
+  balloon: { title: "Balloon", body: "Click what the balloon points at, then where it should sit. The numbers count up by themselves; click the text to change it. The side panel puts it in a circle or a box, underlines it, or leaves it bare." },
   fill: { title: "Fill", body: "Click inside a closed shape to fill it. The lines around it have to meet at shared points. The colour is picked in the side panel." },
   hatch: { title: "Hatching", body: "Click a line, arc or circle on the side the strokes should go, as for the ground under a support. Their size and number are set in the side panel." },
 

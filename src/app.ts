@@ -4,7 +4,7 @@
 import {
   type Sketch, type Id, type Point, type Line, type Circle, type Arc, type Curve, type Constraint,
   type ConstraintDraft, type Dimension, type DistanceMode, type Sym, type SupportKind, type LeaderEnd,
-  type ArrowEnds, type Datum,
+  type ArrowEnds, type Datum, type BalloonFrame,
   ORIGIN, emptySketch, entity, point, constraint, symbol, symbolRefs, points, curves, curvePoints,
   constraintRefs, isDimension, isLink, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint,
   addSupport, addFrame, addSymbol, remove, serialize, deserialize, clone,
@@ -19,7 +19,7 @@ import {
   type Prim, PAPER, printMm, geometryBox, buildPrims, dimensionPrims,
   primDistance, textCentre, distanceFrame, angleFrame, roundFrame, symbolPosition, balloonAnchor,
   curveParam, sideOfCurve, formatNumber, frameTips, arrowLabelAt, arrowAnchor, centerMarkEnds,
-  centerMarkDashes, curveLength, hatchCount,
+  centerMarkDashes, curveLength, hatchCount, standardWeight,
 } from "./prims";
 import {
   type View, type Glyph, type Preview, type SnapMark, GLYPH_SIZE, PREVIEW_REF, toScreen, toModel,
@@ -186,6 +186,11 @@ const DATUM_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#1
 /** Where a datum's name starts out, in mm from its point. */
 const DATUM_LABEL_OFFSET: V = [2.4, 2.4];
 const EXPORT_NAME_KEY = "mech-sketch.exportName";
+const SKETCH_NAME_KEY = "mech-sketch.sketchName";
+/** Range of the line thickness slider, in points. */
+const WEIGHT_MIN = 0.1, WEIGHT_MAX = 3;
+/** What is written to a file: the exported figure, or the sketch itself. Each remembers its own name and folder. */
+type SaveSlot = "figure" | "sketch";
 const EDIT_SCALE_KEY = "mech-sketch.editScale";
 /** Range of the slider for the size of annotations while editing, in percent. */
 const EDIT_SCALE_MIN = 50, EDIT_SCALE_MAX = 250;
@@ -252,6 +257,8 @@ export class App {
   private viewBeforePreview: View | null = null;
   /** File name, without extension, offered for the next export. */
   private exportName = "figure";
+  /** File name, without extension, offered when the sketch is saved. */
+  private sketchName = "sketch";
   /** What the dimension box held when it opened, to tell an edit from a plain close. */
   private editingInitial = "";
   /** What the Trim tool would remove under the pointer. */
@@ -403,6 +410,7 @@ export class App {
       const saved = localStorage.getItem(AUTOSAVE_KEY);
       if (saved) this.sk = deserialize(saved);
       this.exportName = localStorage.getItem(EXPORT_NAME_KEY) || this.exportName;
+      this.sketchName = localStorage.getItem(SKETCH_NAME_KEY) || this.sketchName;
       const scale = Number(localStorage.getItem(EDIT_SCALE_KEY));
       if (scale >= EDIT_SCALE_MIN / 100 && scale <= EDIT_SCALE_MAX / 100) {
         this.editScale = scale;
@@ -2400,8 +2408,9 @@ export class App {
     this.fit();
   }
 
+  /** Saves the sketch to a file, asking where it should go and what it should be called. */
   private save(): void {
-    this.download("sketch.json", serialize(this.sk), "application/json");
+    void this.saveAs(serialize(this.sk), ".json", "application/json", "Mech Sketch drawing", "sketch");
   }
 
   private download(name: string, text: string, type: string): void {
@@ -2413,49 +2422,57 @@ export class App {
   }
 
   /**
-   * Saves an exported file under a name the user chooses. Where the browser
-   * has a save dialog it is used, so the folder can be picked too; elsewhere
-   * the name is asked for here and the file is downloaded.
+   * Saves a file in a folder and under a name the user chooses. Where the
+   * browser lets a page open its save dialog, that is used: it opens in the
+   * folder used last time for the same kind of file. Elsewhere a page cannot
+   * pick a folder, so the name is asked for here and the file is downloaded
+   * to wherever the browser puts downloads.
    */
-  private async saveAs(text: string, ext: string, mime: string, what: string): Promise<void> {
+  private async saveAs(text: string, ext: string, mime: string, what: string, slot: SaveSlot = "figure"): Promise<void> {
+    const last = slot === "sketch" ? this.sketchName : this.exportName;
     const clean = (name: string) => {
       let base = name.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, "");
       if (base.toLowerCase().endsWith(ext)) base = base.slice(0, -ext.length);
       return base.replace(/[. ]+$/, "");
     };
     const remember = (base: string) => {
-      this.exportName = base;
-      try { localStorage.setItem(EXPORT_NAME_KEY, base); } catch { /* storage unavailable */ }
+      if (slot === "sketch") this.sketchName = base;
+      else this.exportName = base;
+      try { localStorage.setItem(slot === "sketch" ? SKETCH_NAME_KEY : EXPORT_NAME_KEY, base); } catch { /* storage unavailable */ }
     };
     type SaveHandle = { name: string; createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void> }> };
     const picker = (window as unknown as { showSaveFilePicker?: (o: object) => Promise<SaveHandle> }).showSaveFilePicker;
     if (picker) {
       try {
-        const handle = await picker.call(window, { suggestedName: this.exportName + ext, types: [{ description: what, accept: { [mime]: [ext] } }] });
+        // The id is what the browser remembers the folder by, so sketches and figures each keep their own.
+        const handle = await picker.call(window, {
+          id: `mech-sketch-${slot}`, startIn: "documents", suggestedName: last + ext,
+          types: [{ description: what, accept: { [mime]: [ext] } }],
+        });
         const out = await handle.createWritable();
         await out.write(text);
         await out.close();
-        remember(clean(handle.name) || this.exportName);
+        remember(clean(handle.name) || last);
         return this.toast(`Saved ${handle.name}.`);
       } catch (err) {
         if ((err as DOMException)?.name === "AbortError") return; // the dialog was cancelled
         // The dialog is not allowed here (an embedded page, say): fall through to a download.
       }
     }
-    const typed = await this.askName(ext, what);
+    const typed = await this.askName(ext, slot === "sketch" ? "Save sketch" : `Export ${what}`, last);
     if (typed === null) return;
-    const base = clean(typed) || "figure";
+    const base = clean(typed) || slot;
     remember(base);
     this.download(base + ext, text, mime);
   }
 
   /** Asks for a file name in a small dialog. Resolves to null when it is cancelled. */
-  private askName(ext: string, what: string): Promise<string | null> {
+  private askName(ext: string, title: string, name: string): Promise<string | null> {
     const dialog = $<HTMLDialogElement>("#name-dialog");
     const input = $<HTMLInputElement>("#name-input");
-    $("#name-title").textContent = `Export ${what}`;
+    $("#name-title").textContent = title;
     $("#name-ext").textContent = ext;
-    input.value = this.exportName;
+    input.value = name;
     return new Promise((resolve) => {
       dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? input.value : null), { once: true });
       dialog.returnValue = "";
@@ -2535,6 +2552,12 @@ export class App {
   private async open(file: File): Promise<void> {
     try {
       const sk = deserialize(await file.text());
+      // Saved again, it is offered its own name.
+      const name = file.name.replace(/\.json$/i, "").trim();
+      if (name) {
+        this.sketchName = name;
+        try { localStorage.setItem(SKETCH_NAME_KEY, name); } catch { /* storage unavailable */ }
+      }
       this.selection.clear();
       this.replaceSketch(sk);
       this.commit();
@@ -2821,7 +2844,9 @@ export class App {
         html += text("Text", "sym-text", s.text, "A part number, or any TeX math. Clicking it on the drawing edits it there.");
         html += `<div class="field"><span id="end-label">Leader ends in</span><div class="segmented" role="group" aria-labelledby="end-label">${ends.map(([e, name]) =>
           `<button type="button" data-end="${e}" aria-pressed="${s.end === e}">${name}</button>`).join("")}</div></div>`;
-        html += `<label class="check"><input data-field="sym-circle" type="checkbox"${s.circle !== false ? " checked" : ""}><span>Circle around the text</span></label>`;
+        const frames: [BalloonFrame, string][] = [["circle", "Circle"], ["box", "Box"], ["underline", "Underline"], ["none", "None"]];
+        html += `<div class="field"><span id="frame-label">Around the text</span><div class="segmented wrap" role="group" aria-labelledby="frame-label">${frames.map(([f, name]) =>
+          `<button type="button" data-frame="${f}" aria-pressed="${(s.frame ?? "circle") === f}">${name}</button>`).join("")}</div></div>`;
         html += `<p class="muted note-block">Drag the balloon to move it; its leader keeps pointing at the same spot.</p>`;
         break;
       }
@@ -2960,6 +2985,11 @@ export class App {
         html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented wrap" role="group" aria-labelledby="style-label">${styles.map(([st, name]) =>
           `<button type="button" data-style="${st}" aria-pressed="${shared === st}">${name}</button>`).join("")}</div>` +
           `<small>A centre line is thin and dash-dotted. A helper is dashed here and left out of the exported figure.</small></div>`;
+        // One slider for all of them; it shows the thickness of the first.
+        const weight = cs[0].weight ?? standardWeight(cs[0]);
+        const own = cs.some((c) => c.weight !== undefined);
+        html += `<label class="field"><span>Line thickness</span><span class="slider-row"><input data-field="weight" type="range" min="${WEIGHT_MIN}" max="${WEIGHT_MAX}" step="0.1" value="${weight}"><output>${this.weightLabel(weight)}</output></span>` +
+          `<small>In points, as LaTeX counts line widths${own ? "" : "; this is the standard thickness"}. It grows and shrinks with the dimension size in print. Double-click the slider to go back to the standard.</small></label>`;
         const arrow = cs.length === 1 && cs[0].type !== "circle" && cs[0].arrow ? cs[0] : null;
         if (arrow) {
           const heads: [ArrowEnds, string][] = arrow.type === "line"
@@ -3040,6 +3070,11 @@ export class App {
       else if (ds.kind) this.setSupportKind(ds.kind as SupportKind);
       else if (ds.style) this.setLineStyle(ds.style as LineStyle);
       else if (ds.end) this.editSymbol((x) => { if (x.type === "balloon") x.end = ds.end as LeaderEnd; });
+      else if (ds.frame) this.editSymbol((x) => {
+        if (x.type !== "balloon") return;
+        if (ds.frame === "circle") delete x.frame;
+        else x.frame = ds.frame as BalloonFrame;
+      });
       else if (ds.color) this.setColor(ds.color);
       else if (ds.head) this.setArrowHead(ds.head as ArrowEnds);
       else if (ds.place) this.setRadiusPlace(ds.place === "outside");
@@ -3068,6 +3103,12 @@ export class App {
     this.panel.addEventListener("input", (e) => {
       const input = e.target as HTMLInputElement;
       if (input.type === "range") this.onPanelChange(input, true);
+    });
+    this.panel.addEventListener("dblclick", (e) => {
+      const input = e.target as HTMLInputElement;
+      if (input.dataset?.field !== "weight") return;
+      input.blur();
+      this.resetWeight();
     });
     // A slider let go with the mouse gives the keyboard back to the drawing; moved with the arrow keys, it keeps it.
     this.panel.addEventListener("pointerup", (e) => {
@@ -3215,6 +3256,18 @@ export class App {
       if (style === "centre") c.centre = true;
       if (style === "arrow" && c.type !== "circle") c.arrow ??= "end";
     }
+    this.commit();
+  }
+
+  /** A line thickness as it is shown beside its slider. */
+  private weightLabel(points: number): string {
+    return `${formatNumber(Number(points.toFixed(2)))} pt`;
+  }
+
+  /** Puts the selected curves back to the standard thickness for how they are drawn. */
+  private resetWeight(): void {
+    const { lines, rounds } = this.picked();
+    for (const c of [...lines, ...rounds]) delete c.weight;
     this.commit();
   }
 
@@ -3380,10 +3433,7 @@ export class App {
         if (!input.value.trim()) { this.toast("A note needs some text. Delete removes it."); return this.touch(); }
         s.text = input.value.trim();
       }
-      else if (s.type === "balloon" && field === "sym-circle") {
-        if (input.checked) delete s.circle;
-        else s.circle = false;
-      } else if (s.type === "datum" && field === "sym-label") s.label = label;
+      else if (s.type === "datum" && field === "sym-label") s.label = label;
       else if ((s.type === "fill" || s.type === "datum") && field === "sym-color") return this.setColor(input.value);
       else if (s.type === "hatch" && (field === "sym-depth" || field === "sym-freq")) {
         const whole = curveLength(this.sk, s.on);
@@ -3393,6 +3443,14 @@ export class App {
         return slide(this.hatchLabel(s, field === "sym-depth" ? "depth" : "freq"));
       }
       return this.commit();
+    }
+
+    if (field === "weight") {
+      const v = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Number(input.value)));
+      if (!Number.isFinite(v)) return;
+      const { lines, rounds } = this.picked();
+      for (const c of [...lines, ...rounds]) c.weight = Number(v.toFixed(2));
+      return slide(this.weightLabel(v));
     }
 
     if (field === "turn-angle") {

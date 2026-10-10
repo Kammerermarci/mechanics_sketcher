@@ -22,6 +22,8 @@ export interface Line {
   construction?: boolean;
   /** A centre line: thin dash-dot, and not an edge of any shape. */
   centre?: boolean;
+  /** Line thickness in points, at a dimension size of 100%. Unset: the standard thickness for how it is drawn. */
+  weight?: number;
   /** An arrow annotation: which end carries the head. p1 is the start, p2 the end. */
   arrow?: ArrowEnds;
   /** The arrow's name, as TeX math. */
@@ -40,6 +42,8 @@ export interface Circle {
   construction?: boolean;
   /** A centre line: thin dash-dot, and not an edge of any shape. */
   centre?: boolean;
+  /** Line thickness in points, at a dimension size of 100%. Unset: the standard thickness for how it is drawn. */
+  weight?: number;
 }
 /** Counter-clockwise from p1 to p2 around c. */
 export interface Arc {
@@ -52,6 +56,8 @@ export interface Arc {
   construction?: boolean;
   /** A centre line: thin dash-dot, and not an edge of any shape. */
   centre?: boolean;
+  /** Line thickness in points, at a dimension size of 100%. Unset: the standard thickness for how it is drawn. */
+  weight?: number;
   /** A curved arrow: which end carries the head. p1 is the start, p2 the end, counter-clockwise. */
   arrow?: ArrowEnds;
   /** The arrow's name, as TeX math. */
@@ -216,9 +222,11 @@ export interface Balloon {
   dx: number;
   dy: number;
   end: LeaderEnd;
-  /** False leaves out the circle, so only the text and its leader are drawn. */
-  circle?: boolean;
+  /** What is drawn around the text. Unset: a circle. */
+  frame?: BalloonFrame;
 }
+/** A circle or a box around a balloon's text, a line under it, or nothing at all. */
+export type BalloonFrame = "circle" | "box" | "underline" | "none";
 /** A closed region filled with a colour. */
 export interface Fill {
   id: Id;
@@ -603,6 +611,11 @@ function upgradeSymbol(s: Sym): Sym {
   if (s.type === "frame" && s.xSize === undefined) {
     const { size, ...rest } = s as Frame & { size?: number };
     return { ...rest, xSize: size ?? 10, ySize: size ?? 10 };
+  }
+  // A balloon used to have its circle or not; now that is one of several frames.
+  if (s.type === "balloon" && "circle" in s) {
+    const { circle, ...rest } = s as Balloon & { circle?: boolean };
+    return circle === false ? { ...rest, frame: "none" } : rest;
   }
   return s;
 }

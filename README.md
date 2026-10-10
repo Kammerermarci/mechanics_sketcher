@@ -39,7 +39,10 @@ fills and hatching.
    snapping off. *Centre line* draws the same way but gives a thin
    dash-dotted line that is exported and does not close shapes for fills. A
    selected line, circle or arc can be switched between solid, centre line
-   and helper (editor only, never exported) in the side panel.
+   and helper (editor only, never exported) in the side panel. A slider
+   there sets its *line thickness* in points, from 0.1 to 3; double-click it
+   to go back to the standard (0.8 pt for a solid line, 0.6 pt for an arrow,
+   0.4 pt for a centre line). The head of a thicker arrow grows with it.
    *Trim (X)* removes the piece of a line, arc or circle under the cursor, up
    to where other curves cross it; the piece that would go is shown in red
    first. The cut ends stay on the curve they were cut at. A circle needs
@@ -116,8 +119,9 @@ fills and hatching.
      segmentation off for two plain lines. Drag an end of the mark to make
      the whole mark larger or smaller; dragging it by the middle turns it.
    - *Balloon (B):* click what it points at, then where the balloon goes.
-     Numbers count up on their own; the text can be any TeX, and the circle
-     can be switched off.
+     Numbers count up on their own and the text can be any TeX. The side
+     panel puts it in a circle or in a box, underlines it (the leader then
+     runs to the end of the line), or leaves it bare.
    - *Fill:* click inside a closed shape. A circle inside it is left as a hole.
      The shape's lines have to meet at shared points.
    - *Hatching:* click a line, arc or circle on the side the strokes should
@@ -184,9 +188,13 @@ countdown; when it has run out, the button that saves the file (or copies
 the TikZ) comes alive. How long that takes is `EXPORT_WAIT_SECONDS` in
 `src/config.ts`; 0 switches it off.
 
-Saving asks for a file name: with the browser's own save dialog where there
-is one (Chrome, Edge), so the folder can be chosen too, and otherwise with a
-small prompt before the download. The last name is offered again next time.
+**Save** and every export ask where the file should go and what it should be
+called. Chrome and Edge (and the installed app) open their own save dialog
+for that, in the folder used last time: sketches and exported figures each
+remember theirs. Other browsers do not let a page pick a folder, so there a
+small prompt asks for the name and the file goes where that browser puts
+downloads. The last name is offered again next time, and a sketch that was
+opened is offered its own name.
 
 ```latex
 \usepackage{tikz}

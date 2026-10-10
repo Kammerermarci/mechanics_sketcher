@@ -5,7 +5,7 @@ import {
 } from "../src/model";
 import { findFaces, regionAt, findOverlaps } from "../src/regions";
 import {
-  buildPrims, fillOutlines, outlinePolygon, primDistance, printMm, balloonRadius, PAPER, type Prim,
+  buildPrims, fillOutlines, outlinePolygon, primDistance, printMm, PAPER, type Prim,
 } from "../src/prims";
 
 const sq = (sk: Sketch, x: number, y: number, s: number): Point[] => {
@@ -183,7 +183,7 @@ describe("annotations", () => {
     let prims = of(buildPrims(sk, 10, { editor: false }), bal.id);
     const circle = prims.find((p) => p.k === "circle");
     expect(circle).toMatchObject({ c: [20, 10], fill: "paper" });
-    expect(circle && circle.k === "circle" && circle.r).toBeCloseTo(balloonRadius("3"));
+    expect(circle && circle.k === "circle" && circle.r).toBeCloseTo(PAPER.balloonRadius); // a single digit fits the smallest balloon
     const leader = prims.find((p) => p.k === "line");
     expect(leader).toMatchObject({ a: [20, 0], arrowA: true });
     expect(prims.find((p) => p.k === "text")).toMatchObject({ tex: "3", at: [20, 10], anchor: "c" });

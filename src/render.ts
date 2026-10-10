@@ -5,7 +5,7 @@ import {
   type Sketch, type Id, type Constraint, type Curve, ORIGIN, entity, point, isDimension, arcRadius, isFixed,
 } from "./model";
 import { type V, add, sub, mul, norm, perp, mid, polar, wrap, projectOnSegment, TWO_PI } from "./geom";
-import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_MM, STROKE_DASH, arrowHeads, strokedEnds, strokedSweep, textBox } from "./prims";
+import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_DASH, strokeWidth, arrowHeads, strokedEnds, strokedSweep, textBox } from "./prims";
 import type { Overlaps } from "./regions";
 import { texEngine } from "./tex";
 import { ICONS } from "./icons";
@@ -230,8 +230,9 @@ function primClass(s: Scene, p: Prim): string {
   return cls.join(" ");
 }
 
-function strokePx(stroke: StrokeStyle, pxPerMm: number): number {
-  return Math.max(stroke === "member" ? 1.5 : 0.9, STROKE_MM[stroke] * pxPerMm);
+function strokePx(p: { stroke: StrokeStyle; width?: number }, pxPerMm: number): number {
+  // Never so thin that it is hard to see or to hit; a member at its standard thickness a little bolder.
+  return Math.max(p.stroke === "member" && p.width === undefined ? 1.5 : 0.9, strokeWidth(p) * pxPerMm);
 }
 
 function arcPath(view: View, c: V, r: number, a0: number, a1: number): string {
@@ -293,7 +294,7 @@ function drawPrims(s: Scene): string {
     }
     const dash = STROKE_DASH[p.stroke];
     // The colour goes in as a variable, so the highlight rules for selection and hover still win.
-    const sw = `stroke-width="${n2(strokePx(p.stroke, pxPerMm))}"` +
+    const sw = `stroke-width="${n2(strokePx(p, pxPerMm))}"` +
       (dash ? ` stroke-dasharray="${dash.map((d) => n2(d * pxPerMm)).join(" ")}"` : "") +
       (p.color ? ` style="--tint:${p.color}"` : "");
     if (p.k === "line") {

@@ -4,7 +4,7 @@
 
 import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
-  type Arc, type Line, type Sym, type Support, type Frame, type CenterMark, type Balloon,
+  type Arc, type Line, type Curve, type Sym, type Support, type Frame, type CenterMark, type Balloon,
   type Fill as FillSym, type Hatch, type Datum, type Note,
   entity, point, arcRadius, arcAngles, isDimension, geometryBox, geometryExtent,
 } from "./model";
@@ -59,6 +59,17 @@ export const STROKE_MM: Record<StrokeStyle, number> = {
   symbol: PAPER.symbol, hatch: PAPER.hatch, centre: PAPER.centre, centreline: PAPER.symbol,
   arrow: PAPER.arrow,
 };
+/** One point, in mm. */
+export const PT_MM = 0.3515;
+/** How thick a curve is drawn when it has no thickness of its own, in points. */
+export function standardWeight(e: Curve): number {
+  const style: StrokeStyle = e.construction ? "construction" : e.type !== "circle" && e.arrow ? "arrow" : e.centre ? "centreline" : "member";
+  return Number((STROKE_MM[style] / PT_MM).toFixed(2));
+}
+/** Width a primitive is stroked with, in mm: its own, or that of its style. */
+export function strokeWidth(p: { stroke: StrokeStyle; width?: number }): number {
+  return p.width ?? STROKE_MM[p.stroke];
+}
 /** Dash patterns, as on and off lengths in mm. Styles not listed are solid. */
 export const STROKE_DASH: Partial<Record<StrokeStyle, number[]>> = {
   centreline: [2, 0.6, 0.3, 0.6], // long dash, short dash
@@ -77,13 +88,13 @@ interface Base {
   /** CSS hex colour a solid shape is filled with instead of black. Its outline stays black. */
   color?: string;
 }
-/** `head` scales the arrowheads; 1 is the size used on dimensions. */
-export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeStyle; arrowA?: boolean; arrowB?: boolean; head?: number }
-export interface CirclePrim extends Base { k: "circle"; c: V; r: number; stroke: StrokeStyle; fill?: Fill }
+/** `head` scales the arrowheads; 1 is the size used on dimensions. `width`, in mm, replaces the width of the stroke style. */
+export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeStyle; width?: number; arrowA?: boolean; arrowB?: boolean; head?: number }
+export interface CirclePrim extends Base { k: "circle"; c: V; r: number; stroke: StrokeStyle; width?: number; fill?: Fill }
 /** A closed outline. */
 export interface PolyPrim extends Base { k: "poly"; pts: V[]; stroke: StrokeStyle; fill?: Fill }
 /** Counter-clockwise from a0 to a1, with a1 > a0. */
-export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a1: number; stroke: StrokeStyle; arrowA?: boolean; arrowB?: boolean; head?: number }
+export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a1: number; stroke: StrokeStyle; width?: number; arrowA?: boolean; arrowB?: boolean; head?: number }
 /**
  * `anchor` names the side of the text box that sits at `at`, as in TikZ.
  * `rot` turns the text about `at`, counter-clockwise in radians.
@@ -570,27 +581,55 @@ export function centerMarkEnds(sk: Sketch, s: CenterMark, mm: number): V[] {
   return [0, 1, 2, 3].map((i) => polar(f.c, reach, s.angle + (i * Math.PI) / 2));
 }
 
-/** Radius of a balloon that holds its text, in mm. Without its circle, the clearance its leader keeps from the text. */
-export function balloonRadius(text: string, circle = true): number {
-  const m = texEngine().measure(labelTex(text) || "0");
-  const half = Math.hypot(m.w, m.asc + m.desc) * PAPER.em * 0.5;
-  return circle ? Math.max(PAPER.balloonRadius, half + PAPER.balloonPad) : half + PAPER.balloonPad * 0.6;
+/**
+ * The room a balloon's text takes, in mm, and where its leader stops for a
+ * leader coming in along `dir` (a unit vector from the centre): on the
+ * circle, on the side of the box, or just clear of bare text.
+ */
+function balloonFrame(s: Balloon, dir: V): { hw: number; hh: number; r: number; reach: number } {
+  const m = texEngine().measure(labelTex(s.text) || "0");
+  const hw = (m.w * PAPER.em) / 2, hh = ((m.asc + m.desc) * PAPER.em) / 2;
+  const half = Math.hypot(hw, hh);
+  const frame = s.frame ?? "circle";
+  if (frame === "box") {
+    // No narrower than it is tall, so a single digit sits in a square.
+    const bh = hh + PAPER.balloonPad, bw = Math.max(hw + PAPER.balloonPad, bh);
+    const reach = Math.min(bw / Math.max(Math.abs(dir[0]), 1e-9), bh / Math.max(Math.abs(dir[1]), 1e-9));
+    return { hw: bw, hh: bh, r: 0, reach };
+  }
+  const r = frame === "circle" ? Math.max(PAPER.balloonRadius, half + PAPER.balloonPad) : half + PAPER.balloonPad * 0.6;
+  return { hw, hh, r, reach: r };
 }
 
 function balloonPrims(sk: Sketch, s: Balloon, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const };
   const anchor = mul(balloonAnchor(sk, s), mm);
   const centre: V = [anchor[0] + s.dx * mm, anchor[1] + s.dy * mm];
-  const ringed = s.circle !== false;
-  const r = balloonRadius(s.text, ringed);
+  const frame = s.frame ?? "circle";
   const out: Prim[] = [];
-  const reach = dist(anchor, centre);
-  if (reach > r + 0.3) {
-    const edge = add(centre, mul(norm(sub(anchor, centre)), r));
-    out.push({ ...base, k: "line", a: anchor, b: edge, stroke: "symbol", arrowA: s.end === "arrow" });
+  const far = dist(anchor, centre);
+  const dir: V = far > 1e-9 ? norm(sub(anchor, centre)) : [1, 0];
+  const f = balloonFrame(s, dir);
+  const leader = (to: V) => {
+    out.push({ ...base, k: "line", a: anchor, b: to, stroke: "symbol", arrowA: s.end === "arrow" });
     if (s.end === "dot") out.push({ ...base, k: "circle", c: anchor, r: PAPER.leaderDot, stroke: "symbol", fill: "ink" });
+  };
+  if (frame === "underline") {
+    // The text stands on a line, and the leader runs to the end of that line nearer to what it points at.
+    const y = centre[1] - f.hh - PAPER.balloonPad * 0.6;
+    const x0 = centre[0] - f.hw - PAPER.balloonPad, x1 = centre[0] + f.hw + PAPER.balloonPad;
+    const end: V = [anchor[0] < centre[0] ? x0 : x1, y];
+    const onText = Math.abs(anchor[0] - centre[0]) < f.hw + PAPER.balloonPad && Math.abs(anchor[1] - centre[1]) < f.hh + PAPER.balloonPad;
+    if (!onText && dist(anchor, end) > 0.3) leader(end);
+    out.push({ ...base, k: "line", a: [x0, y], b: [x1, y], stroke: "symbol" });
+  } else {
+    if (far > f.reach + 0.3) leader(add(centre, mul(dir, f.reach)));
+    if (frame === "circle") out.push({ ...base, k: "circle", c: centre, r: f.r, stroke: "symbol", fill: "paper" });
+    else if (frame === "box") {
+      const [x, y] = centre;
+      out.push({ ...base, k: "poly", pts: [[x - f.hw, y - f.hh], [x + f.hw, y - f.hh], [x + f.hw, y + f.hh], [x - f.hw, y + f.hh]], stroke: "symbol", fill: "paper" });
+    }
   }
-  if (ringed) out.push({ ...base, k: "circle", c: centre, r, stroke: "symbol", fill: "paper" });
   if (s.text.trim()) out.push({ ...base, k: "text", at: centre, tex: labelTex(s.text), anchor: "c" });
   return out;
 }
@@ -780,11 +819,14 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
     if (e.construction && !opts.editor) continue;
     const arrow = e.type === "line" ? e.arrow : undefined;
     const stroke: StrokeStyle = e.construction ? "construction" : arrow ? "arrow" : e.centre ? "centreline" : "member";
-    const base = { ref: e.id, layer: "geom" as const, stroke };
+    const base: { ref: Id; layer: "geom"; stroke: StrokeStyle; width?: number } = { ref: e.id, layer: "geom", stroke };
+    if (e.weight !== undefined) base.width = e.weight * PT_MM;
+    // The head of a thicker arrow grows with it, though not as fast, so it still reads as a head.
+    const head = PAPER.arrowScale * Math.sqrt(Math.max(1, (e.weight ?? 0) / standardWeight(e)));
     if (e.type === "line") {
       const line: LinePrim = { ...base, k: "line", a: P(sk, e.p1, mm), b: P(sk, e.p2, mm) };
       if (arrow) {
-        line.head = PAPER.arrowScale;
+        line.head = head;
         if (arrow !== "end") line.arrowA = true;
         if (arrow !== "start") line.arrowB = true;
       }
@@ -798,7 +840,7 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
       const arc: ArcPrim = { ...base, k: "arc", c: P(sk, e.c, mm), r: arcRadius(sk, e) * mm, a0, a1 };
       if (e.arrow && !e.construction) {
         arc.stroke = "arrow";
-        arc.head = PAPER.arrowScale;
+        arc.head = head;
         if (e.arrow !== "end") arc.arrowA = true;
         if (e.arrow !== "start") arc.arrowB = true;
       }

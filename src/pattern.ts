@@ -154,6 +154,7 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
     }
     if (e.construction) made.construction = true;
     if (e.centre) made.centre = true;
+    if (e.weight !== undefined) made.weight = e.weight;
     cmap.set(e.id, made.id);
     out.curves.push(made.id);
   }

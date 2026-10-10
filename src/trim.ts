@@ -164,6 +164,7 @@ export function applyTrim(sk: Sketch, plan: TrimPlan): ConstraintDraft[] {
   const flags = (from: Curve, to: Curve) => {
     if (from.construction) to.construction = true;
     if (from.centre) to.centre = true;
+    if (from.weight !== undefined) to.weight = from.weight;
   };
   // Horizontal and vertical are kept between a line's ends, so they follow the ends.
   const retarget = (oldA: Id, oldB: Id, newA: Id, newB: Id) => {

@@ -1,8 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { ORIGIN, emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, addSupport, addFrame, addSymbol, isEdge } from "../src/model";
+import {
+  ORIGIN, emptySketch, addPoint, addLine, addCircle, addArc, addConstraint, addSupport, addFrame, addSymbol, isEdge,
+  serialize, deserialize,
+} from "../src/model";
 import {
   printMm, geometryBox, buildPrims, anchorFor, dimTex, primDistance, textBox, arrowHeads, PAPER, type Prim,
   labelTex, textCorners, textCentre, frameTips, type TextPrim,
+  PT_MM, standardWeight,
 } from "../src/prims";
 import { texRuns } from "../src/tex";
 
@@ -266,14 +270,72 @@ describe("new annotations", () => {
     expect(forward.b[1]).toBeCloseTo(-2); // same side
   });
 
-  it("draws a balloon without its circle when that is switched off", () => {
+  it("draws a balloon in a circle, in a box, on a line, or bare", () => {
     const sk = fixed();
-    const b = addSymbol(sk, { type: "balloon", text: "1", x: 0, y: 0, dx: 10, dy: 10, end: "arrow" });
-    const circles = () => buildPrims(sk, 10, { editor: false }).filter((p) => p.k === "circle").length;
-    expect(circles()).toBe(1);
-    b.circle = false;
-    expect(circles()).toBe(0);
-    expect(buildPrims(sk, 10, { editor: false }).some((p) => p.k === "text")).toBe(true);
+    const b = addSymbol(sk, { type: "balloon", text: "12", x: 0, y: 0, dx: 1, dy: 1, end: "arrow" });
+    const prims = () => buildPrims(sk, 10, { editor: false }).filter((p) => p.ref === b.id);
+    const kinds = () => prims().map((p) => p.k).join(" ");
+    expect(kinds()).toBe("line circle text");
+    b.frame = "none";
+    expect(kinds()).toBe("line text");
+    b.frame = "box";
+    expect(kinds()).toBe("line poly text");
+    const box = prims().find((p) => p.k === "poly");
+    const leader = () => prims().find((p) => p.k === "line" && p.arrowA);
+    if (box?.k !== "poly") throw new Error("no box");
+    // The box is centred on the text, and the leader stops on its edge.
+    const xs = box.pts.map((q) => q[0]), ys = box.pts.map((q) => q[1]);
+    expect((Math.min(...xs) + Math.max(...xs)) / 2).toBeCloseTo(10);
+    expect(box.fill).toBe("paper");
+    const tip = leader();
+    if (tip?.k !== "line") throw new Error("no leader");
+    // The box is wider than tall and the leader comes up at 45°, so it meets the lower edge.
+    expect(tip.b[1]).toBeCloseTo(Math.min(...ys));
+    expect(tip.b[0]).toBeGreaterThan(Math.min(...xs));
+    expect(tip.b[0]).toBeLessThan(10);
+    // Underlined, the text stands on a line and the leader runs to the nearer end of it.
+    b.frame = "underline";
+    expect(kinds()).toBe("line line text");
+    const under = prims().find((p) => p.k === "line" && !p.arrowA);
+    const lead = leader();
+    if (under?.k !== "line" || lead?.k !== "line") throw new Error("no underline");
+    expect(under.a[1]).toBe(under.b[1]);
+    expect(under.a[1]).toBeLessThan(10);
+    expect(lead.b).toEqual(under.a); // what it points at is to the left
+    b.dx = -1;
+    const other = leader();
+    const line = prims().find((p) => p.k === "line" && !p.arrowA);
+    expect(other?.k === "line" && line?.k === "line" && other.b).toEqual(line?.k === "line" && line.b);
+  });
+
+  it("reads a balloon saved without its circle as one with no frame", () => {
+    const sk = fixed();
+    addSymbol(sk, { type: "balloon", text: "1", x: 0, y: 0, dx: 1, dy: 1, end: "arrow" });
+    const old = JSON.parse(serialize(sk));
+    old.symbols[0].circle = false;
+    const back = deserialize(JSON.stringify(old)).symbols[0];
+    expect(back).toMatchObject({ type: "balloon", frame: "none" });
+    expect("circle" in back).toBe(false);
+    old.symbols[0].circle = true;
+    expect("frame" in deserialize(JSON.stringify(old)).symbols[0]).toBe(false);
+  });
+
+  it("draws a curve at its own thickness, with a head to match on an arrow", () => {
+    const sk = fixed();
+    const l = addLine(sk, addPoint(sk, 0, 0).id, addPoint(sk, 4, 0).id);
+    const line = () => buildPrims(sk, 10, { editor: false }).find((p) => p.ref === l.id && p.k === "line");
+    expect(line()).not.toHaveProperty("width");
+    expect(standardWeight(l)).toBeCloseTo(0.8, 2);
+    l.weight = 2;
+    expect(line()).toMatchObject({ stroke: "member", width: 2 * PT_MM });
+    l.arrow = "end";
+    expect(standardWeight(l)).toBeCloseTo(0.6, 2);
+    const thick = line(), head = PAPER.arrowScale * Math.sqrt(2 / 0.6);
+    expect(thick?.k === "line" && thick.head).toBeCloseTo(head, 2);
+    // A thinner arrow keeps the usual head.
+    l.weight = 0.3;
+    const thin = line();
+    expect(thin?.k === "line" && thin.head).toBe(PAPER.arrowScale);
   });
 
   it("does not let an arrow close a shape", () => {
