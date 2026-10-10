@@ -84,7 +84,7 @@
       <li><b>Annotate.</b> Supports, axes, arrows, notes, fills and hatching are on the Annotate tab as well.</li>
       <li><b>Check and export.</b> Q shows the figure as it prints. Export saves it as SVG, or as TikZ for LaTeX.</li>
     </ol>
-    <p class="muted">Your sketch is kept in this browser; Save writes it to a file to keep, or to take to another computer. A short tip appears the first time you pick up each tool. The question mark in the top right brings this page back.</p>
+    <p class="muted">Your sketch is kept in this browser; Save writes it to a file to keep, or to take to another computer. A short tip appears the first time you pick up each tool. The question mark in the top right brings this page back; the speech bubble beside it is for reporting a bug or suggesting something.</p>
     <p class="support-line" data-support-row hidden><span><b>Mech Sketch is free.</b> If it saves you time, you can support it.</span><span data-support="Support"></span></p>
     <div class="dialog-actions split">
       <label class="check"><input id="welcome-never" type="checkbox" checked><span>Don't show this again</span></label>
@@ -102,6 +102,28 @@
     <div class="dialog-actions">
       <button type="button" data-dialog="cancel">Cancel</button>
       <button type="submit" value="ok" class="primary" id="export-go" disabled>Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="report-dialog" class="report" aria-labelledby="report-title">
+  <form method="dialog">
+    <h2 id="report-title">Report a bug or suggest something</h2>
+    <div class="field"><span id="report-kind-label">This is</span>
+      <div class="segmented" role="group" aria-labelledby="report-kind-label">
+        <button type="button" data-report="bug" aria-pressed="true">A bug</button>
+        <button type="button" data-report="idea" aria-pressed="false">A suggestion</button>
+      </div>
+    </div>
+    <label class="field"><span id="report-ask">What went wrong?</span>
+      <textarea id="report-text" rows="6" spellcheck="true"></textarea>
+    </label>
+    <p class="muted">Added underneath, so it can be looked into: <span id="report-details"></span></p>
+    <p class="muted">This writes an email to <b id="report-to"></b> for you to send from your own mail. If it is about one drawing, save the sketch and attach the file.</p>
+    <p class="report-hint" id="report-hint" role="status" aria-live="polite"></p>
+    <div class="dialog-actions">
+      <button type="button" data-dialog="cancel">Close</button>
+      <button type="button" data-act="report-copy">Copy the text</button>
+      <a class="primary" id="report-send" href="">Open in email</a>
     </div>
   </form>
 </dialog>

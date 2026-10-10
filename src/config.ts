@@ -12,3 +12,10 @@ export const SUPPORT_URL = "https://ko-fi.com/mech_sketch";
  * is no wait while SUPPORT_URL is empty.
  */
 export const EXPORT_WAIT_SECONDS = 10;
+
+/**
+ * Where bug reports and suggestions are sent. The report form writes an
+ * email to this address for the reader to send from their own mail. While
+ * this is empty there is no report button.
+ */
+export const REPORT_EMAIL = "bug.report@mech-sketch.org";

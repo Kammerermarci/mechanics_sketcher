@@ -30,7 +30,8 @@ import { type TrimPlan, planTrim, applyTrim } from "./trim";
 import { type CopyResult, PATTERN_MAX, mirrorCopy, linearCopy, circularCopy, nextDatumName } from "./pattern";
 import { toSvg, toTikz } from "./export";
 import { icon } from "./icons";
-import { EXPORT_WAIT_SECONDS, SUPPORT_URL } from "./config";
+import { EXPORT_WAIT_SECONDS, REPORT_EMAIL, SUPPORT_URL } from "./config";
+import { type ReportKind, composeReport } from "./report";
 import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
 
 type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam";
@@ -248,6 +249,7 @@ export class App {
   /** Seconds an export waits with the Support button on show. */
   private exportWait = EXPORT_WAIT_SECONDS;
   private supportTimer = 0;
+  private reportKind: ReportKind = "bug";
   private datumColor = DATUM_COLORS[0];
   /** Print preview: only what is exported is drawn, with annotations at their size in print. */
   private preview = false;
@@ -333,6 +335,64 @@ export class App {
     dialog.addEventListener("close", () => setWelcomeDue(!never.checked), { once: true });
     dialog.showModal();
     dialog.querySelector<HTMLElement>("button.primary")?.focus();
+  }
+
+  /** The form for a bug report or a suggestion. What was typed stays for the next time it is opened. */
+  private showReport(): void {
+    const dialog = $<HTMLDialogElement>("#report-dialog");
+    if (dialog.open || !REPORT_EMAIL) return;
+    $("#report-hint").textContent = "";
+    this.updateReport();
+    dialog.showModal();
+    $("#report-text").focus();
+  }
+
+  /** What the app adds to a report: which version it is, what it runs in, and how large the sketch is. */
+  private reportDetails(): string[] {
+    const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+    const r = this.result;
+    const solver = !r.ok || r.conflicting.length ? "constraints conflict" : r.dof === 0 ? "fully constrained" : count(r.dof, "degree of freedom", "degrees of freedom");
+    return [
+      `Mech Sketch built ${__BUILD_TIME__} at ${location.protocol === "file:" ? "a file on disk" : location.origin}`,
+      `Browser: ${navigator.userAgent}`,
+      `Sketch: ${count(points(this.sk).length, "point", "points")}, ${count(curves(this.sk).length, "curve", "curves")}, ` +
+        `${count(this.sk.constraints.length, "constraint", "constraints")}, ${count(this.sk.symbols.length, "symbol", "symbols")}; ${solver}`,
+    ];
+  }
+
+  /** Brings the report form up to date with its fields: the wording for its kind, and the email it would send. */
+  private updateReport(): void {
+    const text = $<HTMLTextAreaElement>("#report-text");
+    const bug = this.reportKind === "bug";
+    document.querySelectorAll<HTMLElement>("[data-report]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.report === this.reportKind)));
+    $("#report-ask").textContent = bug ? "What went wrong?" : "What would make it better?";
+    text.placeholder = bug
+      ? "What you did, what you expected, and what happened instead."
+      : "What you would like to be able to do, and what for.";
+    const details = this.reportDetails();
+    $("#report-details").textContent = details.join(". ") + ".";
+    $("#report-to").textContent = REPORT_EMAIL;
+    const send = $<HTMLAnchorElement>("#report-send");
+    send.href = composeReport(REPORT_EMAIL, this.reportKind, text.value, details).href;
+    send.setAttribute("aria-disabled", String(!text.value.trim()));
+    if (text.value.trim()) $("#report-hint").textContent = "";
+  }
+
+  /** Puts the report on the clipboard, for mail that is read in a browser. */
+  private async copyReport(): Promise<void> {
+    const typed = $<HTMLTextAreaElement>("#report-text").value;
+    const hint = $("#report-hint");
+    if (!typed.trim()) {
+      hint.textContent = "Write a line about it first.";
+      return $("#report-text").focus();
+    }
+    const report = composeReport(REPORT_EMAIL, this.reportKind, typed, this.reportDetails());
+    try {
+      await navigator.clipboard.writeText(report.text);
+      hint.textContent = `Copied. Paste it into an email to ${REPORT_EMAIL}.`;
+    } catch {
+      hint.textContent = `Copying is blocked here. Please write to ${REPORT_EMAIL}.`;
+    }
   }
 
   private showSupportCard(): void {
@@ -2659,6 +2719,7 @@ export class App {
       `<button type="button" class="icon-btn" data-act="preview" aria-label="Print preview" title="Print preview: hide everything that is not exported (Q)">${icon("eye")}</button>` +
       `<button type="button" class="icon-btn" data-act="origin" aria-label="Show origin axes" title="Show or hide the axes at the origin">${icon("frame")}</button>` +
       `<button type="button" class="icon-btn" data-act="fit" aria-label="Zoom to fit" title="Zoom to fit (0)">${icon("fit")}</button>` +
+      (REPORT_EMAIL ? `<button type="button" class="icon-btn" data-act="report" aria-label="Report a bug or suggest something" title="Report a bug or suggest something">${icon("report")}</button>` : "") +
       `<button type="button" class="icon-btn" data-act="help" aria-label="Help" title="How to use Mech Sketch">${icon("help")}</button>`;
     this.buildRibbon();
     this.showEditScale();
@@ -3079,6 +3140,7 @@ export class App {
       else if (ds.head) this.setArrowHead(ds.head as ArrowEnds);
       else if (ds.place) this.setRadiusPlace(ds.place === "outside");
       else if (ds.beam) { this.beamEnds = ds.beam as BeamEnds; this.touch(); }
+      else if (ds.report) { this.reportKind = ds.report as ReportKind; this.updateReport(); }
       else if (ds.dir) btn.parentElement?.querySelectorAll("[data-dir]").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
       else if (ds.dialog === "cancel") btn.closest("dialog")?.close("cancel");
       else if (ds.act) this.action(ds.act);
@@ -3156,6 +3218,16 @@ export class App {
     });
     this.dimEditor.addEventListener("blur", () => { if (this.editing) this.commitEditor(); });
 
+    $("#report-text").addEventListener("input", () => this.updateReport());
+    $("#report-send").addEventListener("click", (e) => {
+      if (!$<HTMLTextAreaElement>("#report-text").value.trim()) {
+        e.preventDefault();
+        $("#report-hint").textContent = "Write a line about it first.";
+        return $("#report-text").focus();
+      }
+      // The link opens the mail program; what happens there is out of this page's sight.
+      $("#report-hint").textContent = `Your mail program should open with the report. If nothing opened, copy the text and send it to ${REPORT_EMAIL}.`;
+    });
     const tipsOn = $<HTMLInputElement>("#tips-on");
     tipsOn.addEventListener("change", () => {
       this.tips.setOff(!tipsOn.checked);
@@ -3196,6 +3268,8 @@ export class App {
       case "copy-tikz": return void this.exportFigure("copy-tikz");
       case "shift": return void this.linearPattern();
       case "help": return this.showWelcome();
+      case "report": return this.showReport();
+      case "report-copy": return void this.copyReport();
       case "tip-close": return this.closeTip();
       case "tips-off":
         this.tip = null;

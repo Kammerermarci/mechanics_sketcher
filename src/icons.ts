@@ -48,9 +48,11 @@ export const ICONS: Record<string, string> = {
   note: `<path d="M4.5 6.5V4.5h11v2M10 4.5v11M7.8 15.5h4.4"/>`,
   help: `<circle cx="10" cy="10" r="7.3"/><path d="M7.7 8.1a2.4 2.4 0 1 1 3.5 2.1c-.8.5-1.2 1-1.2 1.9"/>${dot(10, 14.4, 0.95)}`,
   close: `<path d="M5 5l10 10M15 5L5 15"/>`,
+  report: `<path d="M4.2 4h11.6a1.7 1.7 0 0 1 1.7 1.7v6.6a1.7 1.7 0 0 1-1.7 1.7H9.6L6 17v-3H4.2a1.7 1.7 0 0 1-1.7-1.7V5.7A1.7 1.7 0 0 1 4.2 4z"/><path d="M10 6.6v3"/>${dot(10, 11.6, 0.9)}`,
 
   centerline: `<path d="M3 17l4.2-4.2M8.6 11.4l.8-.8M10.8 9.2L15 5M16.2 3.8l.8-.8"/>`,
-  trim: `<path d="M3 15h5.5M11.5 15H17" stroke-dasharray="none"/><path d="M8.5 15h3" stroke-dasharray="1.2 1.6" stroke-width="1.2"/><path d="M6 4l8 9M14 4l-8 9" stroke-width="1.3"/>`,
+  // Scissors over a line they have cut a piece out of.
+  trim: `<path d="M2.5 15.5h5M12.5 15.5h5"/><circle cx="6.2" cy="4.6" r="1.9" stroke-width="1.4"/><circle cx="13.8" cy="4.6" r="1.9" stroke-width="1.4"/><path d="M7.4 6.1l5.4 7.6M12.6 6.1l-5.4 7.6" stroke-width="1.5"/>`,
 
   undo: `<path d="M7.5 4.5l-4 4 4 4"/><path d="M3.5 8.5h8a4.3 4.3 0 0 1 0 8.6H9"/>`,
   redo: `<path d="M12.5 4.5l4 4-4 4"/><path d="M16.5 8.5h-8a4.3 4.3 0 0 0 0 8.6H11"/>`,

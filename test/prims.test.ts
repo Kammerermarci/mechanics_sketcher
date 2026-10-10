@@ -386,3 +386,24 @@ describe("tips", () => {
     expect(ids.filter((id) => !TIPS[id])).toEqual([]);
   });
 });
+
+describe("reports", () => {
+  it("writes a bug report or a suggestion as an email to send", async () => {
+    const { composeReport } = await import("../src/report");
+    const r = composeReport("bug.report@example.org", "bug", "  Trim removed the wrong piece & more\r\nSecond line: 50% of the time  ", ["Mech Sketch built today", "Browser: Test/1.0"]);
+    expect(r.subject).toBe("Bug: Trim removed the wrong piece & more");
+    expect(r.body).toBe("Trim removed the wrong piece & more\nSecond line: 50% of the time\n\n--\nMech Sketch built today\nBrowser: Test/1.0\n");
+    // The link carries the same subject and text, with nothing in them that could end the link early.
+    const url = new URL(r.href);
+    expect(url.protocol).toBe("mailto:");
+    expect(url.pathname).toBe("bug.report@example.org");
+    const q = new URLSearchParams(r.href.slice(r.href.indexOf("?") + 1).replace(/\+/g, "%2B"));
+    expect(q.get("subject")).toBe(r.subject);
+    expect(q.get("body")).toBe(r.body.replace(/\n/g, "\r\n"));
+    expect(r.text.startsWith("To: bug.report@example.org\nSubject: Bug: Trim")).toBe(true);
+    // A long first line is cut short for the subject; a suggestion says so.
+    const long = composeReport("a@b.c", "idea", "x".repeat(90), []);
+    expect(long.subject).toBe(`Suggestion: ${"x".repeat(57)}...`);
+    expect(composeReport("a@b.c", "idea", "", []).subject).toBe("Suggestion: Mech Sketch");
+  });
+});

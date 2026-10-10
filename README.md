@@ -27,6 +27,13 @@ it is used. Both have a *Don't show this again* box. The question mark in the
 top right brings the guide back; the settings button next to it switches the
 tips off, or shows them all again from the start.
 
+The speech bubble beside the question mark is for **reporting a bug or
+suggesting something**. The page has no server behind it, so the form writes
+an email, with the app's version, the browser and the size of the sketch
+added underneath, and opens it in your own mail program to send; *Copy the
+text* is there for mail that is read in a browser. The address is
+`REPORT_EMAIL` in `src/config.ts`.
+
 The tools sit on two tabs. **Sketch** has what shapes the geometry: drawing
 tools, copying tools and constraints. **Annotate** has what is added to the
 figure: dimensions, supports, axes, arrows, notes, centre marks, balloons,

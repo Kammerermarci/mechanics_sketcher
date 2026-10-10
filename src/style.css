@@ -33,7 +33,7 @@ body {
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
-button, input { font: inherit; color: inherit; }
+button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 [hidden] { display: none !important; }
@@ -425,6 +425,31 @@ dialog .check { margin: 2px 0 10px; }
 .dialog-actions .primary:hover { background: #2a3630; }
 .dialog-actions.split { justify-content: space-between; align-items: center; margin-top: 14px; }
 .dialog-actions button:disabled { opacity: 0.45; cursor: default; }
+dialog.report { width: min(470px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; }
+.field textarea {
+  min-height: 104px;
+  padding: 7px 9px;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  background: var(--paper);
+  resize: vertical;
+}
+/* The button that sends a report is a link: it opens the reader's mail program. */
+.dialog-actions a.primary {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--ink);
+  border-radius: 5px;
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 500;
+  text-decoration: none;
+}
+.dialog-actions a.primary:hover { background: #2a3630; }
+.dialog-actions a.primary[aria-disabled="true"] { opacity: 0.45; }
+.report-hint { margin: 0 0 8px; min-height: 1.4em; font-size: 13px; font-weight: 500; }
 dialog .lead { margin: 0 0 12px; }
 dialog .steps { margin: 0 0 14px; }
 dialog.welcome { width: min(540px, calc(100vw - 32px)); padding: 22px 24px 18px; max-height: calc(100vh - 32px); overflow-y: auto; }
