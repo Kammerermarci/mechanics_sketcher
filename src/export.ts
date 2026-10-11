@@ -9,6 +9,7 @@ import {
 } from "./prims";
 import { type V, type Box, emptyBox, grow, boxIsEmpty, polar, wrap, TWO_PI } from "./geom";
 import { texEngine } from "./tex";
+import { latexAccents } from "./accents";
 import { outlinePath } from "./render";
 
 /**
@@ -231,7 +232,9 @@ export function toTikz(sk: Sketch): string | null {
         (p.lines ? ", align=left" : "") +
         (p.ink ? `, text=${tikzColor(p.ink)}` : "");
       if (p.anchor !== "c") needLabel = true;
-      lines.push(`  \\node[${where}] at ${co(p.at)} {${p.latex ?? `$${p.tex}$`}};`);
+      // A note is text with math in it, a label is math; LaTeX takes accented letters in text only.
+      const body = p.latex !== undefined ? latexAccents(p.latex, "text") : `$${latexAccents(p.tex, "math")}$`;
+      lines.push(`  \\node[${where}] at ${co(p.at)} {${body}};`);
     } else if (p.k === "line") {
       noteTip(p);
       lines.push(`  \\draw[${style(p)}${tips(p, k)}] ${co(p.a)} -- ${co(p.b)};`);

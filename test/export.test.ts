@@ -225,6 +225,27 @@ describe("export", () => {
     expect(toSvg(sk)).toContain("<path");
   });
 
+  it("writes accented letters so that LaTeX takes them: accent commands in math, as typed in text", () => {
+    const sk = beam();
+    const [a, b] = sk.entities.filter((e) => e.type === "point" && e.id !== "origin");
+    sk.constraints[0] = { ...sk.constraints[0], label: "hosszúság" } as typeof sk.constraints[0];
+    addSymbol(sk, { type: "load", at: b.id, angle: -Math.PI / 2, value: 1, label: "F_{eredő}", color: "#d32f2f" });
+    addSymbol(sk, { type: "datum", at: a.id, label: "Á", color: "#2e7d32", dx: -0.5, dy: 0.5 });
+    addSymbol(sk, { type: "note", x: 0, y: 2, text: "Görgős támasz: $F_é = 2a$, \\textbf{tűrés} $\\text{erő} + \\mathrm{álló}$" });
+    const tikz = toTikz(sk)!;
+    expect(tikz).toContain("{$hossz\\acute{u}s\\acute{a}g$}");
+    // The long umlaut has no math command of its own.
+    expect(tikz).toContain("{$F_{ered\\mathaccent\"707D{o}}$}");
+    expect(tikz).toContain("{$\\acute{A}$}");
+    // In a note only the math is touched; a subscript that is one accented letter is kept together.
+    expect(tikz).toContain("{Görgős támasz: $F_{\\acute{e}} = 2a$, \\textbf{tűrés} $\\text{erő} + \\mathrm{\\acute{a}ll\\acute{o}}$}");
+    // The SVG has every one of them as outlines.
+    setTexEngine(createMathJaxEngine());
+    const svg = toSvg(sk)!;
+    expect(svg).not.toContain("<text");
+    expect(svg).toContain("<path");
+  });
+
   it("enlarges the whole figure by the dimension size, keeping the geometry at the figure width", () => {
     setTexEngine(createMathJaxEngine());
     const sk = beam();

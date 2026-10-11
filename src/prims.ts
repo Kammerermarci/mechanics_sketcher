@@ -151,7 +151,8 @@ export function formatNumber(v: number): string {
  * as it is.
  */
 export function labelTex(typed: string): string {
-  const s = typed.trim();
+  // One character for each accented letter, however it was typed or pasted.
+  const s = typed.trim().normalize("NFC");
   let out = "";
   for (let i = 0; i < s.length;) {
     if (s[i] === "\\") {
@@ -172,6 +173,7 @@ export function labelTex(typed: string): string {
 
 /** The lines of a note, each cut into text and math by turns: even pieces are text, odd ones math. */
 function noteLines(typed: string): string[][] {
+  typed = typed.normalize("NFC");
   const lines: string[][] = [];
   let line: string[] = [""];
   for (let i = 0; i < typed.length; i++) {

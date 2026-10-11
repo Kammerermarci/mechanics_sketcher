@@ -256,6 +256,15 @@ arrowheads and the labels (through `every node/.style={scale=...}`) are all
 scaled by it. Line widths and the arrowhead are named styles at the top of
 the picture and can be changed there.
 
+**Accented letters.** Letters such as é, ö, ő and ű are typed as they are, in
+labels and in notes. On screen and in the SVG each is drawn as its letter
+with the accent over it, from the same font as the rest of the label. In the
+TikZ, a label is math, where LaTeX takes no accented letters: there é is
+written `\acute{e}`, ö `\ddot{o}`, and ő and ű with `\mathaccent"707D`, the
+long umlaut of the roman font. The text of a note, and of `\text{...}` in a
+label, stays as typed; `\text` needs `amsmath`, and low quote marks („) need
+`\usepackage[T1]{fontenc}` with pdfLaTeX.
+
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
 | L, C, A, P | Line, circle, arc, point | D | Dimension |
@@ -300,6 +309,8 @@ the picture and can be changed there.
   constraint markers that are never exported.
 - `src/mathjax.ts`: typesets labels with a bundled MathJax; `src/tex.ts` holds
   a simple stand-in used when MathJax is not loaded (the tests).
+- `src/accents.ts`: takes accented letters apart into letter and accent, for
+  MathJax and for the TikZ.
 - `src/app.ts`: tools, selection, dragging, commands and panels.
 
 Sizes that should not depend on how big the truss is (line widths, arrowheads,
