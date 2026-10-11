@@ -30,7 +30,7 @@ import { type TrimPlan, planTrim, applyTrim, strokeHits } from "./trim";
 import { type CopyResult, PATTERN_MAX, mirrorCopy, linearCopy, circularCopy, nextDatumName } from "./pattern";
 import { toSvg, toTikz } from "./export";
 import { icon } from "./icons";
-import { EXPORT_WAIT_SECONDS, REPORT_EMAIL, SUPPORT_URL } from "./config";
+import { BETA, EXPORT_WAIT_SECONDS, REPORT_EMAIL, SUPPORT_URL } from "./config";
 import { type ReportKind, composeReport } from "./report";
 import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
 import { type BeamEnds, straightBeam, curvedBeam } from "./beam";
@@ -234,7 +234,10 @@ const EDIT_SCALE_MIN = 50, EDIT_SCALE_MAX = 250;
 
 /** Range of the dimension size slider, in percent. */
 const DIM_SCALE_MIN = 30, DIM_SCALE_MAX = 300;
-const AUTOSAVE_KEY = "mech-sketch.autosave";
+/** Where the released app keeps the sketch being worked on. */
+const LIVE_AUTOSAVE_KEY = "mech-sketch.autosave";
+/** The beta keeps its own: a sketch with something new in it would not open whole in the released app. */
+const AUTOSAVE_KEY = BETA ? "mech-sketch-beta.autosave" : LIVE_AUTOSAVE_KEY;
 /**
  * Screen pixels per annotation mm while editing. Text, arrowheads and symbols
  * keep this size however far the view is zoomed, as in a CAD sketcher.
@@ -511,7 +514,8 @@ export class App {
 
   private restore(): void {
     try {
-      const saved = localStorage.getItem(AUTOSAVE_KEY);
+      // The beta starts out from the sketch the released app was left with, and goes its own way from there.
+      const saved = localStorage.getItem(AUTOSAVE_KEY) ?? (BETA ? localStorage.getItem(LIVE_AUTOSAVE_KEY) : null);
       if (saved) this.sk = deserialize(saved);
       this.exportName = localStorage.getItem(EXPORT_NAME_KEY) || this.exportName;
       this.sketchName = localStorage.getItem(SKETCH_NAME_KEY) || this.sketchName;

@@ -19,3 +19,10 @@ export const EXPORT_WAIT_SECONDS = 10;
  * this is empty there is no report button.
  */
 export const REPORT_EMAIL = "bug.report@mech-sketch.org";
+
+/**
+ * True for the copy published for trying new things out, beside the released
+ * app at the same address. It says so beside its name and keeps its own
+ * autosaved sketch, so that work in one never lands in the other.
+ */
+export const BETA = import.meta.env.VITE_CHANNEL === "beta";

@@ -31,11 +31,20 @@ function planegcsWasm(): Plugin {
   };
 }
 
+/** The beta is for trying things out: search engines are asked to leave it alone. */
+function betaPage(): Plugin {
+  return {
+    name: "beta-page",
+    transformIndexHtml: (html) =>
+      process.env.VITE_CHANNEL === "beta" ? html.replace("<head>", `<head>\n<meta name="robots" content="noindex">`) : html,
+  };
+}
+
 // Everything, including the solver and the fonts, is inlined into one
 // index.html so the build runs from a file:// URL as well as from a server.
 export default defineConfig({
   base: "./",
-  plugins: [planegcsWasm(), viteSingleFile()],
+  plugins: [planegcsWasm(), betaPage(), viteSingleFile()],
   // When this copy was built, shown in the app so it is easy to tell which version is open.
   define: { __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
   build: { target: "es2022", assetsInlineLimit: 100_000_000 },
