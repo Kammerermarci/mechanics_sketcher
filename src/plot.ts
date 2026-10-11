@@ -12,9 +12,12 @@ import { type V } from "./geom";
 import { texEngine } from "./tex";
 import { latexAccents } from "./accents";
 import { num, tikzColor, primsToSvg } from "./export";
-import { type Stretch, PLOT, PLOT_DASH, PLOT_COLORS, readFormula, pieceError, stretches, runs, restrictY, uprights } from "./plotmath";
+import {
+  type Stretch, type ParamStretch, PLOT, PLOT_DASH, PLOT_COLORS, PARAM_RANGE, readFormula, pieceError, formulaError, stretches, runs,
+  restrictX, restrictY, uprights, paramStretches, paramRuns, drawable,
+} from "./plotmath";
 
-export { PLOT, PLOT_DASH, PLOT_COLORS, readFormula, pieceError, stretches, runs, uprights };
+export { PLOT, PLOT_DASH, PLOT_COLORS, PARAM_RANGE, readFormula, pieceError, formulaError, stretches, runs, uprights, paramStretches, paramRuns, drawable };
 
 // ---- layout ---------------------------------------------------------------------
 
@@ -117,6 +120,14 @@ function clipArea(plot: Plot, pts: V[]): V[] {
 /** Where the name of a curve sits, in the plot's coordinates: where it was put, or else above the curve, two thirds of the way along what shows of it. */
 export function curveLabelAt(plot: Plot, curve: PlotCurve): V | null {
   if (curve.lx !== undefined && curve.ly !== undefined) return [curve.lx, curve.ly];
+  const rise = (PLOT.labelRise / plot.height) * (plot.y.max - plot.y.min);
+  if (curve.param) {
+    // Two thirds of the way along what shows of it; it has no left and right to go by.
+    const seen = paramStretches(plot, curve).flatMap((s) => paramRuns(plot, s)).flatMap((r) => clipRun(plot, r)).flat();
+    if (!seen.length) return null;
+    const at = seen[Math.round((seen.length - 1) * 0.66)];
+    return [at[0], at[1] + rise > plot.y.max ? at[1] - rise : at[1] + rise];
+  }
   const shown = stretches(plot, curve).flatMap((s) => runs(plot, s)).flatMap((r) => clipRun(plot, r)).flat();
   if (!shown.length) return null;
   const x0 = shown[0][0], x1 = shown[shown.length - 1][0];
@@ -131,7 +142,6 @@ export function curveLabelAt(plot: Plot, curve: PlotCurve): V | null {
       break;
     }
   }
-  const rise = (PLOT.labelRise / plot.height) * (plot.y.max - plot.y.min);
   // Above the curve, unless that would be out of the plot.
   return [at[0], at[1] + rise > plot.y.max ? at[1] - rise : at[1] + rise];
 }
@@ -200,13 +210,16 @@ export function plotPrims(plot: Plot): Prim[] {
   // Shading first: everything else is drawn over it.
   for (const c of plot.curves) {
     if (!c.fill) continue;
+    const shade = (outline: V[]): void => {
+      const area = clipArea(plot, outline);
+      if (area.length < 3) return;
+      const [start, ...rest] = area.map(P);
+      out.push({ k: "region", layer: "fill", ref: c.id, color: tint(c.color, PLOT.shade), outlines: [{ kind: "path", start, segs: [...rest, start].map((to) => ({ k: "L" as const, to })) }] });
+    };
+    // A curve given by a parameter is shaded inside: closed from its end back to its start.
+    for (const s of paramStretches(plot, c)) for (const run of paramRuns(plot, s)) shade(run);
     for (const s of stretches(plot, c)) {
-      for (const run of runs(plot, s)) {
-        const area = clipArea(plot, [[run[0][0], 0], ...run, [run[run.length - 1][0], 0]]);
-        if (area.length < 3) continue;
-        const [start, ...rest] = area.map(P);
-        out.push({ k: "region", layer: "fill", ref: c.id, color: tint(c.color, PLOT.shade), outlines: [{ kind: "path", start, segs: [...rest, start].map((to) => ({ k: "L" as const, to })) }] });
-      }
+      for (const run of runs(plot, s)) shade([[run[0][0], 0], ...run, [run[run.length - 1][0], 0]]);
     }
   }
 
@@ -253,6 +266,9 @@ export function plotPrims(plot: Plot): Prim[] {
     const dash = c.dash ? PLOT_DASH[c.dash] : undefined;
     for (const s of stretches(plot, c)) {
       for (const run of runs(plot, s)) for (const part of clipRun(plot, run)) out.push({ ...line, k: "path", pts: part.map(P), ...(dash ? { dash } : {}) });
+    }
+    for (const s of paramStretches(plot, c)) {
+      for (const run of paramRuns(plot, s)) for (const part of clipRun(plot, run)) out.push({ ...line, k: "path", pts: part.map(P), ...(dash ? { dash } : {}) });
     }
     for (const up of uprights(plot, c)) for (const part of clipRun(plot, up)) out.push({ ...line, k: "path", pts: part.map(P), ...(dash ? { dash } : {}) });
   }
@@ -324,7 +340,7 @@ export function plotTikz(plot: Plot): string {
   const [lo, hi] = restrictY(plot);
   opts.push(`restrict y to domain=${n(lo)}:${n(hi)}, unbounded coords=jump`);
   opts.push(`trig format plots=rad, line join=round, line cap=round`);
-  const shaded = plot.curves.some((c) => c.fill && stretches(plot, c).length);
+  const shaded = plot.curves.some((c) => c.fill && drawable(plot, c));
   if (shaded) opts.push(`set layers`);
 
   const body: string[] = [];
@@ -342,8 +358,8 @@ export function plotTikz(plot: Plot): string {
     }
   }
   for (const c of plot.curves) {
-    const list = stretches(plot, c);
-    if (!list.length) continue;
+    const list = stretches(plot, c), turns = paramStretches(plot, c);
+    if (!list.length && !turns.length) continue;
     const dash = c.dash ? `, dash pattern=on ${mm(PLOT_DASH[c.dash][0])} off ${mm(PLOT_DASH[c.dash][1])}${c.dash === "dotted" ? ", line cap=round" : ""}` : "";
     const pen = `draw=${tikzColor(c.color)}, line width=${num(c.weight ?? PLOT.weight, 2)}pt${dash}`;
     const where = (s: Stretch) => `domain=${n(s.from)}:${n(s.to)}, samples=${s.samples}`;
@@ -351,6 +367,14 @@ export function plotTikz(plot: Plot): string {
       for (const s of list) body.push(`\\addplot[draw=none, fill=${tikzColor(tint(c.color, PLOT.shade))}, ${where(s)}, on layer=axis background] {${toPgf(s.expr)}} \\closedcycle;`);
     }
     for (const s of list) body.push(`\\addplot[${pen}, ${where(s)}] {${toPgf(s.expr)}};`);
+    // A curve given by a parameter: pgfplots calls the parameter x, and drops what is far outside on either axis.
+    const [left, right] = restrictX(plot);
+    const along = (s: ParamStretch) => `domain=${n(s.from)}:${n(s.to)}, samples=${s.samples}, restrict x to domain=${n(left)}:${n(right)}`;
+    const point = (s: ParamStretch) => `({${toPgf(s.x)}}, {${toPgf(s.y)}})`;
+    if (c.fill) {
+      for (const s of turns) body.push(`\\addplot[draw=none, fill=${tikzColor(tint(c.color, PLOT.shade))}, ${along(s)}, on layer=axis background] ${point(s)} -- cycle;`);
+    }
+    for (const s of turns) body.push(`\\addplot[${pen}, ${along(s)}] ${point(s)};`);
     // The upright lines go in after the axis, in mm from its lower left corner like the names: inside it,
     // one that runs along the edge of the plot would be cut to half its thickness.
     for (const up of uprights(plot, c)) {
@@ -377,10 +401,14 @@ export function plotTikz(plot: Plot): string {
 
 // ---- making and fitting ---------------------------------------------------------------
 
-/** A curve with one piece still to be typed. */
-export function newCurve(sk: Sketch, plot: Plot): PlotCurve {
+/** A curve with one piece still to be typed: a function of x, or with `param` a curve given by x(t) and y(t). */
+export function newCurve(sk: Sketch, plot: Plot, param = false): PlotCurve {
   const used = new Set(plot.curves.map((c) => c.color));
   const curve: PlotCurve = { id: newId(sk, "curve"), pieces: [{ expr: "" }], color: PLOT_COLORS.find((c) => !used.has(c)) ?? PLOT_COLORS[0] };
+  if (param) {
+    curve.param = true;
+    curve.pieces = [{ x: "", expr: "", from: PARAM_RANGE[0], to: PARAM_RANGE[1] }];
+  }
   plot.curves.push(curve);
   return curve;
 }
@@ -416,11 +444,72 @@ function roundOut(v: number, span: number, sign: -1 | 1): number {
   return Number(((sign < 0 ? Math.floor(v / step + 1e-9) : Math.ceil(v / step - 1e-9)) * step).toPrecision(12));
 }
 
+/** A range that holds lo to hi with a little room, at round numbers; null when there is nothing to hold or it runs off to infinity. */
+function roomFor(lo: number, hi: number): [number, number] | null {
+  if (lo > hi) return null;
+  const reach = Math.max(Math.abs(lo), Math.abs(hi));
+  if (reach > 1e9) return null;
+  let size = hi - lo;
+  if (size < Math.max(reach, 1) * 1e-9) { lo -= 1; hi += 1; size = 2; }
+  const pad = size * 0.08;
+  return [roundOut(lo - pad, size, -1), roundOut(hi + pad, size, 1)];
+}
+
+/** Every point of the curves given by a parameter, over all of their parameter's range. */
+function paramPoints(plot: Plot): V[] {
+  const out: V[] = [];
+  for (const c of plot.curves) {
+    if (!c.param) continue;
+    for (const piece of c.pieces) {
+      if (pieceError(piece, true) !== null || !piece.expr.trim() || !(piece.x ?? "").trim()) continue;
+      const x = readFormula(piece.x!) as Expr, y = readFormula(piece.expr) as Expr;
+      const from = piece.from ?? PARAM_RANGE[0], to = piece.to ?? PARAM_RANGE[1];
+      for (let i = 0; i <= 600; i++) {
+        const t = from + ((to - from) * i) / 600;
+        const X = evaluate(x, t), Y = evaluate(y, t);
+        if (Number.isFinite(X) && Number.isFinite(Y)) out.push([X, Y]);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The horizontal range that shows all of the plot's curves, when every one
+ * of them is given by a parameter: a function of x is drawn over whatever
+ * range the axis has, so with one of those in the plot there is nothing to
+ * fit, and this is null.
+ */
+export function fitX(plot: Plot): [number, number] | null {
+  if (plot.curves.some((c) => !c.param && c.pieces.some((x) => x.expr.trim()))) return null;
+  const pts = paramPoints(plot);
+  return roomFor(Math.min(...pts.map((q) => q[0])), Math.max(...pts.map((q) => q[0])));
+}
+
+/**
+ * The ranges that give both axes the same scale on paper, so that a circle
+ * is round: the axis that is drawn the larger keeps its range, the other's
+ * is widened about its middle.
+ */
+export function equalScales(plot: Plot): { x: [number, number]; y: [number, number] } {
+  const perMm = Math.max((plot.x.max - plot.x.min) / plot.width, (plot.y.max - plot.y.min) / plot.height);
+  const about = (a: PlotAxis, length: number): [number, number] => {
+    const half = (perMm * length) / 2, mid = (a.min + a.max) / 2;
+    return Math.abs(2 * half - (a.max - a.min)) < (a.max - a.min) * 1e-9 ? [a.min, a.max] : [Number((mid - half).toPrecision(7)), Number((mid + half).toPrecision(7))];
+  };
+  return { x: about(plot.x, plot.width), y: about(plot.y, plot.height) };
+}
+
 /** The vertical range that shows all of the curves over the horizontal range of the plot, with a little room; null when there is nothing to show. */
 export function fitY(plot: Plot): [number, number] | null {
   let lo = Infinity, hi = -Infinity;
   const span = plot.x.max - plot.x.min;
+  // Of a curve given by a parameter, what lies over the horizontal range.
+  for (const [X, Y] of paramPoints(plot)) {
+    if (X >= plot.x.min - span * 1e-9 && X <= plot.x.max + span * 1e-9) { lo = Math.min(lo, Y); hi = Math.max(hi, Y); }
+  }
   for (const c of plot.curves) {
+    if (c.param) continue;
     for (const piece of c.pieces) {
       if (pieceError(piece) !== null || !piece.expr.trim()) continue;
       const expr = readFormula(piece.expr) as Expr;
@@ -434,14 +523,8 @@ export function fitY(plot: Plot): [number, number] | null {
     // A shaded curve reaches down, or up, to the axis.
     if (c.fill && lo <= hi) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
   }
-  if (lo > hi) return null;
   // A function that runs off to infinity is not chased there.
-  const reach = Math.max(Math.abs(lo), Math.abs(hi));
-  if (reach > 1e9) return null;
-  let height = hi - lo;
-  if (height < Math.max(reach, 1) * 1e-9) { lo -= 1; hi += 1; height = 2; }
-  const pad = height * 0.08;
-  return [roundOut(lo - pad, height, -1), roundOut(hi + pad, height, 1)];
+  return roomFor(lo, hi);
 }
 
 /** Ids of everything a plot holds, itself included: what a selection in it can be. */

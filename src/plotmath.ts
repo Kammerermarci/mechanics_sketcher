@@ -45,11 +45,30 @@ export function readFormula(src: string): Expr | string {
   return got;
 }
 
-/** What is wrong with a piece as it stands, or null when it can be drawn. An empty formula is not an error: it is not typed yet. */
-export function pieceError(piece: PlotPiece): string | null {
-  if (!piece.expr.trim()) return null;
-  const got = readFormula(piece.expr);
-  if (typeof got === "string") return got;
+/** What is wrong with a formula as it stands, or null. An empty one is not an error: it is not typed yet. */
+export function formulaError(src: string): string | null {
+  if (!src.trim()) return null;
+  const got = readFormula(src);
+  return typeof got === "string" ? got : null;
+}
+
+/** What a parameter runs over when nothing else is said: once round a circle. */
+export const PARAM_RANGE: [number, number] = [0, 2 * Math.PI];
+
+/**
+ * What is wrong with a piece as it stands, or null when it can be drawn. With
+ * `param`, the piece is of a curve given by a parameter: both its formulas
+ * are read, and the parameter has to run forwards.
+ */
+export function pieceError(piece: PlotPiece, param = false): string | null {
+  if (param) {
+    const wrong = formulaError(piece.x ?? "") ?? formulaError(piece.expr);
+    if (wrong) return wrong;
+    if ((piece.to ?? PARAM_RANGE[1]) <= (piece.from ?? PARAM_RANGE[0])) return "The parameter ends before it starts.";
+    return null;
+  }
+  const wrong = formulaError(piece.expr);
+  if (wrong) return wrong;
   if (piece.from !== undefined && piece.to !== undefined && piece.to <= piece.from) return "The piece ends before it starts.";
   return null;
 }
@@ -65,9 +84,10 @@ export interface Stretch {
   samples: number;
 }
 
-/** The pieces of a curve that can be drawn, each cut down to what the plot shows of it. */
+/** The pieces of a function that can be drawn, each cut down to what the plot shows of it. A curve given by a parameter has none: see paramStretches. */
 export function stretches(plot: Plot, curve: PlotCurve): Stretch[] {
   const out: Stretch[] = [];
+  if (curve.param) return out;
   const span = plot.x.max - plot.x.min;
   for (const piece of curve.pieces) {
     if (pieceError(piece) !== null || !piece.expr.trim()) continue;
@@ -108,6 +128,81 @@ export function runs(plot: Plot, s: Stretch, margin = 1): V[][] {
 export function restrictY(plot: Plot, margin = 1): [number, number] {
   const span = (plot.y.max - plot.y.min) * margin;
   return [plot.y.min - span, plot.y.max + span];
+}
+/** The same sideways, for a curve given by a parameter, which can leave the plot on any side. */
+export function restrictX(plot: Plot, margin = 1): [number, number] {
+  const span = (plot.x.max - plot.x.min) * margin;
+  return [plot.x.min - span, plot.x.max + span];
+}
+
+// ---- curves given by a parameter ----------------------------------------------------
+
+/** One stretch of a curve given by a parameter: x(t) and y(t) from t = from to t = to. */
+export interface ParamStretch {
+  x: Expr;
+  y: Expr;
+  from: number;
+  to: number;
+  /** How many values of the parameter it is drawn through; pgfplots is told the same number. */
+  samples: number;
+}
+
+/** The fewest and the most points a curve given by a parameter is drawn through. */
+const PARAM_SAMPLES: [number, number] = [97, 1201];
+
+/** The pieces of a curve given by a parameter that can be drawn. */
+export function paramStretches(plot: Plot, curve: PlotCurve): ParamStretch[] {
+  const out: ParamStretch[] = [];
+  if (!curve.param) return out;
+  const sx = plot.width / (plot.x.max - plot.x.min), sy = plot.height / (plot.y.max - plot.y.min);
+  const [xlo, xhi] = restrictX(plot), [ylo, yhi] = restrictY(plot);
+  for (const piece of curve.pieces) {
+    if (pieceError(piece, true) !== null || !piece.expr.trim() || !(piece.x ?? "").trim()) continue;
+    const x = readFormula(piece.x!) as Expr, y = readFormula(piece.expr) as Expr;
+    const from = piece.from ?? PARAM_RANGE[0], to = piece.to ?? PARAM_RANGE[1];
+    let samples = 2;
+    if (degree(x) > 1 || degree(y) > 1) {
+      // A point about every half millimetre along it: how long it is on paper is found from a first, coarser walk.
+      let length = 0, last: V | null = null;
+      for (let i = 0; i <= 480; i++) {
+        const t = from + ((to - from) * i) / 480;
+        const X = evaluate(x, t), Y = evaluate(y, t);
+        if (!(X >= xlo && X <= xhi && Y >= ylo && Y <= yhi)) { last = null; continue; }
+        if (last) length += Math.hypot((X - last[0]) * sx, (Y - last[1]) * sy);
+        last = [X, Y];
+      }
+      samples = Math.max(PARAM_SAMPLES[0], Math.min(PARAM_SAMPLES[1], Math.ceil(length * 2) + 1));
+    }
+    out.push({ x, y, from, to, samples });
+  }
+  return out;
+}
+
+/**
+ * The points a curve given by a parameter is drawn through, in runs. A value
+ * of the parameter where either formula has no value, or where the curve is
+ * more than the size of the plot outside it, ends a run.
+ */
+export function paramRuns(plot: Plot, s: ParamStretch): V[][] {
+  const [xlo, xhi] = restrictX(plot), [ylo, yhi] = restrictY(plot);
+  const out: V[][] = [];
+  let run: V[] = [];
+  for (let i = 0; i < s.samples; i++) {
+    const t = s.from + ((s.to - s.from) * i) / (s.samples - 1);
+    const X = evaluate(s.x, t), Y = evaluate(s.y, t);
+    if (X >= xlo && X <= xhi && Y >= ylo && Y <= yhi) run.push([X, Y]);
+    else {
+      if (run.length > 1) out.push(run);
+      run = [];
+    }
+  }
+  if (run.length > 1) out.push(run);
+  return out;
+}
+
+/** Whether a curve has anything that can be drawn, of either kind. */
+export function drawable(plot: Plot, curve: PlotCurve): boolean {
+  return curve.param ? paramStretches(plot, curve).length > 0 : stretches(plot, curve).length > 0;
 }
 
 /**

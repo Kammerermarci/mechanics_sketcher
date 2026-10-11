@@ -34,10 +34,11 @@ added underneath, and opens it in your own mail program to send; *Copy the
 text* is there for mail that is read in a browser. The address is
 `REPORT_EMAIL` in `src/config.ts`.
 
-The tools sit on two tabs. **Sketch** has what shapes the geometry: drawing
+The tools sit on three tabs. **Sketch** has what shapes the geometry: drawing
 tools, copying tools and constraints. **Annotate** has what is added to the
 figure: dimensions, supports, loads, axes, arrows, notes, centre marks, balloons,
-fills and hatching.
+fills and hatching. **Dynamics** has springs, dampers, the mark of a centre of
+mass and coordinates.
 
 1. **Draw.** Pick Line (L): one click starts a line, the next one ends it,
    and the click after that starts a new line, so four clicks give two
@@ -45,8 +46,9 @@ fills and hatching.
    near-vertical lines snap and get that constraint; hold Alt to switch
    snapping off. *Centre line* draws the same way but gives a thin
    dash-dotted line that is exported and does not close shapes for fills. A
-   selected line, circle or arc can be switched between solid, centre line
-   and helper (editor only, never exported) in the side panel. A slider
+   selected line, circle or arc can be switched between solid, dashed (a
+   hidden edge, a second position of a part), centre line and helper (editor
+   only, never exported) in the side panel. A slider
    there sets its *line thickness* in points, from 0.1 to 3; double-click it
    to go back to the standard (0.8 pt for a solid line, 0.6 pt for an arrow,
    0.4 pt for a centre line). The head of a thicker arrow grows with it.
@@ -174,11 +176,39 @@ fills and hatching.
      other way. Hatching belongs to the drawing: it keeps its strokes when
      you zoom, and neither size slider changes it.
 
+5. **Dynamics.** The Dynamics tab holds what a model that moves is drawn
+   with.
+   - *Spring* and *Damper:* two clicks, like a line. Each is a line of the
+     sketch drawn as that element between its two ends, so it stretches and
+     turns with them, and is constrained and dimensioned like a line. Type
+     its name (`k`, `c_1`) right away or later; drag the name to move it.
+     A spring is a zigzag or the loops of a coil. Its width and how far apart
+     its turns are belong to the drawing: a spring pulled longer gets more
+     turns, not wider ones. A damper is a rod with a piston in a cylinder;
+     the side panel sets its size and turns it round. New ones match the
+     first of their kind in the sketch.
+   - *Torsion spring:* a spiral. Click the joint it is wound about, then
+     where its outer end goes; drag that end to make the spiral larger. The
+     side panel sets how far apart its windings are and which way it winds.
+   - *Torsion damper:* a damper bent round a joint. Click the joint, where
+     the rod starts, sweep round and click where the cylinder ends.
+   - *Centre of mass:* a circle in quarters with a name (S), on a joint, on a
+     curve or anywhere. It is a datum point drawn another way: the side panel
+     switches between the two.
+   - *Coordinate:* an arrow that starts from a short bar, which marks where
+     it is measured from. For an angle, draw a curved arrow and tick *Starts
+     from a short bar* in the side panel.
+
+   Any selected line can also be made a spring, a damper or a torsion spring
+   under *Drawn as* in the side panel, and any arc a spring or a damper bent
+   round its centre. In the TikZ they are plain paths: no library is needed.
+
 **Text is typed where it stands.** Click a dimension's number, the name of
-an arrow or a datum point, a note, a balloon's text or an axis label, and a box opens
-on the spot; Enter accepts, Esc leaves it as it was. Pressing and dragging
-the same text moves it instead. Double-click an arrow or a datum point that
-has no name yet to give it one.
+an arrow, a spring, a damper or a datum point, a note, a balloon's text or an
+axis label, and a box opens on the spot; Enter accepts, Esc leaves it as it
+was. Pressing and dragging the same text moves it instead. Double-click an
+arrow, a spring, a damper or a datum point that has no name yet to give it
+one.
 
 **The middle mouse button confirms**, as in Creo: it places the dimension,
 accepts a typed value, drops a shape that is only half drawn, and with
@@ -293,6 +323,12 @@ sketch and any number of plots; undo, Save and Open take them along.
   tanh exp ln lg log2 sqrt abs sign floor ceil round min max`, `pi` and `e`
   are known. What cannot be read is said under the field while it is typed.
   Nothing typed is ever run as code.
+- **Parametric curves.** *Parametric* adds a curve given by x(t) and y(t)
+  over a range of t: a circle (`3cos(t)`, `3sin(t)`), a path, a phase
+  portrait. Where t starts and ends can be typed with pi, as `2pi`. *Fit
+  range* sets both axes when the plot holds nothing but such curves, and
+  *Same scale on both* makes one unit as long on either axis, so a circle
+  comes out round. Shaded, the area the curve goes round is filled.
 - **Pieces.** *Split into pieces* gives a function one formula for each
   stretch of the axis, as a shear force diagram has. Where two pieces meet at
   different values the jump is drawn as an upright line, unless that is
@@ -374,6 +410,8 @@ the curve stops, so the two sides of an asymptote are not joined.
 - `src/regions.ts`: finds the closed regions for fills, and the stretches
   where curves overlap.
 - `src/trim.ts`: where curves cross, and cutting a curve between crossings.
+- `src/element.ts`: springs and dampers: a line or an arc worked out as the
+  runs of straight pieces it is drawn with.
 - `src/beam.ts`: straight and curved beams: the lines and arcs of the
   outline and the constraints that hold its shape.
 - `src/pattern.ts`: mirror images and patterns. A copy is ordinary geometry;

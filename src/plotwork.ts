@@ -8,8 +8,10 @@ import { type Prim, primDistance } from "./prims";
 import { type View, toScreen, toModel, drawPrims } from "./render";
 import { figureBounds } from "./export";
 import {
-  PLOT, PLOT_COLORS, plotPrims, plotSvg, plotTikz, newPlot, newCurve, copyPlot, fitY, pieceError, toData, toPaper, curveLabelAt, stretches, tickStep,
+  PLOT, PLOT_COLORS, PARAM_RANGE, plotPrims, plotSvg, plotTikz, newPlot, newCurve, copyPlot, fitX, fitY, equalScales, pieceError, formulaError, readFormula,
+  toData, toPaper, curveLabelAt, drawable, tickStep,
 } from "./plot";
+import { evaluate, degree } from "./expr";
 import { icon } from "./icons";
 
 /** What the workspace needs from the app around it. */
@@ -58,6 +60,27 @@ function typed(text: string): number {
   const t = text.trim().replace(",", ".");
   return t === "" ? NaN : Number(t);
 }
+/**
+ * Where a parameter starts or ends, as typed: a number, or a formula with no
+ * variable in it such as 2pi or pi/2. NaN for anything else.
+ */
+function typedConstant(text: string): number {
+  const plain = typed(text);
+  if (Number.isFinite(plain) || !text.trim()) return plain;
+  const got = readFormula(text);
+  return typeof got === "string" || degree(got) > 0 ? NaN : evaluate(got, 0);
+}
+/** A value of a parameter as it is shown in its field: a round share of pi is written with pi, so that it reads back exactly. */
+function shownConstant(v: number): string {
+  const twelfths = (v / Math.PI) * 12;
+  if (v !== 0 && Math.abs(twelfths - Math.round(twelfths)) < 1e-9 && Math.abs(twelfths) <= 12 * 64) {
+    const k = Math.round(twelfths), g = gcd(Math.abs(k), 12);
+    const top = k / g, bottom = 12 / g;
+    return `${top === 1 ? "" : top === -1 ? "-" : top}pi${bottom === 1 ? "" : `/${bottom}`}`;
+  }
+  return shown(v);
+}
+const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
 /** A value moved onto a grid a hundred times finer than the size of `span`, so ranges keep short numbers. */
 function tidy(v: number, span: number): number {
   const g = 10 ** Math.floor(Math.log10(span)) / 100;
@@ -437,7 +460,8 @@ export class PlotWorkspace {
     const tool = (act: string, name: string, label: string, title: string, extra = "") =>
       `<button type="button" class="tool" data-pact="${act}" aria-label="${title}" title="${title}"${extra}>${icon(name, 22)}<span>${label}</span></button>`;
     return tool("new-plot", "plotnew", "New plot", "Start a new plot") +
-      tool("add-curve", "curve", "Function", "Add a function to this plot", off) +
+      tool("add-curve", "curve", "Function", "Add a function of x to this plot", off) +
+      tool("add-param", "param", "Parametric", "Add a curve given by x(t) and y(t): a circle, a path, a phase portrait", off) +
       `<span class="ribbon-rule"></span>` +
       tool("fit-y", "fity", "Fit range", "Set the vertical range so all of every function shows", off) +
       tool("fit-view", "fit", "Zoom to fit", "Bring the whole plot into view (0)", off) +
@@ -485,17 +509,20 @@ export class PlotWorkspace {
     }
     html += text("Name", "name", p.name, "For telling plots apart here; it is not part of the figure.");
 
-    html += `<h3>Functions</h3>`;
+    html += `<h3>Functions and curves</h3>`;
     p.curves.forEach((c, i) => {
       const open = c.id === this.selected;
       const first = c.pieces.find((x) => x.expr.trim())?.expr.trim();
-      const title = first ? `${first}${c.pieces.length > 1 ? " …" : ""}` : `Function ${i + 1}`;
+      const title = c.param
+        ? (c.pieces[0]?.x?.trim() || first ? `(${c.pieces[0]?.x?.trim() || "…"}; ${first ?? "…"})` : `Curve ${i + 1}`)
+        : first ? `${first}${c.pieces.length > 1 ? " …" : ""}` : `Function ${i + 1}`;
       html += `<section class="fn${open ? " open" : ""}">` +
         `<button type="button" class="fn-head" data-pact="select-curve" data-id="${c.id}" aria-expanded="${open}"><span class="fn-dot" style="background:${esc(c.color)}"></span><span class="fn-title">${esc(title)}</span></button>`;
       if (open) html += this.curveHtml(p, c);
       html += `</section>`;
     });
-    html += `<button type="button" class="plain" data-pact="add-curve">Add a function</button>`;
+    html += `<div class="btn-row"><button type="button" class="plain" data-pact="add-curve">Add a function</button>` +
+      `<button type="button" class="plain" data-pact="add-param" title="A curve given by x(t) and y(t)">Add a parametric curve</button></div>`;
 
     html += `<h3>Axes</h3>`;
     html += text("Name of the horizontal axis", "x.label", p.x.label, "", "x");
@@ -503,7 +530,8 @@ export class PlotWorkspace {
       `<small class="under">Dragging a handle on the plot pulls the axis out or in on that side.</small>`;
     html += text("Name of the vertical axis", "y.label", p.y.label, "Names are written as TeX math, such as M_h or v\\,[\\mathrm{m/s}]. Leave one empty for none.", "y");
     html += pair("It runs from", "y.min", "y.max", shown(p.y.min), shown(p.y.max));
-    html += `<button type="button" class="plain" data-pact="fit-y">Fit it to the functions</button>`;
+    html += `<div class="btn-row"><button type="button" class="plain" data-pact="fit-y">Fit it to the functions</button>` +
+      `<button type="button" class="plain" data-pact="equal" title="The same length on paper for one unit on either axis, so that a circle is round">Same scale on both</button></div>`;
     html += choice("Drawn as", "frame", [["cross", "Arrows", p.frame !== "box"], ["box", "Box", p.frame === "box"]]);
     html += choice("Ticks", "ticks", [["numbers", "Numbers", p.ticks === undefined], ["marks", "Marks", p.ticks === "marks"], ["none", "None", p.ticks === "none"]]);
     html += pair("A tick every", "x.step", "y.step", p.x.step === undefined ? "" : shown(p.x.step), p.y.step === undefined ? "" : shown(p.y.step), "across,") +
@@ -517,9 +545,26 @@ export class PlotWorkspace {
     return html;
   }
 
+  /** The fields of a curve given by a parameter: its two formulas and what the parameter runs over. */
+  private paramHtml(c: PlotCurve): string {
+    const piece = c.pieces[0];
+    const bad = { x: formulaError(piece.x ?? ""), y: formulaError(piece.expr) };
+    const err = pieceError(piece, true);
+    const formula = (name: string, pf: string, value: string, wrong: string | null, hint: string) =>
+      `<label class="pair formula"><span>${name}</span><input data-pf="${pf}" data-i="0" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" class="${wrong ? "bad" : ""}" value="${esc(value)}" placeholder="${hint}" aria-label="${name.replace(" =", "")}"></label>`;
+    return `<div class="piece">` +
+      formula("x(t) =", "xexpr", piece.x ?? "", bad.x, "3cos(t)") +
+      formula("y(t) =", "expr", piece.expr, bad.y, "3sin(t)") +
+      `<span class="pair small"><span>t from</span><input data-pf="from" data-i="0" type="text" autocomplete="off" value="${shownConstant(piece.from ?? PARAM_RANGE[0])}" aria-label="The parameter starts at">` +
+      `<span>to</span><input data-pf="to" data-i="0" type="text" autocomplete="off" value="${shownConstant(piece.to ?? PARAM_RANGE[1])}" aria-label="The parameter ends at"></span>` +
+      `<small class="piece-msg${err ? " bad" : ""}">${esc(err ?? "")}</small></div>` +
+      `<p class="muted note-block">The parameter is t. Where it starts and ends can be typed with pi, as 2pi or pi/2. Use + - * / ^ and brackets; sin, cos, tan, exp, ln, lg, sqrt, abs and pi are known. For a circle to come out round, press Same scale on both under Axes.</p>`;
+  }
+
   private curveHtml(p: Plot, c: PlotCurve): string {
     let html = "";
-    c.pieces.forEach((piece, i) => {
+    if (c.param) html += this.paramHtml(c);
+    else c.pieces.forEach((piece, i) => {
       const err = pieceError(piece);
       const range = c.pieces.length > 1 || piece.from !== undefined || piece.to !== undefined;
       html += `<div class="piece">` +
@@ -529,8 +574,10 @@ export class PlotWorkspace {
           (c.pieces.length > 1 ? `<button type="button" class="icon-btn" data-pact="del-piece" data-i="${i}" aria-label="Remove piece ${i + 1}" title="Remove this piece">${icon("close", 16)}</button>` : "") + `</span>` : "") +
         `<small class="piece-msg${err ? " bad" : ""}">${esc(err ?? "")}</small></div>`;
     });
-    html += `<button type="button" class="plain" data-pact="add-piece">${c.pieces.length > 1 ? "Add a piece" : "Split into pieces"}</button>`;
-    html += `<p class="muted note-block">The variable is x (or t). Use + - * / ^ and brackets; sin, cos, tan, exp, ln, lg, sqrt, abs and pi are known. A function in pieces has one formula for each stretch of the axis, as an internal force diagram does.</p>`;
+    if (!c.param) {
+      html += `<button type="button" class="plain" data-pact="add-piece">${c.pieces.length > 1 ? "Add a piece" : "Split into pieces"}</button>`;
+      html += `<p class="muted note-block">The variable is x (or t). Use + - * / ^ and brackets; sin, cos, tan, exp, ln, lg, sqrt, abs and pi are known. A function in pieces has one formula for each stretch of the axis, as an internal force diagram does.</p>`;
+    }
     html += `<label class="field"><span>Name</span><input data-pf="label" type="text" spellcheck="false" autocomplete="off" value="${esc(c.label ?? "")}" placeholder="M(x), v_1">` +
       `<small>Written as TeX math and set beside the curve; drag it on the plot to move it.${c.lx !== undefined ? ` <button type="button" class="linkish" data-pact="name-back">Put it back beside the curve</button>` : ""}</small></label>`;
     html += `<div class="field"><span id="pl-colour">Colour</span><div class="swatches" role="group" aria-labelledby="pl-colour">${PLOT_COLORS.map((col) =>
@@ -540,9 +587,9 @@ export class PlotWorkspace {
     html += `<label class="field"><span>Line thickness</span><span class="slider-row"><input data-pf="weight" type="range" min="${WEIGHT_MIN}" max="${WEIGHT_MAX}" step="0.1" value="${weight}"><output>${shown(weight)} pt</output></span></label>`;
     html += `<div class="field"><span id="pl-dash">Line</span><div class="segmented" role="group" aria-labelledby="pl-dash">${([["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"]] as const).map(([v, name]) =>
       `<button type="button" data-pact="dash" data-v="${v}" aria-pressed="${(c.dash ?? "solid") === v}">${name}</button>`).join("")}</div></div>`;
-    html += `<label class="check"><input data-pf="fill" type="checkbox"${c.fill ? " checked" : ""}><span>Shade down to the axis</span></label>`;
-    if (c.pieces.length > 1) html += `<label class="check"><input data-pf="join" type="checkbox"${c.join !== false ? " checked" : ""}><span>Draw the jumps between pieces</span></label>`;
-    html += `<button type="button" class="danger" data-pact="del-curve">Delete this function</button>`;
+    html += `<label class="check"><input data-pf="fill" type="checkbox"${c.fill ? " checked" : ""}><span>${c.param ? "Shade the inside" : "Shade down to the axis"}</span></label>`;
+    if (c.pieces.length > 1 && !c.param) html += `<label class="check"><input data-pf="join" type="checkbox"${c.join !== false ? " checked" : ""}><span>Draw the jumps between pieces</span></label>`;
+    html += `<button type="button" class="danger" data-pact="del-curve">Delete this ${c.param ? "curve" : "function"}</button>`;
     return html;
   }
 
@@ -570,13 +617,23 @@ export class PlotWorkspace {
         this.selected = newCurve(sk, p).id;
         this.focusNext = "expr|0";
         return this.host.commit();
+      case "add-param":
+        this.selected = newCurve(sk, p, true).id;
+        this.focusNext = "xexpr|0";
+        return this.host.commit();
+      case "equal": {
+        const { x, y } = equalScales(p);
+        [p.x.min, p.x.max] = x;
+        [p.y.min, p.y.max] = y;
+        return this.host.commit();
+      }
       case "del-curve":
         if (!c) return;
         p.curves = p.curves.filter((x) => x !== c);
         this.selected = null;
         return this.host.commit();
       case "add-piece": {
-        if (!c) return;
+        if (!c || c.param) return;
         // The new piece takes over where the last one ends; a piece with no end is cut in the middle of what it covers.
         const last = c.pieces[c.pieces.length - 1];
         const from = Math.max(last.from ?? p.x.min, p.x.min);
@@ -620,8 +677,11 @@ export class PlotWorkspace {
         else p.grid = ds.v as "lines" | "dots";
         return this.host.commit();
       case "fit-y": {
+        // With nothing but curves given by a parameter in the plot, the horizontal range is theirs to set as well.
+        const across = fitX(p);
+        if (across) [p.x.min, p.x.max] = across;
         const range = fitY(p);
-        if (!range) return this.host.toast(p.curves.some((x) => stretches(p, x).length) ? "These functions have no values to fit the range to." : "There is no function to fit the range to yet.");
+        if (!range) return this.host.toast(p.curves.some((x) => drawable(p, x)) ? "These functions have no values to fit the range to." : "There is no function to fit the range to yet.");
         [p.y.min, p.y.max] = range;
         return this.host.commit();
       }
@@ -700,13 +760,23 @@ export class PlotWorkspace {
     const c = this.curve();
     if (!c) return;
     const piece = c.pieces[Number(input.dataset.i)];
-    if (pf === "expr" && piece) {
-      piece.expr = input.value;
+    if ((pf === "expr" || pf === "xexpr") && piece) {
+      if (pf === "xexpr") piece.x = input.value;
+      else piece.expr = input.value;
       // While it is typed, what is wrong with it shows under the field, which is left alone.
-      const err = pieceError(piece);
-      input.classList.toggle("bad", !!err);
-      const msg = input.parentElement?.querySelector(".piece-msg");
+      const err = pieceError(piece, c.param);
+      input.classList.toggle("bad", c.param ? !!formulaError(input.value) : !!err);
+      const msg = input.closest(".piece")?.querySelector(".piece-msg");
       if (msg) { msg.textContent = err ?? ""; msg.classList.toggle("bad", !!err); }
+      return done();
+    }
+    if ((pf === "from" || pf === "to") && piece && c.param) {
+      if (live) return;
+      const t = typedConstant(input.value);
+      if (!Number.isFinite(t)) return refuse("Where the parameter starts and ends are numbers; pi can be used, as in 2pi.");
+      const [from, to] = pf === "from" ? [t, piece.to ?? PARAM_RANGE[1]] : [piece.from ?? PARAM_RANGE[0], t];
+      if (!(to > from)) return refuse("The parameter runs from a smaller number to a larger one.");
+      piece[pf] = t;
       return done();
     }
     if ((pf === "from" || pf === "to") && piece) {

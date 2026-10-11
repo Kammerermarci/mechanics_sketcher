@@ -635,6 +635,12 @@ dialog.welcome h2 { font-size: 21px; margin-bottom: 6px; }
 .pair input { flex: 1 1 0; width: 0; font-variant-numeric: tabular-nums; }
 .pair > span { flex: none; color: var(--ink-2); font-size: 13px; }
 .pair.small input { height: 28px; }
+.pair.formula > span { min-width: 3.9em; white-space: nowrap; font-family: var(--mono, ui-monospace, "Cascadia Mono", Consolas, monospace); }
+.pair.formula input { font-family: var(--mono, ui-monospace, "Cascadia Mono", Consolas, monospace); font-size: 13.5px; }
+.pair.formula input.bad { border-color: var(--bad); }
+.btn-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.btn-row .plain { width: auto; flex: 1 1 auto; margin: 0; }
+.btn-row .plain + .plain { margin-top: 0; }
 .pair .icon-btn { flex: none; width: 26px; height: 26px; }
 .field + small.under { display: block; margin: -7px 0 11px; color: var(--ink-2); font-size: 13px; }
 .panel select { width: 100%; }

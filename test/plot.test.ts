@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { emptySketch, serialize, deserialize, type Plot, type PlotCurve } from "../src/model";
 import {
   PLOT, niceStep, tickValues, tickText, stretches, runs, uprights, plotPrims, plotSvg, plotTikz, fitY, newPlot, newCurve, copyPlot,
-  pieceError, toPaper, toData, curveLabelAt, axisCross,
+  pieceError, toPaper, toData, curveLabelAt, axisCross, paramStretches, paramRuns, drawable, formulaError, fitX, equalScales, PARAM_RANGE,
 } from "../src/plot";
 import { PAPER, PT_MM, type Prim } from "../src/prims";
 import { primsToTikz } from "../src/export";
@@ -303,5 +303,122 @@ describe("plots in a sketch", () => {
     p.curves[0].pieces = [{ expr: "4 + x" }];
     p.curves[0].fill = true;
     expect(fitY(p)![0]).toBeLessThanOrEqual(0);
+  });
+});
+
+describe("a curve given by a parameter", () => {
+  const circle = (more: Partial<PlotCurve> = {}): Partial<PlotCurve> => ({ param: true, pieces: [{ x: "2cos(t)", expr: "2sin(t)", from: 0, to: 2 * Math.PI }], ...more });
+
+  it("is drawn through x(t) and y(t), a point about every half millimetre along it", () => {
+    const p = plot([circle()], { x: { min: -3, max: 3, label: "x" }, y: { min: -2.5, max: 2.5, label: "y" }, height: 50 });
+    // It is not a function of x, so it has none of the stretches a function has.
+    expect(stretches(p, p.curves[0])).toEqual([]);
+    const [s] = paramStretches(p, p.curves[0]);
+    expect(s).toMatchObject({ from: 0, to: 2 * Math.PI });
+    // A circle of radius 2 at 10 mm to the unit is about 126 mm round.
+    expect(s.samples).toBeGreaterThan(245);
+    expect(s.samples).toBeLessThan(260);
+    const [run] = paramRuns(p, s);
+    expect(run).toHaveLength(s.samples);
+    for (const [x, y] of run) expect(Math.hypot(x, y)).toBeCloseTo(2, 9);
+    expect(run[0]).toEqual([2, 0]);
+    expect(run[run.length - 1][0]).toBeCloseTo(2, 9);
+    // On paper it goes round the middle of the plot, 20 mm out.
+    const [path] = paths(plotPrims(p));
+    for (const [X, Y] of path.pts) expect(Math.hypot(X - 30, Y - 25)).toBeCloseTo(20, 6);
+    expect(path).toMatchObject({ ink: RED, stroke: "member" });
+    expect(drawable(p, p.curves[0])).toBe(true);
+  });
+
+  it("draws a straight stretch through its two ends only, and breaks where a formula has no value", () => {
+    const p = plot([{ param: true, pieces: [{ x: "1 + t", expr: "2t - 1", from: 0, to: 1 }] }]);
+    expect(paramStretches(p, p.curves[0])[0].samples).toBe(2);
+    expect(paths(plotPrims(p))[0].pts).toEqual([[20, 8], [30, 24]]);
+    // 1/t has no value at 0, and runs far out of the plot on either side of it.
+    p.curves[0].pieces = [{ x: "t", expr: "1/t", from: -1, to: 1 }];
+    const parts = paramRuns(p, paramStretches(p, p.curves[0])[0]);
+    expect(parts).toHaveLength(2);
+    expect(parts[0][parts[0].length - 1][0]).toBeLessThan(0);
+    expect(parts[1][0][0]).toBeGreaterThan(0);
+  });
+
+  it("says what is wrong with either formula, or with where the parameter runs", () => {
+    expect(pieceError({ x: "cos(t", expr: "sin(t)" }, true)).toBeTruthy();
+    expect(pieceError({ x: "cos(t)", expr: "sin(t) +" }, true)).toBeTruthy();
+    expect(pieceError({ x: "cos(t)", expr: "sin(t)", from: 3, to: 1 }, true)).toBe("The parameter ends before it starts.");
+    expect(pieceError({ x: "cos(t)", expr: "sin(t)" }, true)).toBeNull();
+    expect(formulaError("")).toBeNull();
+    // Half typed, there is nothing to draw yet and nothing wrong either.
+    const p = plot([{ param: true, pieces: [{ x: "cos(t)", expr: "" }] }]);
+    expect(paramStretches(p, p.curves[0])).toEqual([]);
+    expect(drawable(p, p.curves[0])).toBe(false);
+    expect(paths(plotPrims(p))).toEqual([]);
+    // With no range given, the parameter goes once round.
+    p.curves[0].pieces[0].expr = "sin(t)";
+    expect(paramStretches(p, p.curves[0])[0]).toMatchObject({ from: PARAM_RANGE[0], to: PARAM_RANGE[1] });
+  });
+
+  it("is shaded inside, and named two thirds of the way along it", () => {
+    const p = plot([circle({ fill: true, label: "C" })], { x: { min: -3, max: 3, label: "x" }, y: { min: -2.5, max: 2.5, label: "y" }, height: 50 });
+    const prims = plotPrims(p);
+    const region = prims.find((q) => q.k === "region")!;
+    expect(prims.indexOf(region)).toBe(0);
+    // The area the curve goes round: no corner of it is down on the axis, as under a function.
+    const outline = region.k === "region" && region.outlines[0].kind === "path" ? [region.outlines[0].start, ...region.outlines[0].segs.map((s) => s.to)] : [];
+    for (const [X, Y] of outline) expect(Math.hypot(X - 30, Y - 25)).toBeCloseTo(20, 6);
+    // 66 % of the way round is at 238 degrees, where the name goes just above the curve.
+    const at = curveLabelAt(p, p.curves[0])!;
+    expect(Math.abs((Math.atan2(at[1] - PLOT.labelRise / 10, at[0]) * 180) / Math.PI + 122.4)).toBeLessThan(1.5);
+  });
+
+  it("is written for pgfplots as a pair of formulas over the parameter's range", () => {
+    const p = plot([circle({ fill: true }), { pieces: [{ expr: "x/2" }], color: "#1565c0" }]);
+    const tikz = plotTikz(p);
+    const pen = "draw={rgb,255:red,211;green,47;blue,47}, line width=0.8pt";
+    const [s] = paramStretches(p, p.curves[0]);
+    const along = `domain=0:6.28318530718, samples=${s.samples}, restrict x to domain=-7:11`;
+    // pgfplots calls the parameter x.
+    expect(tikz).toContain(`\\addplot[${pen}, ${along}] ({2*cos(x)}, {2*sin(x)});`);
+    expect(tikz).toContain(`\\addplot[draw=none, fill={rgb,255:red,248;green,222;blue,222}, ${along}, on layer=axis background] ({2*cos(x)}, {2*sin(x)}) -- cycle;`);
+    expect(tikz).toContain("set layers,");
+    // The function beside it is written as it always was.
+    expect(tikz).toContain("domain=-1:5, samples=2] {x/2};");
+  });
+
+  it("sets both ranges when the plot holds nothing else, and gives the axes one scale so a circle is round", () => {
+    const p = plot([circle()]);
+    expect(fitX(p)).toEqual([-2.5, 2.5]);
+    [p.x.min, p.x.max] = fitX(p)!;
+    expect(fitY(p)).toEqual([-2.5, 2.5]);
+    [p.y.min, p.y.max] = fitY(p)!;
+    // 60 mm by 40 mm: the height is the tighter fit, so the horizontal range is widened about its middle.
+    expect(equalScales(p)).toEqual({ x: [-3.75, 3.75], y: [-2.5, 2.5] });
+    // Already equal: left as it is, to the last digit.
+    [p.x.min, p.x.max] = equalScales(p).x;
+    expect(equalScales(p)).toEqual({ x: [-3.75, 3.75], y: [-2.5, 2.5] });
+    // A function of x is drawn over whatever range the axis has: with one in the plot the horizontal range is left alone.
+    p.curves.push({ id: "f9", color: RED, pieces: [{ expr: "x" }] });
+    expect(fitX(p)).toBeNull();
+    // Of the circle, only what lies over the horizontal range counts for the vertical one.
+    p.x = { min: 0, max: 1, label: "x" };
+    p.curves.pop();
+    const [lo, hi] = fitY(p)!;
+    expect(lo).toBeLessThanOrEqual(-2);
+    expect(hi).toBeGreaterThanOrEqual(2);
+  });
+
+  it("is made with a parameter that goes once round, and kept through a file", () => {
+    const sk = emptySketch();
+    const p = newPlot(sk);
+    const c = newCurve(sk, p, true);
+    expect(c).toMatchObject({ param: true, pieces: [{ x: "", expr: "", from: 0, to: 2 * Math.PI }] });
+    c.pieces[0].x = "cos(t)";
+    c.pieces[0].expr = "sin(t)";
+    const back = deserialize(serialize(sk));
+    expect(back.plots).toEqual(sk.plots);
+    // A file whose x(t) is not text is passed over, like any other damaged plot.
+    const raw = JSON.parse(serialize(sk));
+    raw.plots[0].curves[1].pieces[0].x = 5;
+    expect(deserialize(JSON.stringify(raw)).plots).toBeUndefined();
   });
 });

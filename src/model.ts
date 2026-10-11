@@ -485,13 +485,20 @@ export interface Sketch {
 
 // ---- plots ------------------------------------------------------------------
 
-/** One stretch of a plotted function: its formula, and where along the horizontal axis it holds. No end given: as far as the plot goes. */
-export interface PlotPiece { expr: string; from?: number; to?: number }
+/**
+ * One stretch of a plotted function: its formula, and where along the
+ * horizontal axis it holds. No end given: as far as the plot goes. For a
+ * curve given by a parameter, `expr` is y(t), `x` is x(t), and it holds from
+ * t = `from` to t = `to`.
+ */
+export interface PlotPiece { expr: string; from?: number; to?: number; x?: string }
 export type PlotDash = "dashed" | "dotted";
 /** A function drawn in a plot, in one piece or several, as an internal force diagram is. */
 export interface PlotCurve {
   id: Id;
   pieces: PlotPiece[];
+  /** A curve given by a parameter, x(t) and y(t), instead of a function of x: a circle, a path, a phase portrait. */
+  param?: boolean;
   color: string;
   /** Line thickness in points. Unset: that of a member. */
   weight?: number;
@@ -499,7 +506,7 @@ export interface PlotCurve {
   dash?: PlotDash;
   /** False leaves a jump between two pieces open; otherwise it is drawn as an upright line. */
   join?: boolean;
-  /** The area between the curve and the horizontal axis is shaded. */
+  /** The area between the curve and the horizontal axis is shaded; for a curve given by a parameter, the area it goes round. */
   fill?: boolean;
   /** Its name, written as TeX math, and where the middle of the name sits in the plot's own coordinates. Unset: beside the curve. */
   label?: string;
@@ -890,7 +897,7 @@ function upgradeV1(raw: SketchV1, entities: Entity[]): Pick<Sketch, "constraints
 function isPlot(p: Plot): boolean {
   const axis = (a: PlotAxis) => !!a && Number.isFinite(a.min) && Number.isFinite(a.max) && a.max > a.min && typeof a.label === "string";
   return !!p && typeof p.id === "string" && Array.isArray(p.curves) && axis(p.x) && axis(p.y) && p.width > 0 && p.height > 0 &&
-    p.curves.every((c) => !!c && typeof c.id === "string" && Array.isArray(c.pieces) && c.pieces.every((x) => !!x && typeof x.expr === "string"));
+    p.curves.every((c) => !!c && typeof c.id === "string" && Array.isArray(c.pieces) && c.pieces.every((x) => !!x && typeof x.expr === "string" && (x.x === undefined || typeof x.x === "string")));
 }
 
 export function deserialize(text: string): Sketch {

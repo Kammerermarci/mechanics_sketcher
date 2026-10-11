@@ -250,6 +250,16 @@ describe("a diagram in the figure", () => {
     expect(buildPrims(plain, 10, { editor: false }).filter((p) => p.ref === on(plain, l).id).some((p) => p.part === "zero")).toBe(false);
   });
 
+  it("lays the functions of its plot along the member, and passes over a curve given by a parameter", () => {
+    const { sk, l, plot } = setup();
+    plot.curves.push({ id: "f2", color: RED, param: true, pieces: [{ x: "cos(t)", expr: "sin(t)", from: 0, to: 6 }] });
+    const d = on(sk, l);
+    const shape = diagramShape(sk, d)!;
+    expect(shape.parts.map((p) => p.lines.length)).toEqual([1, 0]);
+    expect(plotPeak(plot)).toBe(10);
+    expect(of(sk, d.id).filter((p) => p.k === "path")).toHaveLength(1);
+  });
+
   it("goes with what it is on and with its plot", () => {
     const { sk, l } = setup();
     const d = on(sk, l);
