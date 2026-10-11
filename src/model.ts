@@ -78,6 +78,7 @@ export interface Parallel { id: Id; type: "parallel"; l1: Id; l2: Id }
 export interface Perpendicular { id: Id; type: "perpendicular"; l1: Id; l2: Id }
 /** Equal length for two lines, equal radius for circles and arcs. */
 export interface Equal { id: Id; type: "equal"; a: Id; b: Id }
+/** A line touching a circle or arc; or, with a circle or arc in the place of the line, two of those touching each other. */
 export interface Tangent { id: Id; type: "tangent"; l: Id; c: Id }
 export interface Fixed { id: Id; type: "fixed"; p: Id }
 
@@ -325,6 +326,8 @@ export interface LineLoad {
   pull?: boolean;
   /** How many arrows it is drawn with. */
   count: number;
+  /** Drawn without the shading between the line and the envelope. */
+  plain?: boolean;
   label: string;
   color: string;
   dx?: number;
@@ -397,6 +400,8 @@ export interface Sketch {
    * load of that kind is placed.
    */
   loadScale?: Partial<Record<LoadKind, number>>;
+  /** How large supports are drawn, against their standard size. It scales the supports and nothing else. Unset: 1. */
+  supportScale?: number;
 }
 
 /**
@@ -778,6 +783,7 @@ export function deserialize(text: string): Sketch {
     dimScale,
     showOrigin: raw.showOrigin ?? true,
     ...(raw.loadScale && typeof raw.loadScale === "object" ? { loadScale: raw.loadScale } : {}),
+    ...(typeof raw.supportScale === "number" && raw.supportScale > 0 ? { supportScale: raw.supportScale } : {}),
   };
 }
 

@@ -169,7 +169,17 @@ export function layoutGlyphs(sk: Sketch, view: View, show: (c: Constraint) => bo
       case "turn": atPoint(c, c.c); break;
       case "tangent": {
         const l = entity(sk, c.l), round = entity(sk, c.c);
-        if (l?.type !== "line" || !round || round.type === "point" || round.type === "line") break;
+        if (!l || !round || round.type === "point" || round.type === "line" || l.type === "point") break;
+        if (l.type !== "line") {
+          // Two circles or arcs: where they touch, on the rim of the second towards the first.
+          const from = point(sk, round.c), to = point(sk, l.c);
+          const r = round.type === "circle" ? round.r : arcRadius(sk, round);
+          const gap = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+          const dir: V = [(to.x - from.x) / gap, (to.y - from.y) / gap];
+          const touch = toScreen(view, [from.x + dir[0] * r, from.y + dir[1] * r]);
+          place(c, touch, [dir[0], -dir[1]], [1, 0]);
+          break;
+        }
         const centre = S(round.c);
         const touch = projectOnSegment(centre, S(l.p1), S(l.p2)).point;
         place(c, touch, norm(sub(touch, centre)), [1, 0]);

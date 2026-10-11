@@ -151,6 +151,30 @@ describe("symbols", () => {
     expect(big && big.k === "poly" && big.pts[0][1] - big.pts[1][1]).toBeCloseTo(PAPER.pinHeight);
   });
 
+  it("scales the supports, and only them, by the sketch's support size", () => {
+    const sk = emptySketch();
+    const a = addPoint(sk, 2, 1), b = addPoint(sk, 6, 1);
+    const pin = addSupport(sk, "pin", a.id), roller = addSupport(sk, "roller", b.id);
+    const line = addLine(sk, a.id, b.id);
+    const frame = addSymbol(sk, { type: "frame", x: 0, y: 0, angle: 0, xLabel: "x", yLabel: "y", xSize: 1, ySize: 1 });
+    const before = buildPrims(sk, 10, { editor: false });
+    sk.supportScale = 2;
+    const after = buildPrims(sk, 10, { editor: false });
+    const tri = of(after, pin.id).find((p) => p.k === "poly");
+    expect(tri).toMatchObject({ pts: [[20, 10], [20 - 2 * PAPER.supportHalfWidth, 10 - 2 * PAPER.pinHeight], [20 + 2 * PAPER.supportHalfWidth, 10 - 2 * PAPER.pinHeight]] });
+    // As many ground strokes as before, twice as far apart; the roller's wheels and the hinge grow too.
+    const strokes = (prims: Prim[]) => of(prims, pin.id).filter((p) => p.k === "line" && p.stroke === "hatch").length;
+    expect(strokes(after)).toBe(strokes(before));
+    const radii = (prims: Prim[]) => of(prims, roller.id).flatMap((p) => (p.k === "circle" ? [p.r] : []));
+    expect(radii(after)).toEqual(radii(before).map((r) => 2 * r));
+    // Nothing else changes.
+    for (const id of [line.id, frame.id]) expect(of(after, id)).toEqual(of(before, id));
+    // It is kept in the file, and an older file has none.
+    expect(deserialize(serialize(sk)).supportScale).toBe(2);
+    delete sk.supportScale;
+    expect("supportScale" in deserialize(serialize(sk))).toBe(false);
+  });
+
   it("turns a support with its angle", () => {
     const sk = emptySketch();
     const a = addPoint(sk, 0, 0);

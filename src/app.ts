@@ -33,8 +33,9 @@ import { icon } from "./icons";
 import { EXPORT_WAIT_SECONDS, REPORT_EMAIL, SUPPORT_URL } from "./config";
 import { type ReportKind, composeReport } from "./report";
 import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
+import { type BeamEnds, straightBeam, curvedBeam } from "./beam";
 
-type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam";
+type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam" | "arcbeam";
 type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "note" | "load" | "lineload" | "moment";
 /** Tools that copy what is selected and take one more click to say how: about which line, around which point. */
 type CopyTool = "mirror" | "turn";
@@ -43,8 +44,6 @@ type Command =
   | "midpoint" | "tangent" | "fixed" | "dimension";
 /** A constraint or the dimension command is a tool too: pick it, then the geometry. */
 type Tool = "select" | DrawTool | "trim" | CopyTool | SymbolTool | Command;
-/** What a beam's ends look like: half-circles, as on a slot, or cut off square. */
-type BeamEnds = "round" | "square";
 /** Sketch holds what shapes the geometry; Annotate what is added to the figure. */
 type Tab = "sketch" | "annotate";
 
@@ -66,6 +65,8 @@ type Pending =
   | { tool: "arc"; center: Snap; start?: Snap; sweep: number; lastAng: number }
   /** A beam: its two centres are clicked first, then how wide it is. */
   | { tool: "beam"; a: Snap; b?: Snap }
+  /** A curved beam: the centre of the bend, where it starts, where it ends after the sweep, then how wide it is. */
+  | { tool: "arcbeam"; center: Snap; start?: Snap; end?: Snap; sweep: number; lastAng: number }
   /** A balloon whose leader has been anchored and whose circle is still to be placed. */
   | { tool: "balloon"; anchor: Snap };
 
@@ -130,6 +131,7 @@ const TOOLS: ToolDef[] = [
   { id: "arc", label: "Arc", key: "A", icon: "arc", tab: "sketch", group: 1 },
   { id: "point", label: "Point", key: "P", icon: "point", tab: "sketch", group: 1 },
   { id: "beam", label: "Beam", icon: "beam", tab: "sketch", group: 1 },
+  { id: "arcbeam", label: "Curved beam", short: "Curved", icon: "arcbeam", tab: "sketch", group: 1 },
   { id: "trim", label: "Trim", key: "X", icon: "trim", tab: "sketch", group: 2 },
   { id: "mirror", label: "Mirror", icon: "mirror", tab: "sketch", group: 2 },
   { id: "shift", label: "Linear pattern", short: "Linear", icon: "shift", tab: "sketch", group: 2 },
@@ -141,7 +143,7 @@ const TOOLS: ToolDef[] = [
   { id: "equal", label: "Equal", key: "E", icon: "equal", tab: "sketch", group: 3, need: "two lines, or two circles" },
   { id: "coincident", label: "Coincident", key: "O", icon: "coincident", tab: "sketch", group: 3, need: "two points, or a point and a line or circle" },
   { id: "midpoint", label: "Midpoint", key: "M", icon: "midpoint", tab: "sketch", group: 3, need: "a point and a line" },
-  { id: "tangent", label: "Tangent", key: "T", icon: "tangent", tab: "sketch", group: 3, need: "a line and a circle or arc" },
+  { id: "tangent", label: "Tangent", key: "T", icon: "tangent", tab: "sketch", group: 3, need: "a line and a circle or arc, or two circles or arcs" },
   { id: "fixed", label: "Fix point", key: "F", icon: "fixed", tab: "sketch", group: 3, need: "a point" },
 
   { id: "dimension", label: "Dimension", key: "D", icon: "dimension", tab: "annotate", group: 1, need: "a line, two points, two lines, or a circle" },
@@ -177,6 +179,8 @@ const RELATION_NAMES: Record<string, string> = {
   tangent: "Tangent", fixed: "Fixed point", distance: "Distance", angle: "Angle", radius: "Radius",
   mirror: "Mirror image", shift: "Linear pattern", turn: "Circular pattern",
 };
+/** How far the supports can be scaled against the other symbols, in per cent. */
+const SUPPORT_SCALE_MIN = 30, SUPPORT_SCALE_MAX = 300;
 const SUPPORT_NAMES: Record<SupportKind, string> = { pin: "Pin support", roller: "Roller support", fixed: "Fixed support" };
 /** Fill colours offered as swatches: light tones that print well under black lines. */
 const FILL_COLORS = ["#d5dbe1", "#eceff1", "#f6d9a8", "#f4b6a6", "#b9d7ee", "#bfe3c4", "#d9c8ea", "#8f9aa3"];
@@ -681,6 +685,10 @@ export class App {
       case "beam":
         if (p?.tool !== "beam") return `Click where the beam starts: a joint, or anywhere. ${done}`;
         return p.b ? "Move away from the beam's middle line to set how wide it is, then click." : "Click where the beam ends. Hold Alt to switch snapping off.";
+      case "arcbeam":
+        if (p?.tool !== "arcbeam") return `Click the centre the beam bends round. ${done}`;
+        if (!p.start) return "Click where the beam starts.";
+        return p.end ? "Move towards or away from the centre to set how wide the beam is, then click." : "Sweep around the centre, then click where the beam ends.";
       case "mirror": return "Click the line to mirror the selection about. A helper line or a centre line does well. Esc cancels.";
       case "turn": return "Click the point the copies go around: a joint, a circle to use its centre, or anywhere. Esc cancels.";
       case "note": return `Click where the note should start, then type it. ${done}`;
@@ -757,6 +765,34 @@ export class App {
           pv.arcs.push({ c: p.a.pos, r: shape.r, a0: up, a1: up + Math.PI }, { c: p.b.pos, r: shape.r, a0: up - Math.PI, a1: up });
         }
       }
+      return pv;
+    }
+    if (p.tool === "arcbeam") {
+      const C = p.center.pos;
+      pv.points.push(C);
+      if (!p.start) {
+        pv.lines.push([C, snap.pos]);
+        return pv;
+      }
+      if (!p.start.pointId) pv.points.push(p.start.pos);
+      const R = dist(C, p.start.pos);
+      const a0 = angleOf(sub(p.start.pos, C));
+      const a1 = angleOf(sub((p.end ?? snap).pos, C));
+      // Counter-clockwise from `from`, whichever way it was swept.
+      const from = p.sweep >= 0 ? a0 : a1;
+      const to = from + (wrap(p.sweep >= 0 ? a1 - a0 : a0 - a1) || TWO_PI);
+      const shape = p.end ? this.arcBeamWidth(p, toModel(this.view, this.cursor)) : null;
+      if (!shape) {
+        pv.arcs.push({ c: C, r: R, a0: from, a1: to });
+        if (p.end && !p.end.pointId) pv.points.push(p.end.pos);
+        return pv;
+      }
+      const h = shape;
+      pv.arcs.push({ c: C, r: R + h, a0: from, a1: to }, { c: C, r: R - h, a0: from, a1: to });
+      const A = polar(C, R, from), B = polar(C, R, to);
+      if (this.beamEnds === "square") pv.lines.push([polar(C, R - h, from), polar(C, R + h, from)], [polar(C, R - h, to), polar(C, R + h, to)]);
+      else pv.arcs.push({ c: A, r: h, a0: from + Math.PI, a1: from + TWO_PI }, { c: B, r: h, a0: to, a1: to + Math.PI });
+      pv.points.push(A, B);
       return pv;
     }
     if (p.tool === "line") {
@@ -1017,6 +1053,29 @@ export class App {
       return this.makeBeam(p.a, p.b, toModel(this.view, sp));
     }
 
+    if (this.tool === "arcbeam") {
+      if (!p || p.tool !== "arcbeam") {
+        this.pending = { tool: "arcbeam", center: snap, sweep: 0, lastAng: 0 };
+        return;
+      }
+      if (!p.start) {
+        if (dist(p.center.pos, snap.pos) * this.view.scale < 3) return;
+        p.start = snap;
+        p.lastAng = angleOf(sub(snap.pos, p.center.pos));
+        p.sweep = 0;
+        return;
+      }
+      if (!p.end) {
+        const R = dist(p.center.pos, p.start.pos);
+        if (Math.abs(p.sweep) * R * this.view.scale < 3) return; // no length yet
+        const joint = snap.pointId !== undefined && snap.pointId !== p.start.pointId && snap.pointId !== p.center.pointId;
+        // Anywhere but on a joint, the end lands on the arc the pointer swept.
+        p.end = joint ? snap : { pos: polar(p.center.pos, R, angleOf(sub(snap.pos, p.center.pos))) };
+        return;
+      }
+      return this.makeArcBeam(p, toModel(this.view, sp));
+    }
+
     if (this.tool === "circle") {
       if (!p || p.tool !== "circle") {
         this.pending = { tool: "circle", center: snap };
@@ -1117,24 +1176,33 @@ export class App {
     // With square ends no curve is built on the centres, so they are kept as points of their own.
     const a = this.materialize(sa, autos, square), b = this.materialize(sb, autos, square);
     if (sb.axis) autos.push({ type: sb.axis === "h" ? "horizontal" : "vertical", a, b });
-    const [a1, a2, b1, b2] = shape.corners.map((c) => addPoint(this.sk, c[0], c[1]).id);
-    const low = addLine(this.sk, a2, b1), high = addLine(this.sk, b2, a1);
-    const made: Id[] = [low.id, high.id];
-    if (square) {
-      const endA = addLine(this.sk, a1, a2), endB = addLine(this.sk, b1, b2);
-      made.push(endA.id, endB.id);
-      autos.push(
-        { type: "midpoint", p: a, l: endA.id }, { type: "midpoint", p: b, l: endB.id },
-        { type: "perpendicular", l1: low.id, l2: endA.id }, { type: "perpendicular", l1: low.id, l2: endB.id },
-        { type: "parallel", l1: low.id, l2: high.id },
-      );
-    } else {
-      // Counter-clockwise round the outside of each end.
-      const arcA = addArc(this.sk, a, a1, a2), arcB = addArc(this.sk, b, b1, b2);
-      made.push(arcA.id, arcB.id);
-      for (const line of [low, high]) for (const arc of [arcA, arcB]) autos.push({ type: "tangent", l: line.id, c: arc.id });
-      autos.push({ type: "equal", a: arcA.id, b: arcB.id });
-    }
+    autos.push(...straightBeam(this.sk, a, b, shape.r, this.beamEnds).autos);
+    this.pending = null;
+    this.finishDrawing(autos);
+  }
+
+  /** Half the width of the curved beam being drawn, with the pointer at q: how far q is from its middle arc. Null while that is next to nothing. */
+  private arcBeamWidth(p: Extract<Pending, { tool: "arcbeam" }>, q: V): number | null {
+    if (!p.start) return null;
+    const R = dist(p.center.pos, p.start.pos);
+    const h = Math.min(Math.abs(dist(q, p.center.pos) - R), 0.95 * R);
+    return h * this.view.scale < 3 ? null : h;
+  }
+
+  /**
+   * Draws a beam bent round a centre: two arcs about it, closed by half-circles
+   * or by square ends. Ordinary geometry again, held by ordinary constraints.
+   */
+  private makeArcBeam(p: Extract<Pending, { tool: "arcbeam" }>, q: V): void {
+    const h = this.arcBeamWidth(p, q);
+    if (!p.start || !p.end || h === null) return; // no width yet
+    const autos: ConstraintDraft[] = [];
+    const square = this.beamEnds === "square";
+    const o = this.materialize(p.center, autos);
+    const s = this.materialize(p.start, autos, square), e = this.materialize(p.end, autos, square);
+    // Arcs are kept counter-clockwise, so a beam swept clockwise has its ends swapped.
+    const [a, b] = p.sweep >= 0 ? [s, e] : [e, s];
+    autos.push(...curvedBeam(this.sk, o, a, b, h, this.beamEnds).autos);
     this.pending = null;
     this.finishDrawing(autos);
   }
@@ -1877,7 +1945,7 @@ export class App {
       this.trimPlan = this.trimAt(sp);
     } else {
       const p = this.pending;
-      if (p?.tool === "arc" && p.start) {
+      if ((p?.tool === "arc" && p.start) || (p?.tool === "arcbeam" && p.start && !p.end)) {
         const ang = angleOf(sub(toModel(this.view, sp), p.center.pos));
         let step = ang - p.lastAng;
         if (step > Math.PI) step -= TWO_PI;
@@ -1896,7 +1964,7 @@ export class App {
       return;
     }
     // The third click of a beam sets its width; it lands nowhere in particular.
-    if (this.pending?.tool === "beam" && this.pending.b) {
+    if ((this.pending?.tool === "beam" && this.pending.b) || (this.pending?.tool === "arcbeam" && this.pending.end)) {
       this.snapMark = null;
       return;
     }
@@ -2448,7 +2516,7 @@ export class App {
       case "equal": return (L >= 2 && P === 0 && R === 0) || (R >= 2 && P === 0 && L === 0);
       case "coincident": return (P === 2 && L + R === 0) || (P === 1 && L + R === 1);
       case "midpoint": return P === 1 && L === 1 && R === 0;
-      case "tangent": return L === 1 && R === 1 && P === 0;
+      case "tangent": return (L === 1 && R === 1 && P === 0) || (R === 2 && L === 0 && P === 0);
       case "fixed": return P >= 1 && L + R === 0;
       case "dimension":
         return (P === 2 && L + R === 0) || (L === 1 && P + R === 0) || (L === 2 && P + R === 0) || (R === 1 && P + L === 0);
@@ -2601,7 +2669,8 @@ export class App {
         }
         break;
       case "tangent":
-        drafts.push({ type: "tangent", l: lines[0].id, c: rounds[0].id });
+        // Two circles or arcs touch each other; the first stands where the line would.
+        drafts.push(lines.length ? { type: "tangent", l: lines[0].id, c: rounds[0].id } : { type: "tangent", l: rounds[0].id, c: rounds[1].id });
         break;
       case "fixed": {
         const movable = pts.filter((p) => p.id !== ORIGIN);
@@ -3054,6 +3123,13 @@ export class App {
     return drawn < asked ? `${asked} (${drawn} fit)` : String(asked);
   }
 
+  /** The slider that sets how large every support is drawn. */
+  private supportSizeField(): string {
+    const pct = Math.round((this.sk.supportScale ?? 1) * 100);
+    return `<label class="field"><span>Size of the supports</span><span class="slider-row"><input data-field="support-scale" type="range" min="${SUPPORT_SCALE_MIN}" max="${SUPPORT_SCALE_MAX}" step="5" value="${pct}"><output>${pct} %</output></span>` +
+      `<small>For every support in the sketch, and for nothing else: the size sliders in the corner still scale them along with the rest. Double-click the slider to go back to 100 %.</small></label>`;
+  }
+
   /** `extra` goes in above the Delete button. */
   private symbolPanel(s: Sym, extra = ""): string {
     const degrees = (angle: number) => formatNumber(Number((angle / DEG).toFixed(2)));
@@ -3074,6 +3150,7 @@ export class App {
           `<button type="button" data-kind="${k}" aria-pressed="${s.kind === k}">${name}</button>`).join("")}</div></div>`;
         html += number("Rotation (degrees)", "sym-angle", degrees(s.angle), "At 0 the ground is below the joint. Dragging the support around its joint turns it too.");
         html += rotate;
+        html += this.supportSizeField();
         html += `<p class="muted note-block">Supports are drawn only. To hold a joint in place, fix the point.</p>`;
         break;
       }
@@ -3147,6 +3224,7 @@ export class App {
           html += number("Magnitude at the end", "sym-q2", plain(s.q2), "The start is the end of the line that was drawn first. Two different values give a trapezium; 0 at one end brings the load to a point.");
           html += sizeSlider;
           html += slider("Number of arrows", "sym-count", 2, LINE_ARROWS_MAX, 1, s.count, String(s.count));
+          html += `<label class="check"><input data-field="sym-shade" type="checkbox"${s.plain ? "" : " checked"}><span>Shade the area under the arrows</span></label>`;
           html += choice("The arrows", "pull", [[`data-pull="0"`, "Point at the line", !s.pull], [`data-pull="1"`, "Point away", !!s.pull]]);
           html += choice("Direction", "square", [[`data-square="1"`, "Square to the line", s.angle === undefined], [`data-square="0"`, "At an angle", s.angle !== undefined]]);
           if (s.angle !== undefined) html += number("Angle the arrows point at (degrees)", "sym-dir", degrees(s.angle), "0 points right, 90 up, -90 down: weight on a sloping beam is -90.");
@@ -3190,7 +3268,16 @@ export class App {
     const { pts, lines, rounds, cons, syms, entities } = this.picked();
     let html = "";
 
-    if (this.tool === "beam") {
+    if (this.tool === "arcbeam") {
+      html += `<h2>Curved beam</h2>`;
+      html += `<div class="field"><span id="beam-label">Ends</span><div class="segmented" role="group" aria-labelledby="beam-label">` +
+        `<button type="button" data-beam="round" aria-pressed="${this.beamEnds === "round"}">Round</button>` +
+        `<button type="button" data-beam="square" aria-pressed="${this.beamEnds === "square"}">Square</button></div></div>`;
+      html += `<ol class="steps"><li>Click the centre the beam bends round.</li><li>Click where the beam starts, sweep round the centre and click where it ends.</li>` +
+        `<li>Move towards or away from the centre and click to set the width.</li></ol>`;
+      html += `<p class="muted note-block">The beam is made of arcs${this.beamEnds === "round" ? "" : " and lines"} with the constraints that keep its shape. ` +
+        `Dimension the distance from the centre to an end of the beam for the bend's radius, and ${this.beamEnds === "round" ? "an end's radius" : "an end"} for the width.</p>`;
+    } else if (this.tool === "beam") {
       html += `<h2>Beam</h2>`;
       html += `<div class="field"><span id="beam-label">Ends</span><div class="segmented" role="group" aria-labelledby="beam-label">` +
         `<button type="button" data-beam="round" aria-pressed="${this.beamEnds === "round"}">Round</button>` +
@@ -3199,6 +3286,10 @@ export class App {
         `<li>Move away from its middle line and click to set the width.</li></ol>`;
       html += `<p class="muted note-block">The beam is made of lines${this.beamEnds === "round" ? " and arcs" : ""} with the constraints that keep its shape. ` +
         `Dimension the distance between its two centres for the length${this.beamEnds === "round" ? ", and an end's radius for the width" : ", and an end for the width"}.</p>`;
+    } else if ((this.tool === "pin" || this.tool === "roller" || this.tool === "wall") && !syms.length && !entities && !cons.length) {
+      html += `<h2>${SUPPORT_NAMES[this.tool === "wall" ? "fixed" : this.tool]}</h2>`;
+      html += `<p class="muted">Click a joint, or a spot on a line, to put the support there.</p>`;
+      html += this.supportSizeField();
     } else if (isCopyTool(this.tool)) {
       html += `<h2>${toolDef(this.tool).label}</h2>`;
       html += this.tool === "mirror"
@@ -3425,9 +3516,12 @@ export class App {
     });
     this.panel.addEventListener("dblclick", (e) => {
       const input = e.target as HTMLInputElement;
-      if (input.dataset?.field !== "weight") return;
+      const field = input.dataset?.field;
+      if (field !== "weight" && field !== "support-scale") return;
       input.blur();
-      this.resetWeight();
+      if (field === "weight") return this.resetWeight();
+      delete this.sk.supportScale;
+      this.commit();
     });
     // A slider let go with the mouse gives the keyboard back to the drawing; moved with the arrow keys, it keeps it.
     this.panel.addEventListener("pointerup", (e) => {
@@ -3779,6 +3873,9 @@ export class App {
         if (!Number.isFinite(v) || v < 0) { this.toast("A magnitude must be a number, zero or more."); return this.touch(); }
         if (field === "sym-q1") s.q1 = v;
         else s.q2 = v;
+      } else if (s.type === "lineload" && field === "sym-shade") {
+        if (input.checked) delete s.plain;
+        else s.plain = true;
       } else if (s.type === "lineload" && field === "sym-count") {
         s.count = Math.max(2, Math.min(LINE_ARROWS_MAX, Math.round(v) || 2));
         return slide(String(s.count));
@@ -3800,6 +3897,14 @@ export class App {
         return slide(this.hatchLabel(s, field === "sym-depth" ? "depth" : "freq"));
       }
       return this.commit();
+    }
+
+    if (field === "support-scale") {
+      const pct = Math.max(SUPPORT_SCALE_MIN, Math.min(SUPPORT_SCALE_MAX, Math.round(Number(input.value))));
+      if (!Number.isFinite(pct)) return;
+      if (pct === 100) delete this.sk.supportScale;
+      else this.sk.supportScale = pct / 100;
+      return slide(`${pct} %`);
     }
 
     if (field === "weight") {

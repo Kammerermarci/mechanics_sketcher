@@ -68,6 +68,12 @@ fills and hatching.
      trimmed and dimensioned like the rest: the distance between its two
      centres for the length, an end's radius (or the end itself) for the
      width.
+   - *Curved beam:* the same bar, bent round a centre. Click the centre, then
+     where the beam starts, sweep round the centre and click where it ends,
+     then move towards or away from the centre and click to set the width.
+     Its long sides are two arcs about the centre; the ends are round or
+     square, as picked in the side panel. Dimension the distance from the
+     centre to an end of the beam for the radius of the bend.
    - *Mirror:* select what to mirror, press Mirror and click the line to
      mirror about. Points on that line are shared by both halves. The image
      stays an image: one constraint ties every point of it to its original,
@@ -104,7 +110,10 @@ fills and hatching.
    be left out of the figure.
 4. **Annotate.**
    - *Supports:* pick Pin, Roller or Fixed and click a joint. Drag a support
-     around its joint, or press R, to turn it.
+     around its joint, or press R, to turn it. *Size of the supports*, a
+     slider in the side panel of a support (and of the three support tools),
+     makes every support in the sketch larger or smaller and leaves
+     everything else alone; it is saved with the sketch and exported.
    - *Load:* a force on a joint, or on a spot on a line. Its *magnitude*, typed
      in the side panel, sets how long the arrow is: every force in the sketch
      is drawn at one scale, so one of twice the magnitude is twice as long.
@@ -115,7 +124,9 @@ fills and hatching.
      or a triangle that runs down to a point. Drag an end of it along the line
      to cover only part of the line. The arrows are square to the line, or at
      an angle of their own (weight on a sloping beam); a slider sets how many
-     there are.
+     there are. Their heads are smaller than a force's, and the area under
+     them is shaded in a light tone of the load's colour; a checkbox in the
+     side panel leaves the shading out.
    - *Moment:* an arc with a head about a joint. Its magnitude sets the
      radius; it turns clockwise or anticlockwise.
 
@@ -276,6 +287,8 @@ the picture and can be changed there.
 - `src/regions.ts`: finds the closed regions for fills, and the stretches
   where curves overlap.
 - `src/trim.ts`: where curves cross, and cutting a curve between crossings.
+- `src/beam.ts`: straight and curved beams: the lines and arcs of the
+  outline and the constraints that hold its shape.
 - `src/pattern.ts`: mirror images and patterns. A copy is ordinary geometry;
   one *link* constraint per mirror or pattern holds each copied point to its
   original. `src/solver.ts` turns a link into equations: two per point, but
@@ -320,12 +333,13 @@ somewhere else needs its own address there.
 
 Working: geometry, centre lines, trim, constraints, distance / angle / radius
 dimensions with labels typeset by MathJax, supports, coordinate axes, straight
-and curved arrows, datum points, centre marks, balloons, fills, hatching, the fixed origin,
+and curved arrows, forces, distributed loads and moments, notes, datum points,
+centre marks, balloons, fills, hatching, straight and curved beams, mirror and
+patterns, the fixed origin,
 snapping, dragging, undo, save and load, print preview, SVG and TikZ export,
 install as an app.
 
-Not built yet: distributed loads. A single force is drawn with the Arrow
-tool, a moment with the Curved arrow tool. `docs/status-report.pdf` is the plan as of the first build.
+`docs/status-report.pdf` is the plan as of the first build.
 
 ## Licence note
 

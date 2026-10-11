@@ -5,7 +5,7 @@
 export interface Tip { title: string; body: string }
 
 const CONSTRAINT = " Selecting the geometry first and then pressing the button works too.";
-const SUPPORT = "Click a joint, or a spot on a line, to put the support there. Drag it around its joint, or press R, to turn it. A support is only drawn: to hold a joint in place, fix the point.";
+const SUPPORT = "Click a joint, or a spot on a line, to put the support there. Drag it around its joint, or press R, to turn it. The side panel has a slider for the size of all supports. A support is only drawn: to hold a joint in place, fix the point.";
 
 /** Keyed by tool, command or action. */
 export const TIPS: Record<string, Tip> = {
@@ -15,6 +15,7 @@ export const TIPS: Record<string, Tip> = {
   arc: { title: "Arc", body: "Click the centre, then where the arc starts. Sweep round the centre and click where it ends." },
   point: { title: "Point", body: "Click to place a point of its own: on a line, on a circle or anywhere. Constrain and dimension against it like any joint." },
   beam: { title: "Beam", body: "Click where the beam starts and where it ends, then move away from its middle line and click to set the width. Round or square ends are chosen in the side panel while the tool is active." },
+  arcbeam: { title: "Curved beam", body: "Click the centre the beam bends round, then where the beam starts. Sweep round the centre and click where it ends, then move towards or away from the centre and click to set the width. Round or square ends are chosen in the side panel while the tool is active." },
   trim: { title: "Trim", body: "Point at the piece of a line, circle or arc that should go; it turns red. Click to remove it, up to where other curves cross it. Or hold the button down and drag: everything the pointer crosses is trimmed." },
   mirror: { title: "Mirror", body: "Select what to mirror first, then press Mirror and click the line to mirror about. The image stays tied to the original: change one side and the other follows." },
   shift: { title: "Linear pattern", body: "Select what to repeat first, then press this and say how many there should be. The copies follow the original. To set the spacing, drag a copy or dimension from a point to its copy." },
@@ -27,7 +28,7 @@ export const TIPS: Record<string, Tip> = {
   equal: { title: "Equal", body: "Click two lines to give them the same length, or two circles or arcs to give them the same radius." + CONSTRAINT },
   coincident: { title: "Coincident", body: "Click two points to join them, or a point and a line or circle to keep the point on it." + CONSTRAINT },
   midpoint: { title: "Midpoint", body: "Click a point and a line to keep the point at the middle of the line." + CONSTRAINT },
-  tangent: { title: "Tangent", body: "Click a line and a circle or arc to make the line touch it." + CONSTRAINT },
+  tangent: { title: "Tangent", body: "Click a line and a circle or arc to make the line touch it, or two circles or arcs to make them touch each other." + CONSTRAINT },
   fixed: { title: "Fix point", body: "Click a point to pin it where it is. Click a fixed point again to release it. Blue geometry can still move; it turns black once it is fully constrained." },
 
   dimension: { title: "Dimension", body: "Click a line, two points, two lines or a circle. Then middle-click, or click empty space, where the dimension should go and type its value: the drawing follows the number. Type text such as 2a to show a label in its place." },
@@ -35,7 +36,7 @@ export const TIPS: Record<string, Tip> = {
   roller: { title: "Roller support", body: SUPPORT },
   wall: { title: "Fixed support", body: SUPPORT },
   load: { title: "Load", body: "Click a joint, or a spot on a line, to put a force there. Type its magnitude in the side panel: the arrow's length follows it, at a scale all forces share. Drag the arrow round its point, or press R, to turn it. Its colour and name are in the side panel too." },
-  lineload: { title: "Distributed load", body: "Click a line, on the side the load should be drawn. The side panel sets the magnitude at each end (different ones give a triangle or a trapezium), the number of arrows and the colour. Drag an end of the load along the line to make it cover only part of it." },
+  lineload: { title: "Distributed load", body: "Click a line, on the side the load should be drawn. The side panel sets the magnitude at each end (different ones give a triangle or a trapezium), the number of arrows, the colour and whether the area under the arrows is shaded. Drag an end of the load along the line to make it cover only part of it." },
   moment: { title: "Moment", body: "Click a joint, or a spot on a line, to put a moment about it. Its magnitude sets the radius of the arc, at a scale all moments share. Drag it round, or press R, to turn it; the side panel switches between clockwise and anticlockwise." },
   frame: { title: "Axes", body: "Click where the coordinate axes should go; on a joint they stay pinned to it. Drag an arrow tip to change its length, and click a label to rename it." },
   arrow: { title: "Arrow", body: "Two clicks, like a line: where it starts and where it points. Then type its name, written as TeX math such as F_1, or just carry on. It is constrained and dimensioned like a line." },

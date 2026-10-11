@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   emptySketch, addPoint, addLine, addConstraint, addSymbol, serialize, deserialize, point, type Sketch, type Line, type Load, type Moment, type LineLoad,
 } from "../src/model";
-import { buildPrims, loadArrow, lineLoadFrame, momentArc, loadLabel, loadReach, PAPER, type Prim } from "../src/prims";
+import { buildPrims, loadArrow, lineLoadFrame, momentArc, loadLabel, loadReach, tint, PAPER, type Prim } from "../src/prims";
 import { toSvg, toTikz } from "../src/export";
 import { mirrorCopy } from "../src/pattern";
 
@@ -86,6 +86,30 @@ describe("distributed loads", () => {
     expect(away?.k === "line" && away.b[1]).toBeCloseTo(-30);
   });
 
+  it("has smaller heads than a force, and shading under its arrows unless that is switched off", () => {
+    const { sk, l } = beam();
+    const q = add(sk, l, { q1: 1, q2: 2 });
+    const prims = buildPrims(sk, 10, { editor: false });
+    const arrow = prims.find((p) => p.ref === q.id && p.k === "line" && p.arrowB);
+    expect(arrow).toMatchObject({ head: PAPER.loadHead });
+    expect(PAPER.loadHead).toBeLessThan(1);
+    // The shading is the trapezium between the line and the envelope, in a light tone of the load's colour,
+    // and lies under everything else: the beam is drawn over it.
+    expect(prims[0]).toMatchObject({ k: "region", ref: q.id, color: tint(RED, PAPER.loadShade) });
+    if (prims[0].k !== "region" || prims[0].outlines[0].kind !== "path") throw new Error();
+    expect([prims[0].outlines[0].start, ...prims[0].outlines[0].segs.map((g) => g.to)]).toEqual([[0, 0], [100, 0], [100, 30], [0, 15], [0, 0]]);
+    expect(tint("#000000", 0.5)).toBe("#808080");
+    expect(tint(RED, PAPER.loadShade)).toMatch(/^#f[0-9a-f]{5}$/);
+    const tikz = toTikz(sk)!;
+    expect(tikz).toMatch(/smalltip\/\.tip=\{Stealth/);
+    expect(tikz.indexOf("\\fill[")).toBeLessThan(tikz.indexOf("\\draw[member]"));
+    expect(toSvg(sk)!).toContain(`fill="${tint(RED, PAPER.loadShade)}"`);
+    q.plain = true;
+    expect(buildPrims(sk, 10, { editor: false }).some((p) => p.k === "region")).toBe(false);
+    expect(toTikz(sk)!).not.toContain("\\fill[");
+    expect(deserialize(serialize(sk)).symbols).toEqual(sk.symbols);
+  });
+
   it("runs down to a point where the magnitude is zero, and covers part of the line", () => {
     const { sk, l } = beam();
     const q = add(sk, l, { q1: 0, q2: 4, t0: 0.2, t1: 0.8, count: 7 });
@@ -157,7 +181,7 @@ describe("loads in files and exports", () => {
     expect(tikz).toContain(`text=${red}] at (80,16) {$F$};`);
     expect(tikz).toMatch(new RegExp(`\\\\draw\\[arrow, draw=${blue.replace(/[{}]/g, "\\$&")}, -bigtip\\] \\(16,0\\) arc\\[start angle=0, end angle=270, radius=16\\];`));
     expect(tikz).toContain(`text=${blue}`);
-    expect(tikz.match(new RegExp(`draw=${green.replace(/[{}]/g, "\\$&")}, -tip`, "g"))).toHaveLength(3);
+    expect(tikz.match(new RegExp(`draw=${green.replace(/[{}]/g, "\\$&")}, -smalltip`, "g"))).toHaveLength(3);
     expect(tikz).toContain("bending"); // a head on an arc
     const svg = toSvg(sk)!;
     expect(svg).toContain(`stroke="${RED}"`);

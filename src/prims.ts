@@ -49,6 +49,8 @@ export const PAPER = {
   arrowScale: 1.5,      // their heads, against a dimension's
   datumRadius: 0.7,
   radiusLeader: 8,      // default length of a radius leader drawn outside the circle
+  loadHead: 0.62,       // the heads of a spread load's arrows, against a dimension's
+  loadShade: 0.16,      // how much of a spread load's colour is in the shading under its arrows
 };
 
 export type Anchor = "c" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
@@ -489,6 +491,8 @@ function placer(at: V, angle: number): (p: V) => V {
 
 function supportPrims(sk: Sketch, s: Support, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const };
+  // Supports have a size of their own: everything about one is drawn `k` times its standard size.
+  const k = sk.supportScale ?? 1;
   const T = placer(mul(symbolPosition(sk, s), mm), s.angle);
   const out: Prim[] = [];
   const line = (a: V, b: V, stroke: StrokeStyle) => out.push({ ...base, k: "line", a: T(a), b: T(b), stroke });
@@ -496,27 +500,27 @@ function supportPrims(sk: Sketch, s: Support, mm: number): Prim[] {
   // Drawn with the ground below the joint; `ground` is how far below.
   let ground = 0;
   if (s.kind !== "fixed") {
-    const h = s.kind === "pin" ? PAPER.pinHeight : PAPER.rollerHeight;
-    const w = PAPER.supportHalfWidth;
+    const h = s.kind === "pin" ? (PAPER.pinHeight * k) : (PAPER.rollerHeight * k);
+    const w = (PAPER.supportHalfWidth * k);
     out.push({ ...base, k: "poly", pts: [T([0, 0]), T([-w, -h]), T([w, -h])], stroke: "symbol", fill: "paper" });
     ground = h;
     if (s.kind === "roller") {
-      const r = PAPER.wheelRadius;
+      const r = (PAPER.wheelRadius * k);
       for (const x of [-w * 0.55, w * 0.55]) {
         out.push({ ...base, k: "circle", c: T([x, -h - r]), r, stroke: "symbol", fill: "paper" });
       }
       ground = h + 2 * r;
     }
   }
-  const g = PAPER.groundHalfWidth;
-  const n = Math.floor((2 * g) / PAPER.hatchStep);
+  const g = (PAPER.groundHalfWidth * k);
+  const n = Math.floor((2 * g) / (PAPER.hatchStep * k));
   for (let i = 1; i <= n; i++) {
-    const x = -g + i * PAPER.hatchStep;
-    line([x, -ground], [x - PAPER.hatchDepth * 0.85, -ground - PAPER.hatchDepth], "hatch");
+    const x = -g + i * (PAPER.hatchStep * k);
+    line([x, -ground], [x - (PAPER.hatchDepth * k) * 0.85, -ground - (PAPER.hatchDepth * k)], "hatch");
   }
   line([-g, -ground], [g, -ground], s.kind === "fixed" ? "member" : "symbol");
   if (s.kind !== "fixed") {
-    out.push({ ...base, k: "circle", c: T([0, 0]), r: PAPER.hingeRadius, stroke: "symbol", fill: "paper" });
+    out.push({ ...base, k: "circle", c: T([0, 0]), r: (PAPER.hingeRadius * k), stroke: "symbol", fill: "paper" });
   }
   return out;
 }
@@ -666,7 +670,7 @@ function notePrims(s: Note, mm: number): Prim[] {
 /** Model units of length per unit of magnitude, for a kind of load that has not been given a scale. */
 const LOAD_UNIT = 1;
 /** Smallest sizes in annotation mm, so a small load is still an arrow: a force's length, a moment's radius, and the shortest arrow drawn in a spread load. */
-const LOAD_MIN = { force: PAPER.arrowLen * PAPER.arrowScale * 1.6, moment: 2.4, lineArrow: PAPER.arrowLen * 1.4 };
+const LOAD_MIN = { force: PAPER.arrowLen * PAPER.arrowScale * 1.6, moment: 2.4, lineArrow: PAPER.arrowLen * PAPER.loadHead * 1.5 };
 /** How far round a moment's arc runs. */
 const MOMENT_SWEEP = 1.5 * Math.PI;
 
@@ -739,6 +743,23 @@ export function loadReach(sk: Sketch, s: AnyLoad): V[] {
   return f ? [f.s0, f.s1, f.e0, f.e1] : [];
 }
 
+/** A colour thinned towards white, as a CSS hex colour: `share` of it is left. */
+export function tint(hex: string, share: number): string {
+  const v = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!v) return "#eeeeee";
+  return "#" + v.slice(1).map((c) => Math.round(255 - (255 - parseInt(c, 16)) * share).toString(16).padStart(2, "0")).join("");
+}
+
+/** The shading of a spread load: the area between its line and its envelope, in a light tone of its colour. */
+function loadShade(sk: Sketch, s: LineLoad, mm: number): Prim[] {
+  if (s.plain) return [];
+  const f = lineLoadFrame(sk, s, mm);
+  if (!f || Math.max(dist(f.s0, f.e0), dist(f.s1, f.e1)) < 1e-6) return [];
+  // Round the four corners and back to the first; a side with no height just folds flat.
+  const segs: OutlineSeg[] = [f.s1, f.e1, f.e0, f.s0].map((to) => ({ k: "L", to }));
+  return [{ k: "region", outlines: [{ kind: "path", start: f.s0, segs }], color: tint(s.color, PAPER.loadShade), ref: s.id, layer: "fill" }];
+}
+
 function loadPrims(sk: Sketch, s: AnyLoad, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const, ink: s.color };
   const out: Prim[] = [];
@@ -761,8 +782,8 @@ function loadPrims(sk: Sketch, s: AnyLoad, mm: number): Prim[] {
       // Where the load runs down to nothing there is no room for an arrow; the envelope says it.
       if (dist(foot, far) < LOAD_MIN.lineArrow) continue;
       out.push(s.pull
-        ? { ...base, k: "line", a: foot, b: far, stroke: "symbol", arrowB: true }
-        : { ...base, k: "line", a: far, b: foot, stroke: "symbol", arrowB: true });
+        ? { ...base, k: "line", a: foot, b: far, stroke: "symbol", arrowB: true, head: PAPER.loadHead }
+        : { ...base, k: "line", a: far, b: foot, stroke: "symbol", arrowB: true, head: PAPER.loadHead });
     }
     out.push({ ...base, k: "line", a: f.e0, b: f.e1, stroke: "symbol", part: "envelope" });
   }
@@ -937,8 +958,11 @@ export interface BuildOptions {
 
 export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
   const out: Prim[] = [];
-  // Fills lie under everything else.
-  for (const sym of sk.symbols) if (sym.type === "fill") out.push(...symbolPrims(sk, sym, mm));
+  // Fills lie under everything else, and so does the shading of a spread load: the line it is on is drawn over it.
+  for (const sym of sk.symbols) {
+    if (sym.type === "fill") out.push(...symbolPrims(sk, sym, mm));
+    else if (sym.type === "lineload") out.push(...loadShade(sk, sym, mm));
+  }
   for (const e of sk.entities) {
     if (e.type === "point") continue;
     if (e.construction && !opts.editor) continue;

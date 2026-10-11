@@ -216,6 +216,18 @@ function constraintPrims(sk: Sketch, c: Constraint, params: FreeParam[]): Prim[]
     }
     case "tangent": {
       const round = entity(sk, c.c), l = entity(sk, c.l);
+      if (round && l && l.type !== "line" && l.type !== "point" && round.type !== "line" && round.type !== "point") {
+        // Two circles or arcs. Arcs that meet at a shared end are tangent there when that end
+        // is in line with both centres; said that way there is no doubt about which side they touch on.
+        if (l.type === "arc" && round.type === "arc") {
+          const shared = [l.p1, l.p2].find((p) => p === round.p1 || p === round.p2);
+          if (shared && l.c !== round.c) return [{ id, type: "point_on_line_ppp", p_id: shared, lp1_id: l.c, lp2_id: round.c }];
+          return [{ id, type: "tangent_aa", a1_id: l.id, a2_id: round.id }];
+        }
+        if (l.type === "circle" && round.type === "circle") return [{ id, type: "tangent_cc", c1_id: l.id, c2_id: round.id }];
+        const [circle, arc] = l.type === "circle" ? [l, round] : [round, l];
+        return [{ id, type: "tangent_ca", c_id: circle.id, a_id: arc.id }];
+      }
       if (!round || l?.type !== "line") throw new Error("tangent needs a line and a circle or arc");
       if (round.type === "circle") return [{ id, type: "tangent_lc", l_id: c.l, c_id: c.c }];
       if (round.type !== "arc") throw new Error("tangent needs a line and a circle or arc");

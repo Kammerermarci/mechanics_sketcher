@@ -162,10 +162,11 @@ function tikzOutline(o: Outline): string {
 const stealth = (size: number): string =>
   `Stealth[length=${num(PAPER.arrowLen * size, 2)}mm, width=${num(PAPER.arrowWidth * size, 2)}mm, inset=${num(PAPER.arrowLen * size * 0.28, 2)}mm]`;
 
-/** Which named tip a head is: the one on dimensions, the larger one on arrows, or neither. */
-function tipName(p: LinePrim | ArcPrim): "tip" | "bigtip" | null {
+/** Which named tip a head is: the one on dimensions, the larger one on arrows, the small one on spread loads, or none of them. */
+function tipName(p: LinePrim | ArcPrim): "tip" | "bigtip" | "smalltip" | null {
   const head = p.head ?? 1;
-  return head === 1 ? "tip" : Math.abs(head - PAPER.arrowScale) < 1e-9 ? "bigtip" : null;
+  const is = (size: number) => Math.abs(head - size) < 1e-9;
+  return is(1) ? "tip" : is(PAPER.arrowScale) ? "bigtip" : is(PAPER.loadHead) ? "smalltip" : null;
 }
 
 /** Arrow tips as a TikZ option. A head of any other size than the two named ones is spelled out; `k` is the dimension size. */
@@ -187,13 +188,14 @@ export function toTikz(sk: Sketch): string | null {
   if (!prims.length) return null;
   const k = sk.dimScale;
   const used = new Set<StrokeStyle>();
-  let needTip = false, needBigTip = false, needArrows = false, needLabel = false;
+  let needTip = false, needBigTip = false, needSmallTip = false, needArrows = false, needLabel = false;
   /** A tip sits on an arc: the bending library turns it to follow the curve. */
   let bentTip = false;
   const noteTip = (p: LinePrim | ArcPrim) => {
     needArrows = true;
     const name = tipName(p);
     if (name === "bigtip") needBigTip = true;
+    else if (name === "smalltip") needSmallTip = true;
     else if (name === "tip") needTip = true;
   };
   /** The style of a stroke, with its own thickness where it has one. */
@@ -258,6 +260,7 @@ export function toTikz(sk: Sketch): string | null {
   const tip = (name: string, size: number) => styles.push(`${name}/.tip={${stealth(size)}}`);
   if (needTip) tip("tip", k);
   if (needBigTip) tip("bigtip", PAPER.arrowScale * k);
+  if (needSmallTip) tip("smalltip", PAPER.loadHead * k);
   // At another dimension size the whole picture is enlarged: the unit, the
   // widths and tips above, and the text, which TikZ scales node by node.
   const unit = `${num(k, 3)}mm`;

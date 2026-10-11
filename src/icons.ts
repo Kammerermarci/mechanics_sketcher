@@ -41,6 +41,7 @@ export const ICONS: Record<string, string> = {
 
   // A slot: two half-circles joined by two lines, with its two centres.
   beam: `<path d="M6 6.2h8a3.8 3.8 0 0 1 0 7.6H6a3.8 3.8 0 0 1 0-7.6z"/>${dot(6, 10, 1.1)}${dot(14, 10, 1.1)}`,
+  arcbeam: `<path d="M3.5 16A12.5 12.5 0 0 1 16 3.5a2.9 2.9 0 0 1 0 5.8A6.7 6.7 0 0 0 9.3 16a2.9 2.9 0 0 1-5.8 0z"/>${dot(6.4, 16, 1.1)}${dot(16, 6.4, 1.1)}`,
   mirror: `<path d="M10 2.5v15" stroke-dasharray="2 2.2" stroke-width="1.3"/><path d="M7.4 6v8H3z"/><path d="M12.6 6v8H17z" fill="currentColor" fill-opacity="0.3"/>`,
   // The markers of the links and the buttons that make them share these.
   shift: `<rect x="2.3" y="7" width="4" height="6" rx="0.6" fill="currentColor" stroke="none"/><rect x="8.2" y="7" width="3.6" height="6" rx="0.6" stroke-width="1.3"/><rect x="13.9" y="7" width="3.6" height="6" rx="0.6" stroke-width="1.3"/>`,
