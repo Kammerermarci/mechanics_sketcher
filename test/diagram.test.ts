@@ -95,9 +95,13 @@ describe("a plot laid along a member", () => {
     expect(plotPeak(plot)).toBe(10);
     // 2x over 0 to 5, half a unit of height to the unit: from the start of the line up to 5 above its end.
     close(shape.parts[0].lines[0], [[0, 0], [10, 5]]);
-    // Closed down to the line where it ends away from it; at the start it is on the line already.
-    expect(shape.parts[0].uprights).toHaveLength(1);
-    close(shape.parts[0].uprights[0], [[10, 5], [10, 0]]);
+    // It ends at its value: nothing is drawn down to the line unless that is asked for.
+    expect(shape.parts[0].uprights).toHaveLength(0);
+    d.closed = true;
+    // Then it is closed where it ends away from the line; at the start it is on the line already.
+    const shut = diagramShape(sk, d)!.parts[0].uprights;
+    expect(shut).toHaveLength(1);
+    close(shut[0], [[10, 5], [10, 0]]);
     close(shape.parts[0].areas[0], [[0, 0], [10, 5], [10, 0], [0, 0]]);
     expect(shape.peak).toMatchObject({ t: 1, v: 10 });
     close([shape.peak!.at, ...shape.ends], [[10, 5], [0, 0], [10, 0]]);
@@ -123,15 +127,22 @@ describe("a plot laid along a member", () => {
   it("draws the jumps of a function in pieces, and is not cut off at the edge of the plot", () => {
     const { sk, l, plot } = setup([{ expr: "6 - 2x", from: 0, to: 2 }, { expr: "-3", from: 2, to: 5 }]);
     plot.y = { min: -1, max: 1, label: "" }; // far too small a range for these values
-    const shape = diagramShape(sk, on(sk, l))!;
+    const d = on(sk, l);
+    const shape = diagramShape(sk, d)!;
     close(shape.parts[0].lines[0], [[0, 3], [4, 1]]);
     close(shape.parts[0].lines[1], [[4, -1.5], [10, -1.5]]);
-    // Up from the line at the start, across the jump, and back to the line at the end.
-    expect(shape.parts[0].uprights.map((u) => u.map((q) => q.map((v) => Number(v.toFixed(6)))))).toEqual([[[0, 0], [0, 3]], [[4, 1], [4, -1.5]], [[10, -1.5], [10, 0]]]);
+    const rounded = (s: Diagram) => diagramShape(sk, s)!.parts[0].uprights.map((u) => u.map((q) => q.map((v) => Number(v.toFixed(6)))));
+    // Across the jump only: the ends stay at their values.
+    expect(rounded(d)).toEqual([[[4, 1], [4, -1.5]]]);
+    // Closed, it also goes up from the line at the start and back to it at the end.
+    d.closed = true;
+    expect(rounded(d)).toEqual([[[0, 0], [0, 3]], [[4, 1], [4, -1.5]], [[10, -1.5], [10, 0]]]);
     expect(shape.peak).toMatchObject({ t: 0, v: 6 });
     // With the jumps switched off for the function, only the ends are closed.
     plot.curves[0].join = false;
-    expect(diagramShape(sk, sk.symbols[0] as Diagram)!.parts[0].uprights).toHaveLength(2);
+    expect(rounded(d)).toHaveLength(2);
+    delete d.closed;
+    expect(rounded(d)).toHaveLength(0);
   });
 
   it("follows an arc, with its values set off towards the centre or away from it", () => {
@@ -163,21 +174,54 @@ describe("a plot laid along a member", () => {
     // Each is written on the far side of the curve from the member.
     expect(part.values[0].out[1]).toBeCloseTo(1);
     expect(part.values[1].out[1]).toBeCloseTo(-1);
-    expect(valueText(12.345678)).toBe("12.35");
-    expect(valueText(1 / 3)).toBe("0.3333");
+  });
+
+  it("writes a peak at the value the function has there, not at the nearest point drawn", () => {
+    // The top of this parabola, 28.125 at x = 3.75, lies between two of the points it is drawn through.
+    const { sk, l, plot } = setup([{ expr: "15x - 2x^2" }]);
+    plot.y = { min: 0, max: 30, label: "" };
+    const d = on(sk, l, { values: true, scale: 0.1 });
+    const shape = diagramShape(sk, d)!;
+    const top = shape.parts[0].values.find((v) => v.v > 28)!;
+    expect(top.v).toBeCloseTo(28.125, 9);
+    expect(top.at[0]).toBeCloseTo(7.5, 5);
+    expect(valueText(top.v)).toBe("28.125");
+    expect(shape.peak!.v).toBeCloseTo(28.125, 9);
+    // A low point is found the same way, and a top that two drawn points share.
+    plot.curves[0].pieces = [{ expr: "(x - 1.3)^2 - 2" }];
+    plot.y = { min: -3, max: 12, label: "" };
+    const low = diagramShape(sk, d)!.parts[0].values.find((v) => v.v < 0)!;
+    expect(low.v).toBeCloseTo(-2, 9);
+    expect(low.at[0]).toBeCloseTo(2.6, 5);
+    plot.curves[0].pieces = [{ expr: "sin(x)", from: 0, to: 3.14159265 }];
+    plot.x = { min: 0, max: 3.14159265, label: "" };
+    expect(valueText(diagramShape(sk, d)!.parts[0].values.find((v) => v.v > 0.5)!.v)).toBe("1");
+  });
+
+  it("writes values to three decimals at most, fewer for large ones", () => {
+    expect(valueText(12.345678)).toBe("12.346");
+    expect(valueText(1 / 3)).toBe("0.333");
+    expect(valueText(28.125)).toBe("28.125");
+    expect(valueText(-7.5)).toBe("-7.5");
+    expect(valueText(4.0000000001)).toBe("4");
+    expect(valueText(123.456)).toBe("123.46");
+    expect(valueText(12345.678)).toBe("12345.7");
+    expect(valueText(0.012345)).toBe("0.0123");
   });
 });
 
 describe("a diagram in the figure", () => {
   const of = (sk: Sketch, id: string): Prim[] => buildPrims(sk, 10, { editor: false }).filter((p) => p.ref === id);
 
-  it("is shaded under everything, drawn in the colours of its plot, and closed down to its member", () => {
+  it("is shaded under everything, drawn in the colours of its plot, and closed down to its member when asked", () => {
     const { sk, l, plot } = setup();
     plot.curves[0].weight = 1.2;
     plot.curves[0].dash = "dashed";
     const d = on(sk, l);
     const all = buildPrims(sk, 10, { editor: false });
     expect(all[0]).toMatchObject({ k: "region", ref: d.id, color: tint(RED, PLOT.shade), layer: "fill" });
+    expect(of(sk, d.id).filter((p) => p.k === "path")).toHaveLength(1);
+    d.closed = true;
     const [, curve, upright] = of(sk, d.id);
     expect(curve).toMatchObject({ k: "path", pts: [[0, 0], [100, 50]], ink: RED, dash: [2, 1.2] });
     expect(curve.k === "path" && curve.width).toBeCloseTo(1.2 * 0.3515, 4);

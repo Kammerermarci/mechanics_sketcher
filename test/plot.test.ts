@@ -67,7 +67,7 @@ describe("sampling a function", () => {
     expect(root[0][0][0]).toBeGreaterThanOrEqual(0);
   });
 
-  it("draws the jump between two pieces that meet, and closes a shaded curve down to the axis", () => {
+  it("draws the jump between two pieces that meet, and leaves the ends of a curve at their values", () => {
     const pieces = [{ expr: "6 - 2x", from: 0, to: 2 }, { expr: "-1", from: 2, to: 4 }];
     const p = plot([{ pieces }], { y: { min: -8, max: 8, label: "" } });
     expect(uprights(p, p.curves[0])).toEqual([[[2, 2], [2, -1]]]);
@@ -75,7 +75,13 @@ describe("sampling a function", () => {
     expect(uprights(p, p.curves[0])).toEqual([]);
     delete p.curves[0].join;
     p.curves[0].fill = true;
-    expect(uprights(p, p.curves[0])).toEqual([[[0, 0], [0, 6]], [[2, 2], [2, -1]], [[4, -1], [4, 0]]]);
+    // Shaded or not, a curve ends at its value: nothing is drawn down to the axis there.
+    expect(uprights(p, p.curves[0])).toEqual([[[2, 2], [2, -1]]]);
+    // Only when asked for, as a diagram on a member can.
+    expect(uprights(p, p.curves[0], 1, true)).toEqual([[[0, 0], [0, 6]], [[2, 2], [2, -1]], [[4, -1], [4, 0]]]);
+    p.curves[0].join = false;
+    expect(uprights(p, p.curves[0], 1, true)).toEqual([[[0, 0], [0, 6]], [[4, -1], [4, 0]]]);
+    delete p.curves[0].join;
     // Pieces that meet at the same value have nothing to join.
     p.curves[0].pieces = [{ expr: "x", from: 0, to: 2 }, { expr: "2", from: 2, to: 4 }];
     delete p.curves[0].fill;
@@ -231,8 +237,9 @@ describe("a plot for pgfplots", () => {
     expect(tikz).toContain("grid=major, grid style={line width=0.2pt, draw={rgb,255:red,204;green,204;blue,204}},");
     // Accented letters are taken apart as in every other label; the name sits in mm from the corner of the axes.
     expect(tikz).toContain("\\node[inner sep=0pt, text={rgb,255:red,211;green,47;blue,47}] at (40mm,32mm) {$M_{\\mathaccent28797{o}}$};\n\\end{tikzpicture}");
-    // The shaded curve is closed down to the axis at both ends, before its name.
-    expect(tikz).toMatch(/\\end\{axis\}\n\\draw\[[^\]]*\] \(10mm,16mm\) -- \(10mm,32mm\);\n\\draw\[[^\]]*\] \(50mm,0mm\) -- \(50mm,16mm\);\n\\node/);
+    // The shading is closed down to the axis, the line is not: it ends at its value.
+    expect(tikz).toContain("\\end{axis}\n\\node");
+    expect(tikz).not.toContain("\\draw");
   });
 
   it("writes a box with its names placed from the size of the tick numbers, and a grid of dots as marks", () => {

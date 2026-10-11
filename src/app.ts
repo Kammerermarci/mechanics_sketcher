@@ -3384,6 +3384,7 @@ export class App {
         html += check("Draw strokes across it", "sym-strokes", !!s.strokes);
         if (s.strokes) html += slider("Number of strokes", "sym-count", 1, DIAGRAM_STROKES_MAX, 1, s.strokes, String(s.strokes));
         html += check("Write the values at the ends, jumps and peaks", "sym-values", !!s.values);
+        html += check("Close the ends down to the member", "sym-closed", !!s.closed);
         html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
         break;
       }
@@ -4124,6 +4125,9 @@ export class App {
       } else if (s.type === "diagram" && field === "sym-values") {
         if (input.checked) s.values = true;
         else delete s.values;
+      } else if (s.type === "diagram" && field === "sym-closed") {
+        if (input.checked) s.closed = true;
+        else delete s.closed;
       } else if (s.type === "lineload" && field === "sym-shade") {
         if (input.checked) delete s.plain;
         else s.plain = true;

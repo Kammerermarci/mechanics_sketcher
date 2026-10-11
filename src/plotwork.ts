@@ -8,7 +8,7 @@ import { type Prim, primDistance } from "./prims";
 import { type View, toScreen, toModel, drawPrims } from "./render";
 import { figureBounds } from "./export";
 import {
-  PLOT, PLOT_COLORS, plotPrims, plotSvg, plotTikz, newPlot, newCurve, copyPlot, fitY, pieceError, toData, toPaper, curveLabelAt, stretches,
+  PLOT, PLOT_COLORS, plotPrims, plotSvg, plotTikz, newPlot, newCurve, copyPlot, fitY, pieceError, toData, toPaper, curveLabelAt, stretches, tickStep,
 } from "./plot";
 import { icon } from "./icons";
 
@@ -42,6 +42,8 @@ type Drag =
   | { kind: "view"; last: V }
   /** `start` is where the press was, on screen; the rest is how things stood then. */
   | { kind: "size"; h: Handle; start: V; width: number; height: number; cx: number; cy: number; moved: boolean }
+  /** A handle pulling the ends of the axes on its side out or in. `gx` and `gy` are the steps the ends move in. */
+  | { kind: "ends"; h: Handle; start: V; x: [number, number]; y: [number, number]; gx: number; gy: number; moved: boolean }
   /** Moving what the plot shows. `click` is what a press that does not move selects. */
   | { kind: "range"; start: V; x: [number, number]; y: [number, number]; moved: boolean; click: Id | null }
   | { kind: "name"; id: Id; offset: V; moved: boolean }
@@ -165,27 +167,25 @@ export class PlotWorkspace {
     const none = new Set<Id>();
     const S = (q: V) => toScreen(this.view, q);
     const lit = this.hover.kind === "curve" || this.hover.kind === "name" ? this.hover.id : null;
-    let html = "";
-    // The selected function glows under its own line, so its colour stays as it is.
-    for (const prim of this.prims) {
-      if (prim.k !== "path" || prim.ref !== this.selected) continue;
-      html += `<polyline class="plot-halo" points="${prim.pts.map((q) => S(q).map(n2).join(",")).join(" ")}" stroke-width="${n2((prim.width ?? 0.28) * this.view.scale + 9)}"/>`;
-    }
-    html += drawPrims({ view: this.view, mm: 1, prims: this.prims, selection: none, related: none, hover: lit, conflicting: none, redundant: none, freeIds: none });
-    // The axis box and its handles: what is dragged to set the size on paper.
+    let html = drawPrims({ view: this.view, mm: 1, prims: this.prims, selection: none, related: none, hover: lit, conflicting: none, redundant: none, freeIds: none });
+    // The axis box and its handles: what is dragged to pull the ends of the axes out or in, or with Shift to set the size on paper.
     const a = S([0, 0]), b = S([p.width, p.height]);
     html += `<rect class="plot-box" x="${n2(a[0])}" y="${n2(b[1])}" width="${n2(b[0] - a[0])}" height="${n2(a[1] - b[1])}"/>`;
     for (const h of HANDLES) {
       const c = this.handleAt(p, h);
-      const on = (this.hover.kind === "handle" && this.hover.h === h) || (this.drag?.kind === "size" && this.drag.h === h);
+      const on = (this.hover.kind === "handle" && this.hover.h === h) || ((this.drag?.kind === "size" || this.drag?.kind === "ends") && this.drag.h === h);
       html += `<rect class="plot-handle${on ? " on" : ""}" x="${n2(c[0] - 4.5)}" y="${n2(c[1] - 4.5)}" width="9" height="9" rx="1.5"/>`;
     }
-    if (this.drag?.kind === "size") {
+    if (this.drag?.kind === "size" || this.drag?.kind === "ends") {
+      // What is being set, over the plot: its size on paper, or where the axes being pulled now end.
+      const h = this.drag.h;
+      const said = this.drag.kind === "size" ? `${shown(p.width / 10)} × ${shown(p.height / 10)} cm`
+        : [h.x ? `x ${shown(p.x.min)} … ${shown(p.x.max)}` : "", h.y ? `y ${shown(p.y.min)} … ${shown(p.y.max)}` : ""].filter(Boolean).join("     ");
       const at = S([p.width / 2, p.height]);
-      html += `<text class="plot-size" x="${n2(at[0])}" y="${n2(at[1] - 12)}" text-anchor="middle">${shown(p.width / 10)} × ${shown(p.height / 10)} cm</text>`;
+      html += `<text class="plot-size" x="${n2(at[0])}" y="${n2(at[1] - 12)}" text-anchor="middle">${said}</text>`;
     }
     this.svg.innerHTML = html;
-    const h = this.drag?.kind === "size" ? this.drag.h : this.hover.kind === "handle" ? this.hover.h : null;
+    const h = this.drag?.kind === "size" || this.drag?.kind === "ends" ? this.drag.h : this.hover.kind === "handle" ? this.hover.h : null;
     this.svg.dataset.over = h ? (h.x && h.y ? (h.x === h.y ? "nesw" : "nwse") : h.x ? "ew" : "ns")
       : this.drag?.kind === "view" || this.drag?.kind === "range" ? "grab"
         : this.hover.kind === "name" ? "move" : this.hover.kind === "curve" || this.hover.kind === "axis-label" ? "pointer" : "";
@@ -200,12 +200,13 @@ export class PlotWorkspace {
   hint(): string {
     if (!this.plot()) return "No plot yet. New plot makes one.";
     switch (this.drag?.kind ?? this.hover.kind) {
-      case "handle": case "size": return "Drag to set the size of the plot on paper, in whole millimetres. Hold Alt for any size.";
+      case "handle": case "ends": return "Drag to pull the axis out on this side, or push it in: the plot shows more, or less. Hold Shift while dragging to change the size on paper instead.";
+      case "size": return "Sets the size of the plot on paper, in whole millimetres. Hold Alt for any size.";
       case "name": return "Drag the name of the function to where it should stand.";
       case "curve": return "Click to select this function; its formula is in the side panel.";
       case "axis-label": return "Click to change the name of the axis.";
       case "inside": case "range": return "Drag to move what the plot shows; the wheel zooms it (Shift: sideways only, Alt: up and down only).";
-      default: return "Drag a handle to resize the plot. Inside it, drag and wheel change what it shows; outside, they move and zoom the view.";
+      default: return "Drag a handle to pull an axis further out or in. Inside the plot, drag and wheel move and zoom what it shows; outside, they move and zoom the view.";
     }
   }
 
@@ -262,8 +263,11 @@ export class PlotWorkspace {
     }
     const hit = this.hit(sp);
     const q = toModel(this.view, sp);
-    if (hit.kind === "handle") {
+    if (hit.kind === "handle" && ev.shiftKey) {
       this.drag = { kind: "size", h: hit.h, start: sp, width: p.width, height: p.height, cx: this.view.cx, cy: this.view.cy, moved: false };
+    } else if (hit.kind === "handle") {
+      // The ends move in tenths of the distance between ticks, so they land on round numbers.
+      this.drag = { kind: "ends", h: hit.h, start: sp, x: [p.x.min, p.x.max], y: [p.y.min, p.y.max], gx: tickStep(p.x, p.width) / 10, gy: tickStep(p.y, p.height) / 10, moved: false };
     } else if (hit.kind === "name") {
       const c = p.curves.find((x) => x.id === hit.id);
       const at = c ? curveLabelAt(p, c) : null;
@@ -310,6 +314,20 @@ export class PlotWorkspace {
         if (d.h.y < 0) this.view.cy = d.cy + (p.height - d.height);
       }
       d.moved = d.moved || p.width !== d.width || p.height !== d.height;
+    } else if (d.kind === "ends") {
+      // The plot keeps its size on paper: pulled outwards a handle takes the end of its axis along, at the
+      // scale the plot had when it was grabbed, and what the plot shows closes up to make room.
+      const pull = (from: [number, number], side: -1 | 0 | 1, px: number, length: number, g: number): [number, number] => {
+        if (!side) return from;
+        const moved = (px / this.view.scale / length) * (from[1] - from[0]);
+        const land = (v: number) => (ev.altKey ? Number(v.toPrecision(6)) : Number((Math.round(v / g) * g).toPrecision(12)));
+        // The two ends stay apart by a step at the least.
+        const apart = (v: number) => Number(v.toPrecision(12));
+        return side < 0 ? [Math.min(land(from[0] + moved), apart(from[1] - g)), from[1]] : [from[0], Math.max(land(from[1] + moved), apart(from[0] + g))];
+      };
+      [p.x.min, p.x.max] = pull(d.x, d.h.x, sp[0] - d.start[0], p.width, d.gx);
+      [p.y.min, p.y.max] = pull(d.y, d.h.y, d.start[1] - sp[1], p.height, d.gy);
+      d.moved = d.moved || p.x.min !== d.x[0] || p.x.max !== d.x[1] || p.y.min !== d.y[0] || p.y.max !== d.y[1];
     } else if (d.kind === "range") {
       if (!d.moved && dist(sp, d.start) < 4) return;
       d.moved = true;
@@ -481,7 +499,8 @@ export class PlotWorkspace {
 
     html += `<h3>Axes</h3>`;
     html += text("Name of the horizontal axis", "x.label", p.x.label, "", "x");
-    html += pair("It runs from", "x.min", "x.max", shown(p.x.min), shown(p.x.max));
+    html += pair("It runs from", "x.min", "x.max", shown(p.x.min), shown(p.x.max)) +
+      `<small class="under">Dragging a handle on the plot pulls the axis out or in on that side.</small>`;
     html += text("Name of the vertical axis", "y.label", p.y.label, "Names are written as TeX math, such as M_h or v\\,[\\mathrm{m/s}]. Leave one empty for none.", "y");
     html += pair("It runs from", "y.min", "y.max", shown(p.y.min), shown(p.y.max));
     html += `<button type="button" class="plain" data-pact="fit-y">Fit it to the functions</button>`;
@@ -493,7 +512,7 @@ export class PlotWorkspace {
 
     html += `<h3>Size on paper</h3>`;
     html += pair("Width and height (cm)", "width", "height", shown(p.width / 10), shown(p.height / 10), "×") +
-      `<small class="under">Of the axes, without their labels. Dragging a handle on the plot sets it too. Text is 10 pt at any size.</small>`;
+      `<small class="under">Of the axes, without their labels. Dragging a handle on the plot with Shift held sets it too. Text is 10 pt at any size.</small>`;
     html += `<button type="button" class="danger" data-pact="del-plot">Delete this plot</button>`;
     return html;
   }

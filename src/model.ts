@@ -382,6 +382,8 @@ export interface Diagram {
   strokes?: number;
   /** The values at the ends, the jumps and the peaks are written beside the curves. */
   values?: boolean;
+  /** Each curve is closed down to the member at its two ends. Unset: it ends at the value it has there. */
+  closed?: boolean;
 }
 export type AnyLoad = Load | LineLoad | Moment;
 /** Which scale a load is drawn at: forces, loads along a line and moments are different quantities. */
@@ -458,7 +460,7 @@ export interface PlotCurve {
   dash?: PlotDash;
   /** False leaves a jump between two pieces open; otherwise it is drawn as an upright line. */
   join?: boolean;
-  /** The area between the curve and the horizontal axis is shaded, and the curve closed down to the axis at its ends. */
+  /** The area between the curve and the horizontal axis is shaded. */
   fill?: boolean;
   /** Its name, written as TeX math, and where the middle of the name sits in the plot's own coordinates. Unset: beside the curve. */
   label?: string;

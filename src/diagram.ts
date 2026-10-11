@@ -5,7 +5,7 @@
 import { type Sketch, type Diagram, type Plot, type PlotCurve, type Id, entity, point, curves, arcAngles, arcRadius } from "./model";
 import { type V, add, sub, mul, norm, perp, dist, polar, angleOf, TWO_PI } from "./geom";
 import { type Stretch, stretches, runs, uprights } from "./plotmath";
-import { evaluate } from "./expr";
+import { type Expr, evaluate } from "./expr";
 
 /**
  * How far out of the plot's own vertical range a value may be and still be
@@ -117,6 +117,24 @@ export function baseline(sk: Sketch, d: Pick<Diagram, "on" | "axis">): Baseline 
   return null;
 }
 
+/**
+ * Where a function turns between a and b: its highest point there when it
+ * rises and then falls, its lowest when `top` is false. The stretch is
+ * narrowed by thirds until it is as fine as numbers go.
+ */
+function turningPoint(expr: Expr, a: number, b: number, top: boolean): number {
+  const f = (x: number) => (top ? 1 : -1) * evaluate(expr, x);
+  for (let i = 0; i < 80 && b - a > 1e-13 * Math.max(1, Math.abs(a), Math.abs(b)); i++) {
+    const m1 = a + (b - a) / 3, m2 = b - (b - a) / 3;
+    if (f(m1) < f(m2)) a = m1;
+    else b = m2;
+  }
+  const x = (a + b) / 2;
+  // Where a curve is flat the search can only close in to about eight digits. Tidied to seven, a peak
+  // at 2.5 comes out as 2.5 and not as 2.50000001, and the value read off there is the exact one.
+  return Number(x.toPrecision(7));
+}
+
 /** One function of the plot as it lies along the member. */
 export interface DiagramPart {
   curve: PlotCurve;
@@ -192,17 +210,29 @@ export function diagramShape(sk: Sketch, d: Diagram): DiagramShape | null {
         // Out along the curve and back along the member: on an arc that way back is curved too.
         const back = base.kind === "arc" ? [...run].reverse().map(([x]) => base.at(along(x))) : [base.at(along(last)), base.at(along(first))];
         part.areas.push([...run.map(([x, y]) => place(x, y)), ...back]);
-        run.forEach(([x, y], i) => {
-          see(x, y);
-          // A turning point inside the run: the value on either side of it is smaller, or larger.
-          if (i > 0 && i < run.length - 1 && (y - run[i - 1][1]) * (run[i + 1][1] - y) < 0) note(x, y);
-        });
+        for (const [x, y] of run) see(x, y);
+        // The turning points: where the curve stops rising and falls, or the other way round. Each is
+        // looked for in the function itself, between the drawn points it lies among, so that the value
+        // written is the function's own and not that of the nearest drawn point.
+        let rising = 0, since = 0;
+        for (let i = 1; i < run.length; i++) {
+          const slope = Math.sign(run[i][1] - run[i - 1][1]);
+          if (!slope) continue;
+          if (rising && slope !== rising) {
+            const x = turningPoint(s.expr, run[since - 1][0], run[i][0], rising > 0);
+            const v = evaluate(s.expr, x);
+            note(x, v);
+            see(x, v);
+          }
+          rising = slope;
+          since = i;
+        }
       }
       note(s.from, evaluate(s.expr, s.from));
       note(s.to, evaluate(s.expr, s.to));
     }
-    // A diagram is always closed down to its member at the ends; whether jumps are drawn is the curve's own choice.
-    for (const [a, b] of uprights(plot, { ...curve, fill: true }, REACH)) part.uprights.push([place(a[0], a[1]), place(b[0], b[1])]);
+    // Whether jumps are drawn is the curve's own choice; whether its ends are closed down to the member, the diagram's.
+    for (const [a, b] of uprights(plot, curve, REACH, !!d.closed)) part.uprights.push([place(a[0], a[1]), place(b[0], b[1])]);
     return part;
   });
 
@@ -215,7 +245,7 @@ export function diagramShape(sk: Sketch, d: Diagram): DiagramShape | null {
       return Number.isFinite(v) ? v : null;
     };
     if (d.strokes) {
-      // Evenly spaced along the covered stretch, the ends left to the lines that close the diagram there.
+      // Evenly spaced along the covered stretch, between its ends.
       for (let i = 1; i <= d.strokes; i++) {
         const u = i / (d.strokes + 1);
         const x = x0 + span * u;

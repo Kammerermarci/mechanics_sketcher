@@ -299,18 +299,23 @@ sketch and any number of plots; undo, Save and Open take them along.
   switched off.
 - **Looks.** Each function has a colour, a thickness, a solid, dashed or
   dotted line, and a name set beside the curve that can be dragged anywhere.
-  *Shade down to the axis* fills the area under it and closes it at the ends.
+  *Shade down to the axis* fills the area under it; the line itself ends at
+  the value the function has there.
 - **Axes.** Each axis has a name, written as TeX math, and the range it runs
   over. They are drawn as arrows through the origin, or as a box with the
   names centred along it. Ticks carry numbers, are bare marks, or are left
   out; their spacing suits the size of the plot unless one is typed. A grid
   of lines or of dots follows the ticks.
-- **Size.** Drag a handle of the dotted box to set the size of the axes on
-  paper; it snaps to whole millimetres (hold Alt for any size), or type it in
-  centimetres. Text is 10 pt at any size. Inside the plot, dragging moves what
-  it shows and the wheel zooms it (Shift: sideways only, Alt: up and down
-  only). Outside it, dragging and the wheel move and zoom the view, and 0
-  brings the whole plot back.
+- **Range.** Drag a handle of the dotted box to pull the axis out on that
+  side, or push it in: the left and bottom handles take the range below zero,
+  a corner moves both axes. The ends snap to a tenth of the tick spacing (hold
+  Alt for any value). Inside the plot, dragging moves what it shows and the
+  wheel zooms it (Shift: sideways only, Alt: up and down only). Outside it,
+  dragging and the wheel move and zoom the view, and 0 brings the whole plot
+  back.
+- **Size.** The size of the axes on paper is typed in centimetres in the side
+  panel, or set by dragging a handle with Shift held; that snaps to whole
+  millimetres (Alt for any size). Text is 10 pt at any size.
 - **Export.** In this tab Export saves the plot on show. The SVG is drawn from
   the same shapes as the screen. The TikZ is written for `pgfplots`: the size,
   the ranges, every tick and where each label sits are pinned in it, so it
@@ -337,7 +342,11 @@ a line, an arc or a side of a beam, on the side positive values should go.
   and the handles at the ends to cover only part of the member.
 - It is shaded in a light tone of each function's colour, can have strokes
   drawn across it, and can have the values at its ends, jumps and peaks
-  written beside it. The colours and line styles are the plot's.
+  written beside it. A peak is looked for in the function itself, so the value
+  written is the exact one, to three decimals. The colours and line styles are
+  the plot's.
+- The curve ends at the value the function has there. *Close the ends down to
+  the member* draws the upright lines that shut it at both ends.
 - The diagram stays tied to its plot: change a function on the Plot tab and it
   follows. *Edit this plot*, or a double-click on the diagram, goes there.
   Deleting the plot deletes its diagrams.

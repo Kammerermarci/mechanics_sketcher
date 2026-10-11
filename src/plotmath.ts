@@ -110,8 +110,12 @@ export function restrictY(plot: Plot, margin = 1): [number, number] {
   return [plot.y.min - span, plot.y.max + span];
 }
 
-/** The upright lines of a curve: across the jump between two pieces that meet, and down to the axis at the ends of a shaded curve. */
-export function uprights(plot: Plot, curve: PlotCurve, margin = 1): [V, V][] {
+/**
+ * The upright lines of a curve: across the jump between two pieces that meet.
+ * A curve ends at the value it has there; only with `ends` set is it also
+ * closed down to zero at its two ends, as the outline of a diagram may be.
+ */
+export function uprights(plot: Plot, curve: PlotCurve, margin = 1, ends = false): [V, V][] {
   const list = stretches(plot, curve);
   const span = plot.x.max - plot.x.min, tall = (plot.y.max - plot.y.min) * 1e-9;
   const [lo, hi] = restrictY(plot, margin);
@@ -122,7 +126,7 @@ export function uprights(plot: Plot, curve: PlotCurve, margin = 1): [V, V][] {
     const before = list[i - 1], after = list[i + 1];
     const meets = (other: Stretch | undefined, at: number, edge: number) => !!other && Math.abs(edge - at) < span * 1e-9;
     if (curve.join !== false && meets(after, s.to, after?.from)) add(s.to, evaluate(s.expr, s.to), evaluate(after.expr, after.from));
-    if (curve.fill) {
+    if (ends) {
       if (!meets(before, s.from, before?.to)) add(s.from, 0, evaluate(s.expr, s.from));
       if (!meets(after, s.to, after?.from)) add(s.to, evaluate(s.expr, s.to), 0);
     }

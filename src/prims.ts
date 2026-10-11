@@ -770,9 +770,14 @@ function loadShade(sk: Sketch, s: LineLoad, mm: number): Prim[] {
   return [{ k: "region", outlines: [{ kind: "path", start: f.s0, segs }], color: tint(s.color, PAPER.loadShade), ref: s.id, layer: "fill" }];
 }
 
-/** How a value is written beside a diagram: to four digits, so 2.5 and 12.25 come out as they are and a third does not run on. */
+/**
+ * How a value is written beside a diagram: with up to three decimals, fewer
+ * for large numbers, so that 28.125 and 1012.5 come out as they are and a
+ * third does not run on. Below one it keeps three digits that count.
+ */
 export function valueText(v: number): string {
-  return String(Number(v.toPrecision(4)));
+  const size = Math.abs(v);
+  return String(Number(size >= 1 ? v.toFixed(size >= 1000 ? 1 : size >= 100 ? 2 : 3) : v.toPrecision(3)));
 }
 
 /** The shading of a diagram: the areas between its member and its curves, each in a light tone of its curve's colour. */
