@@ -24,15 +24,43 @@ export interface Line {
   centre?: boolean;
   /** Line thickness in points, at a dimension size of 100%. Unset: the standard thickness for how it is drawn. */
   weight?: number;
+  /** Drawn with dashes: an edge that is hidden, or a second position of a part. */
+  dashed?: boolean;
   /** An arrow annotation: which end carries the head. p1 is the start, p2 the end. */
   arrow?: ArrowEnds;
-  /** The arrow's name, as TeX math. */
+  /** An arrow that starts from a short bar across it: a coordinate, measured from there. */
+  tail?: boolean;
+  /**
+   * Drawn as a machine element between its two points instead of as a line:
+   * a spring, a damper, or a spiral spring wound about p1 whose outer end is p2.
+   */
+  element?: LineElement;
+  /** How an element is drawn; see ElementLook. */
+  look?: ElementLook;
+  /** The name of the arrow or the element, as TeX math. */
   label?: string;
-  /** Where the name sits, in annotation mm from the middle of the arrow. Unset: beside it. */
+  /** Where the name sits, in annotation mm from the middle of the arrow or element. Unset: beside it. */
   lx?: number;
   ly?: number;
 }
 export type ArrowEnds = "end" | "start" | "both";
+export type LineElement = "spring" | "damper" | "spiral";
+export type ArcElement = "spring" | "damper";
+/**
+ * How a spring or a damper is drawn. Its sizes are in model units: it is
+ * part of the drawing, so it looks the same however far the view is zoomed,
+ * and a spring that is pulled longer gets more turns, not wider ones.
+ */
+export interface ElementLook {
+  /** How wide it is across: the zigzag or the coils of a spring, the cylinder of a damper. */
+  across: number;
+  /** A spring: how far apart its turns are. A spiral spring: how far apart its windings are. */
+  pitch: number;
+  /** A spring drawn as the loops of a coil. Unset: a zigzag. */
+  coil?: boolean;
+  /** A damper: the cylinder is at the start, not the end. A spiral spring: wound clockwise on its way out. */
+  flip?: boolean;
+}
 export interface Circle {
   id: Id;
   type: "circle";
@@ -44,6 +72,8 @@ export interface Circle {
   centre?: boolean;
   /** Line thickness in points, at a dimension size of 100%. Unset: the standard thickness for how it is drawn. */
   weight?: number;
+  /** Drawn with dashes. */
+  dashed?: boolean;
 }
 /** Counter-clockwise from p1 to p2 around c. */
 export interface Arc {
@@ -58,9 +88,16 @@ export interface Arc {
   centre?: boolean;
   /** Line thickness in points, at a dimension size of 100%. Unset: the standard thickness for how it is drawn. */
   weight?: number;
+  /** Drawn with dashes. */
+  dashed?: boolean;
   /** A curved arrow: which end carries the head. p1 is the start, p2 the end, counter-clockwise. */
   arrow?: ArrowEnds;
-  /** The arrow's name, as TeX math. */
+  /** An arrow that starts from a short bar across it: an angle, measured from there. */
+  tail?: boolean;
+  /** Drawn as a spring or a damper bent round its centre, as one that resists turning is. */
+  element?: ArcElement;
+  look?: ElementLook;
+  /** The name of the arrow or the element, as TeX math. */
   label?: string;
   /** Where the name sits, in annotation mm from the middle of the arc. Unset: outside it. */
   lx?: number;
@@ -271,6 +308,8 @@ export interface Datum {
   /** Centre of the name relative to the point, in annotation mm. */
   dx: number;
   dy: number;
+  /** Drawn as the mark of a centre of mass: a circle in quarters, two of them filled. Unset: a dot. */
+  mass?: boolean;
 }
 /** Text placed freely on the figure. */
 export interface Note {
@@ -544,9 +583,14 @@ export function curves(sk: Sketch): Curve[] {
   return sk.entities.filter((e): e is Curve => e.type !== "point");
 }
 
-/** True for curves that form the shapes of the figure: not helpers, centre lines or arrows. */
+/** True for a line or arc that carries a name of its own: an arrow, a spring, a damper. */
+export function isNamed(e: Entity | undefined): e is Line | Arc {
+  return !!e && (e.type === "line" || e.type === "arc") && !!(e.arrow || e.element);
+}
+
+/** True for curves that form the shapes of the figure: not helpers, centre lines, arrows, springs or dampers. */
 export function isEdge(e: Curve): boolean {
-  return !e.construction && !e.centre && !((e.type === "line" || e.type === "arc") && e.arrow);
+  return !e.construction && !e.centre && !isNamed(e);
 }
 
 /** Removes a point that no curve is built on any more, unless it was placed on purpose. */

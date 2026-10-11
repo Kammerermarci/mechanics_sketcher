@@ -5,7 +5,7 @@ import {
   type Sketch, type Id, type Constraint, type Curve, ORIGIN, entity, point, isDimension, arcRadius, isFixed,
 } from "./model";
 import { type V, add, sub, mul, norm, perp, mid, polar, wrap, projectOnSegment, TWO_PI } from "./geom";
-import { type Prim, type StrokeStyle, type Outline, PAPER, STROKE_DASH, strokeWidth, arrowHeads, strokedEnds, strokedSweep, textBox } from "./prims";
+import { type Prim, type StrokeStyle, type Outline, PAPER, dashOf, strokeWidth, arrowHeads, strokedEnds, strokedSweep, textBox } from "./prims";
 import type { Overlaps } from "./regions";
 import { texEngine } from "./tex";
 import { ICONS } from "./icons";
@@ -311,7 +311,7 @@ export function drawPrims(s: PrimScene): string {
       } else out += glyphs;
       continue;
     }
-    const dash = p.k === "path" && p.dash ? p.dash : STROKE_DASH[p.stroke];
+    const dash = dashOf(p);
     // The colour goes in as a variable, so the highlight rules for selection and hover still win.
     const sw = `stroke-width="${n2(strokePx(p, pxPerMm))}"` +
       (dash ? ` stroke-dasharray="${dash.map((d) => n2(d * pxPerMm)).join(" ")}"` : "") +
@@ -341,9 +341,9 @@ export function drawPrims(s: PrimScene): string {
 
 function drawHandles(s: Scene): string {
   let out = "";
-  // A datum point shows its coloured dot: its handle is a ring around the dot, not a disc over it.
-  const datums = new Set(s.sk.symbols.filter((x) => x.type === "datum").map((x) => (x as { at: Id }).at));
-  const dotPx = (PAPER.datumRadius * s.view.scale) / s.mm;
+  // A datum point shows its coloured dot, or the mark of a centre of mass: its handle is a ring around that, not a disc over it.
+  const datums = new Map<Id, number>();
+  for (const x of s.sk.symbols) if (x.type === "datum") datums.set(x.at, ((x.mass ? PAPER.massRadius : PAPER.datumRadius) * s.view.scale) / s.mm);
   for (const e of s.sk.entities) {
     if (e.type !== "point") continue;
     const p = toScreen(s.view, [e.x, e.y]);
@@ -361,7 +361,8 @@ function drawHandles(s: Scene): string {
     }
     if (isFixed(s.sk, e.id)) cls.push("fixed");
     if (!s.freeIds.has(e.id)) cls.push("defined");
-    if (datums.has(e.id)) {
+    const dotPx = datums.get(e.id);
+    if (dotPx !== undefined) {
       cls.push("ring");
       out += `<circle class="${cls.join(" ")}" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${n2(Math.max(4.6, dotPx + 2.2) + (lit ? 1.2 : 0))}"/>`;
       continue;

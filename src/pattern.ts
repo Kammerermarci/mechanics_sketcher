@@ -3,7 +3,7 @@
 // or pattern holds every copied point where its original puts it.
 
 import {
-  type Sketch, type Id, type Curve, type Arc, type Sym, type Link, type Pair, type HalfPair, type ArrowEnds,
+  type Sketch, type Id, type Curve, type Arc, type Sym, type Link, type Pair, type HalfPair, type ArrowEnds, type ElementLook,
   ORIGIN, entity, point, curves, curvePoints, addPoint, addLine, addCircle, addArc, addSymbol, newId,
   geometryBox,
 } from "./model";
@@ -35,6 +35,8 @@ export interface CopyResult {
 }
 
 const xy = (sk: Sketch, id: Id): V => { const p = point(sk, id); return [p.x, p.y]; };
+/** Turns an element round: the other end of a damper, the other way of winding. */
+const turnRound = (look: ElementLook): void => { if (look.flip) delete look.flip; else look.flip = true; };
 
 /** Distances below this count as none, for a sketch of this size. */
 function tolerance(sk: Sketch): number {
@@ -136,6 +138,13 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
     if (e.type === "line") {
       const line = addLine(sk, image(e.p1), image(e.p2));
       if (e.arrow) line.arrow = e.arrow;
+      if (e.tail) line.tail = true;
+      if (e.element) {
+        line.element = e.element;
+        if (e.look) line.look = { ...e.look };
+        // A spiral seen in a mirror winds the other way.
+        if (line.look && e.element === "spiral" && move.flips) turnRound(line.look);
+      }
       if (e.label) line.label = e.label;
       if (e.lx !== undefined && e.ly !== undefined) [line.lx, line.ly] = move.vec([e.lx, e.ly]);
       made = line;
@@ -150,6 +159,13 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
         const swap: Record<ArrowEnds, ArrowEnds> = { end: "start", start: "end", both: "both" };
         arc.arrow = move.flips ? swap[e.arrow] : e.arrow;
       }
+      if (e.tail) arc.tail = true;
+      if (e.element) {
+        arc.element = e.element;
+        if (e.look) arc.look = { ...e.look };
+        // Its ends have changed places, so the cylinder of a damper has to as well to stay where it was.
+        if (arc.look && e.element === "damper" && move.flips) turnRound(arc.look);
+      }
       if (e.label) arc.label = e.label;
       if (e.lx !== undefined && e.ly !== undefined) [arc.lx, arc.ly] = move.vec([e.lx, e.ly]);
       arcs.push({ from: e, to: arc });
@@ -157,6 +173,7 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
     }
     if (e.construction) made.construction = true;
     if (e.centre) made.centre = true;
+    if (e.dashed) made.dashed = true;
     if (e.weight !== undefined) made.weight = e.weight;
     cmap.set(e.id, made.id);
     out.curves.push(made.id);
@@ -211,7 +228,8 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
       const at = pmap.get(s.at);
       if (at && at !== s.at) {
         const [dx, dy] = move.vec([s.dx, s.dy]);
-        made = addSymbol(sk, { type: "datum", at, color: s.color, label: s.label.trim() ? nextDatumName(sk) : "", dx, dy });
+        // A datum point gets the next name; the mark of a centre of mass keeps the one it has.
+        made = addSymbol(sk, { type: "datum", at, color: s.color, label: s.mass ? s.label : s.label.trim() ? nextDatumName(sk) : "", dx, dy, ...(s.mass ? { mass: true } : {}) });
       }
     } else if (s.type === "load" || s.type === "moment") {
       const at = pmap.get(s.at);

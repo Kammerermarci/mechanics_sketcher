@@ -5,6 +5,7 @@ import {
   type Sketch, type Id, type Point, type Line, type Circle, type Arc, type Curve, type Constraint,
   type ConstraintDraft, type Dimension, type DistanceMode, type Sym, type SupportKind, type LeaderEnd,
   type ArrowEnds, type Datum, type BalloonFrame, type AnyLoad, type LoadKind, type Diagram, type Plot, isLoad, loadKind, geometryExtent,
+  type LineElement, type ArcElement, type ElementLook, isNamed,
   ORIGIN, emptySketch, entity, point, constraint, symbol, symbolRefs, points, curves, curvePoints,
   constraintRefs, isDimension, isLink, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint,
   addSupport, addFrame, addSymbol, remove, serialize, deserialize, clone,
@@ -36,9 +37,19 @@ import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
 import { type BeamEnds, straightBeam, curvedBeam } from "./beam";
 import { PlotWorkspace } from "./plotwork";
 import { baseline, beamAxis, diagramShape, plotPeak } from "./diagram";
+import { defaultLook, lookOf, elementLength, springTurns } from "./element";
 
-type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam" | "arcbeam";
-type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "note" | "load" | "lineload" | "moment" | "diagram";
+type DrawTool =
+  | "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam" | "arcbeam"
+  /** A line or an arc drawn as something else: a spring, a damper, a spiral spring, a damper bent round a joint, a coordinate. */
+  | "spring" | "damper" | "spiral" | "arcdamper" | "coordinate";
+/** Tools that take two clicks and make a line between them. */
+const LINE_TOOLS = ["line", "centerline", "arrow", "spring", "damper", "spiral", "coordinate"] as const;
+type LineTool = (typeof LINE_TOOLS)[number];
+const isLineTool = (t: Tool): t is LineTool => (LINE_TOOLS as readonly Tool[]).includes(t);
+/** Tools that take a centre, a start and a sweep, and make an arc. */
+const isArcTool = (t: Tool): t is "arc" | "arcarrow" | "arcdamper" => t === "arc" || t === "arcarrow" || t === "arcdamper";
+type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "mass" | "note" | "load" | "lineload" | "moment" | "diagram";
 /** Tools that copy what is selected and take one more click to say how: about which line, around which point. */
 type CopyTool = "mirror" | "turn";
 type Command =
@@ -46,13 +57,17 @@ type Command =
   | "midpoint" | "tangent" | "fixed" | "dimension";
 /** A constraint or the dimension command is a tool too: pick it, then the geometry. */
 type Tool = "select" | DrawTool | "trim" | CopyTool | SymbolTool | Command;
-/** Sketch holds what shapes the geometry; Annotate what is added to the figure. */
+/** Sketch holds what shapes the geometry; Annotate what is added to the figure; Dynamics what a model that moves is drawn with. */
 /** Plot is a workspace of its own: its tab swaps the sketch for the plots that are kept with it. */
-type Tab = "sketch" | "annotate" | "plot";
-const TAB_NAMES: Record<Tab, string> = { sketch: "Sketch", annotate: "Annotate", plot: "Plot" };
+type Tab = "sketch" | "annotate" | "dynamics" | "plot";
+const TABS: Tab[] = ["sketch", "annotate", "dynamics", "plot"];
+const TAB_NAMES: Record<Tab, string> = { sketch: "Sketch", annotate: "Annotate", dynamics: "Dynamics", plot: "Plot" };
 
-/** How a curve is drawn: a solid edge, a centre line, an arrow, or a helper that is not exported. */
-type LineStyle = "solid" | "centre" | "arrow" | "construction";
+/** How a curve is drawn: a solid or dashed edge, a centre line, an arrow, a spring or a damper, or a helper that is not exported. */
+type LineStyle = "solid" | "dashed" | "centre" | "arrow" | LineElement | "construction";
+const STYLE_NAMES: Record<LineStyle, string> = {
+  solid: "Solid", dashed: "Dashed", centre: "Centre line", arrow: "Arrow", spring: "Spring", damper: "Damper", spiral: "Torsion spring", construction: "Helper",
+};
 
 /** Where a click lands once snapping has had its say. */
 interface Snap {
@@ -169,6 +184,13 @@ const TOOLS: ToolDef[] = [
   { id: "balloon", label: "Balloon", key: "B", icon: "balloon", tab: "annotate", group: 4 },
   { id: "fill", label: "Fill", icon: "fill", tab: "annotate", group: 5 },
   { id: "hatch", label: "Hatching", icon: "hatch", tab: "annotate", group: 5 },
+
+  { id: "spring", label: "Spring", icon: "spring", tab: "dynamics", group: 1 },
+  { id: "damper", label: "Damper", icon: "damper", tab: "dynamics", group: 1 },
+  { id: "spiral", label: "Torsion spring", icon: "spiral", tab: "dynamics", group: 2 },
+  { id: "arcdamper", label: "Torsion damper", icon: "arcdamper", tab: "dynamics", group: 2 },
+  { id: "mass", label: "Centre of mass", icon: "mass", tab: "dynamics", group: 3 },
+  { id: "coordinate", label: "Coordinate", icon: "coordinate", tab: "dynamics", group: 3 },
 ];
 
 const COMMAND_IDS: Command[] = [
@@ -176,7 +198,7 @@ const COMMAND_IDS: Command[] = [
 ];
 const isCommand = (t: Tool): t is Command => (COMMAND_IDS as Tool[]).includes(t);
 const isSymbolTool = (t: Tool): t is SymbolTool =>
-  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum", "note", "load", "lineload", "moment", "diagram"].includes(t);
+  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum", "mass", "note", "load", "lineload", "moment", "diagram"].includes(t);
 const isCopyTool = (t: Tool): t is CopyTool => t === "mirror" || t === "turn";
 const toolDef = (t: Tool | "shift"): ToolDef => TOOLS.find((d) => d.id === t)!;
 
@@ -220,8 +242,19 @@ const LINE_ARROWS_MAX = 60;
 /** How high a diagram can be set with its slider, against the length of its member, and the most strokes it is drawn with. */
 const DIAGRAM_SIZE: [number, number] = [1 / 50, 2];
 const DIAGRAM_STROKES_MAX = 80;
-/** Where a datum's name starts out, in mm from its point. */
+/** Where a datum's name starts out, in mm from its point; the mark of a centre of mass is larger, so its name stands further off. */
 const DATUM_LABEL_OFFSET: V = [2.4, 2.4];
+const MASS_LABEL_OFFSET: V = [3.4, 3.2];
+/** What the mark of a centre of mass is drawn in and called to start with. */
+const MASS_COLOR = "#17201b", MASS_NAME = "S";
+/** How wide a new spring or damper is across, in annotation mm in the figure as it prints when it is made. */
+const ELEMENT_ACROSS = 5;
+/** What a new element is called: nothing, until a name is typed. The placeholders show what is usual. */
+const ELEMENT_HINT: Record<LineElement, string> = { spring: "k, k_1", damper: "c, c_1", spiral: "k_t" };
+const ELEMENT_TITLE: Record<LineElement, string> = { spring: "spring", damper: "damper", spiral: "torsion spring" };
+/** The sliders of an element run over its sizes as shares of its length, in equal ratios. */
+const ELEMENT_ACROSS_RANGE: [number, number] = [1 / 60, 1];
+const ELEMENT_PITCH_RANGE: [number, number] = [1 / 150, 1 / 2];
 const EXPORT_NAME_KEY = "mech-sketch.exportName";
 const SKETCH_NAME_KEY = "mech-sketch.sketchName";
 /** Range of the line thickness slider, in points. */
@@ -710,6 +743,16 @@ export class App {
       case "select":
         return "Click to select, drag to move. Shift-click adds to the selection. Wheel zooms; middle-drag pans.";
       case "point": return `Click to place a point. ${done}`;
+      case "spring":
+      case "damper":
+        return p ? `Click where the ${this.tool} ends. Hold Alt to switch snapping off.`
+          : `Click where the ${this.tool} starts: a joint, a spot on a line, or anywhere. It stretches and turns with its two ends. ${done}`;
+      case "spiral":
+        return p ? "Click where the outer end of the spring goes: on the part it holds, or anywhere."
+          : `Click the joint the spring is wound about. ${done}`;
+      case "coordinate":
+        return p ? "Click where the coordinate points." : `Click where the coordinate is measured from: it starts there with a short bar. ${done}`;
+      case "mass": return `Click where the centre of mass is: a joint, a spot on a curve, or anywhere. ${done}`;
       case "line":
       case "centerline":
       case "arrow":
@@ -736,9 +779,10 @@ export class App {
       case "diagram": return `Click a line, an arc or a side of a beam to lay the plot along it, on the side positive values should go. ${done}`;
       case "circle": return p ? "Click to set the radius." : `Click the centre. ${done}`;
       case "arc":
-      case "arcarrow": {
-        const what = this.tool === "arc" ? "arc" : "arrow";
-        if (!p) return `Click the centre${this.tool === "arcarrow" ? " the arrow turns about" : ""}. ${done}`;
+      case "arcarrow":
+      case "arcdamper": {
+        const what = this.tool === "arc" ? "arc" : this.tool === "arcarrow" ? "arrow" : "damper";
+        if (!p) return `Click the centre${this.tool === "arcarrow" ? " the arrow turns about" : this.tool === "arcdamper" ? " the damper is bent round: the joint it resists turning about" : ""}. ${done}`;
         return p.tool === "arc" && p.start ? `Sweep around the centre, then click where the ${what} ends.` : `Click where the ${what} starts.`;
       }
       case "pin":
@@ -1044,7 +1088,7 @@ export class App {
       return;
     }
 
-    if (this.tool === "line" || this.tool === "centerline" || this.tool === "arrow") {
+    if (isLineTool(this.tool)) {
       if (!p || p.tool !== "line") {
         this.pending = { tool: "line", start: snap };
         return;
@@ -1056,8 +1100,14 @@ export class App {
       const b = this.materialize(snap, autos);
       const line = addLine(this.sk, a, b);
       if (this.tool === "centerline") line.centre = true;
-      if (this.tool === "arrow") {
+      if (this.tool === "arrow" || this.tool === "coordinate") {
         line.arrow = "end";
+        if (this.tool === "coordinate") line.tail = true;
+        this.selection = new Set([line.id]);
+      }
+      if (this.tool === "spring" || this.tool === "damper" || this.tool === "spiral") {
+        line.element = this.tool;
+        line.look = this.newLook(line);
         this.selection = new Set([line.id]);
       }
       let axis = snap.axis;
@@ -1073,8 +1123,8 @@ export class App {
       // One line per pair of clicks: the next click starts a new one.
       this.pending = null;
       this.finishDrawing(autos);
-      // An arrow's name is typed right away, where it will sit; clicking on leaves it without one.
-      if (line.arrow) this.openEditor({ kind: "arrow", id: line.id });
+      // The name of an arrow, a spring or a damper is typed right away, where it will sit; clicking on leaves it without one.
+      if (isNamed(line)) this.openEditor({ kind: "arrow", id: line.id });
       return;
     }
 
@@ -1130,7 +1180,7 @@ export class App {
       return;
     }
 
-    if (this.tool === "arc" || this.tool === "arcarrow") {
+    if (isArcTool(this.tool)) {
       if (!p || p.tool !== "arc") {
         this.pending = { tool: "arc", center: snap, sweep: 0, lastAng: 0 };
         return;
@@ -1159,9 +1209,15 @@ export class App {
         arc.arrow = p.sweep >= 0 ? "end" : "start";
         this.selection = new Set([arc.id]);
       }
+      if (this.tool === "arcdamper") {
+        arc.element = "damper";
+        // The rod leaves from where the sweep began, the cylinder is where it ended.
+        arc.look = { ...this.newLook(arc), ...(p.sweep < 0 ? { flip: true } : {}) };
+        this.selection = new Set([arc.id]);
+      }
       this.pending = null;
       this.finishDrawing(autos);
-      if (arc.arrow) this.openEditor({ kind: "arrow", id: arc.id });
+      if (isNamed(arc)) this.openEditor({ kind: "arrow", id: arc.id });
     }
   }
 
@@ -1443,6 +1499,29 @@ export class App {
     return String(max + 1);
   }
 
+  /**
+   * How a new spring or damper is drawn: like the first one of its kind in
+   * the sketch, so they match, or at a size that suits the figure. It is
+   * never wider than it is long.
+   */
+  private newLook(e: Line | Arc): ElementLook {
+    const length = elementLength(this.sk, e);
+    const like = curves(this.sk).find((c): c is Line | Arc => c !== e && c.type !== "circle" && c.element === e.element && !!c.look);
+    // Sized for the figure as it prints, where it stands beside the supports and the arrowheads; a long one is a little wider.
+    const look: ElementLook = like?.look ? { across: like.look.across, pitch: like.look.pitch } : defaultLook(Math.max(ELEMENT_ACROSS / printMm(this.sk), length / 14));
+    if (like?.look?.coil) look.coil = true;
+    if (length > 0) {
+      const most = length * (e.element === "damper" ? 0.5 : 0.6);
+      if (look.across > most) {
+        look.pitch *= most / look.across;
+        look.across = most;
+      }
+      // A spiral is as large as it was drawn: the first one has its windings spaced to give it three of them.
+      if (e.element === "spiral" && !like) look.pitch = length / 3.25;
+    }
+    return look;
+  }
+
   /** The datum mark on a point, if it has one. */
   private datumOn(pointId: Id): Datum | undefined {
     return this.sk.symbols.find((s): s is Datum => s.type === "datum" && s.at === pointId);
@@ -1515,19 +1594,18 @@ export class App {
       return this.commit();
     }
 
-    if (tool === "datum") {
+    if (tool === "datum" || tool === "mass") {
       const snap = this.snapAt(sp);
       const autos: ConstraintDraft[] = [];
       const at = this.materialize(snap, autos, true);
-      const existing = this.sk.symbols.find((x) => x.type === "datum" && x.at === at);
+      const existing = this.sk.symbols.find((x): x is Datum => x.type === "datum" && x.at === at);
       if (existing) {
         this.selection = new Set([existing.id]);
-        return this.toast("That point is a datum point already.");
+        return this.toast(`That point is ${existing.mass ? "marked as a centre of mass" : "a datum point"} already.`);
       }
-      const d = addSymbol(this.sk, {
-        type: "datum", at, color: this.datumColor, label: nextDatumName(this.sk),
-        dx: DATUM_LABEL_OFFSET[0], dy: DATUM_LABEL_OFFSET[1],
-      });
+      const d = addSymbol(this.sk, tool === "mass"
+        ? { type: "datum", at, color: MASS_COLOR, label: MASS_NAME, dx: MASS_LABEL_OFFSET[0], dy: MASS_LABEL_OFFSET[1], mass: true }
+        : { type: "datum", at, color: this.datumColor, label: nextDatumName(this.sk), dx: DATUM_LABEL_OFFSET[0], dy: DATUM_LABEL_OFFSET[1] });
       this.finishDrawing(autos);
       this.selection = new Set([d.id]);
       return;
@@ -2193,7 +2271,7 @@ export class App {
     if (hit.kind === "dim") target = { kind: "dim", id: hit.id };
     else if (hit.kind === "curve") {
       const e = entity(this.sk, hit.id);
-      if (e && (e.type === "line" || e.type === "arc") && e.arrow) target = { kind: "arrow", id: hit.id };
+      if (isNamed(e)) target = { kind: "arrow", id: hit.id };
     } else if (hit.kind === "point") {
       const d = this.datumOn(hit.id);
       if (d) target = { kind: "datum", id: d.id };
@@ -2484,7 +2562,7 @@ export class App {
     }
     if (t.kind === "arrow") {
       const e = entity(this.sk, t.id);
-      return e && (e.type === "line" || e.type === "arc") && e.arrow ? e.label ?? "" : null;
+      return isNamed(e) ? e.label ?? "" : null;
     }
     const s = symbol(this.sk, t.id);
     if (t.kind === "balloon") return s?.type === "balloon" ? s.text : null;
@@ -3096,7 +3174,7 @@ export class App {
   // ---- chrome ---------------------------------------------------------------
 
   private buildToolbars(): void {
-    $("#tabs").innerHTML = (["sketch", "annotate", "plot"] as Tab[]).map((t) =>
+    $("#tabs").innerHTML = TABS.map((t) =>
       `<button type="button" role="tab" class="tab${t === "plot" ? " apart" : ""}" data-tab="${t}" id="tab-${t}" aria-controls="ribbon"${t === "plot" ? ` title="Plot functions: a workspace of its own beside the sketch"` : ""}>${TAB_NAMES[t]}</button>`,
     ).join("");
     $("#view-actions").innerHTML =
@@ -3442,12 +3520,14 @@ export class App {
         html += text("Text", "sym-text", s.text, "Plain text. Put math between dollar signs, as in $F_1 = 2a$, and \\\\ where a new line starts. Clicking the note on the drawing edits it there; dragging moves it.");
         break;
       case "datum":
-        html += `<h2>Datum point</h2>`;
+        html += `<h2>${s.mass ? "Centre of mass" : "Datum point"}</h2>`;
+        html += `<div class="field"><span id="mark-label">Marked with</span><div class="segmented" role="group" aria-labelledby="mark-label">` +
+          `<button type="button" data-mass="0" aria-pressed="${!s.mass}">A dot</button><button type="button" data-mass="1" aria-pressed="${!!s.mass}">Centre of mass</button></div></div>`;
         html += text("Name", "sym-label", s.label, "Written as TeX math. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.");
         html += `<div class="field"><span id="colour-label">Colour</span><div class="swatches" role="group" aria-labelledby="colour-label">${DATUM_COLORS.map((c) =>
           `<button type="button" class="swatch" data-color="${c}" aria-pressed="${s.color === c}" aria-label="Colour ${c}" title="${c}" style="background:${c}"></button>`).join("")}` +
           `<label class="swatch custom" title="Another colour"><input data-field="sym-color" type="color" value="${esc(s.color)}" aria-label="Another colour"></label></div></div>`;
-        html += `<p class="muted note-block">The dot and its name are part of the exported figure. The point under it is constrained and dimensioned like any other.</p>`;
+        html += `<p class="muted note-block">The ${s.mass ? "mark" : "dot"} and its name are part of the exported figure. The point under it is constrained and dimensioned like any other.</p>`;
         html += `<button type="button" class="plain" data-act="undatum">Back to a plain point</button>`;
         break;
     }
@@ -3575,20 +3655,30 @@ export class App {
       }
       const cs: Curve[] = [...lines, ...rounds];
       if (cs.length) {
-        const styleOf = (c: Curve): LineStyle => (c.construction ? "construction" : c.type !== "circle" && c.arrow ? "arrow" : c.centre ? "centre" : "solid");
+        const styleOf = (c: Curve): LineStyle =>
+          c.construction ? "construction" : c.type !== "circle" && c.arrow ? "arrow" : c.type !== "circle" && c.element ? c.element : c.centre ? "centre" : c.dashed ? "dashed" : "solid";
         const shared = cs.every((c) => styleOf(c) === styleOf(cs[0])) ? styleOf(cs[0]) : null;
-        const styles: [LineStyle, string][] = [["solid", "Solid"], ["centre", "Centre line"], ["construction", "Helper"]];
-        // Lines and arcs can be arrows; a full circle has no end to put a head on.
-        if (cs.every((c) => c.type !== "circle")) styles.splice(2, 0, ["arrow", "Arrow"]);
-        html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented wrap" role="group" aria-labelledby="style-label">${styles.map(([st, name]) =>
-          `<button type="button" data-style="${st}" aria-pressed="${shared === st}">${name}</button>`).join("")}</div>` +
+        const styles: LineStyle[] = ["solid", "dashed", "centre"];
+        // Lines and arcs can be arrows, springs and dampers; a full circle has no ends to put them between.
+        if (cs.every((c) => c.type !== "circle")) styles.push("arrow", "spring", "damper");
+        // A spiral is wound about the start of a line.
+        if (cs.every((c) => c.type === "line")) styles.push("spiral");
+        styles.push("construction");
+        html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented wrap" role="group" aria-labelledby="style-label">${styles.map((st) =>
+          `<button type="button" data-style="${st}" aria-pressed="${shared === st}">${STYLE_NAMES[st]}</button>`).join("")}</div>` +
           `<small>A centre line is thin and dash-dotted. A helper is dashed here and left out of the exported figure.</small></div>`;
+        html += this.elementPanel();
         // One slider for all of them; it shows the thickness of the first.
         const weight = cs[0].weight ?? standardWeight(cs[0]);
         const own = cs.some((c) => c.weight !== undefined);
         html += `<label class="field"><span>Line thickness</span><span class="slider-row"><input data-field="weight" type="range" min="${WEIGHT_MIN}" max="${WEIGHT_MAX}" step="0.1" value="${weight}"><output>${this.weightLabel(weight)}</output></span>` +
           `<small>In points, as LaTeX counts line widths${own ? "" : "; this is the standard thickness"}. It grows and shrinks with the dimension size in print. Double-click the slider to go back to the standard.</small></label>`;
-        const arrow = cs.length === 1 && cs[0].type !== "circle" && cs[0].arrow ? cs[0] : null;
+        const only = cs.length === 1 ? cs[0] : undefined;
+        const named = isNamed(only) ? only : null;
+        if (named?.element) {
+          html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="${ELEMENT_HINT[named.element]}" value="${esc(named.label ?? "")}"><small>Written as TeX math. On the drawing, click the name to type it there and drag it to move it; double-click the ${ELEMENT_TITLE[named.element]} to give it one.</small></label>`;
+        }
+        const arrow = named?.arrow ? named : null;
         if (arrow) {
           const heads: [ArrowEnds, string][] = arrow.type === "line"
             ? [["end", "End"], ["start", "Start"], ["both", "Both"]]
@@ -3596,6 +3686,10 @@ export class App {
           html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="${arrow.type === "line" ? "F, \\vec{v}_0" : "M, \\omega"}" value="${esc(arrow.label ?? "")}"><small>Written as TeX math. On the drawing, click the name to type it there and drag it to move it; double-click the arrow to give it one.</small></label>`;
           html += `<div class="field"><span id="head-label">${arrow.type === "line" ? "Arrowhead at the" : "Points"}</span><div class="segmented wrap" role="group" aria-labelledby="head-label">${heads.map(([h, name]) =>
             `<button type="button" data-head="${h}" aria-pressed="${arrow.arrow === h}">${name}</button>`).join("")}</div></div>`;
+          if (arrow.arrow !== "both") {
+            html += `<label class="check"><input data-field="arrow-tail" type="checkbox"${arrow.tail ? " checked" : ""}> Starts from a short bar</label>` +
+              `<p class="muted note-block">For a coordinate: the bar marks where it is measured from.</p>`;
+          }
         }
       }
       if (entities > 0) {
@@ -3668,6 +3762,12 @@ export class App {
       else if (ds.mode) this.setDimMode(ds.mode as DistanceMode);
       else if (ds.kind) this.setSupportKind(ds.kind as SupportKind);
       else if (ds.style) this.setLineStyle(ds.style as LineStyle);
+      else if (ds.coil) this.editElements((look) => { if (ds.coil === "1") look.coil = true; else delete look.coil; });
+      else if (ds.mass) this.editSymbol((x) => {
+        if (x.type !== "datum") return;
+        if (ds.mass === "1") x.mass = true;
+        else delete x.mass;
+      });
       else if (ds.end) this.editSymbol((x) => { if (x.type === "balloon") x.end = ds.end as LeaderEnd; });
       else if (ds.pull) this.editSymbol((x) => {
         if (x.type !== "load" && x.type !== "lineload") return;
@@ -3864,6 +3964,8 @@ export class App {
       case "edit-plot": return this.editPlotOf(this.selectedSymbol());
       case "lean":
         return this.editSymbol((x) => { if (x.type === "hatch") x.lean = (x.lean ?? 1) === 1 ? -1 : 1; });
+      case "el-flip":
+        return this.editElements((look) => { if (look.flip) delete look.flip; else look.flip = true; });
       case "undatum": {
         // The mark goes; the point it was on stays.
         const d = this.selectedSymbol();
@@ -3898,15 +4000,62 @@ export class App {
   /** Sets how the selected curves are drawn. */
   private setLineStyle(style: LineStyle): void {
     const { lines, rounds } = this.picked();
+    const element = style === "spring" || style === "damper" || style === "spiral" ? style : null;
     for (const c of [...lines, ...rounds]) {
       delete c.construction;
       delete c.centre;
-      if (c.type !== "circle" && style !== "arrow") delete c.arrow;
+      delete c.dashed;
+      if (c.type !== "circle") {
+        if (style !== "arrow") { delete c.arrow; delete c.tail; }
+        // A spiral is wound about the start of a line; an arc has no such end.
+        const as = element && (c.type === "line" || element !== "spiral") ? element : null;
+        if (as) {
+          const was = c.element;
+          c.element = as as ArcElement;
+          // A spring made into a damper keeps its width; anything else starts out like the others of its kind.
+          if (!c.look || was === "spiral" || as === "spiral") c.look = this.newLook(c);
+        } else {
+          delete c.element;
+          delete c.look;
+        }
+      }
       if (style === "construction") c.construction = true;
       if (style === "centre") c.centre = true;
+      if (style === "dashed") c.dashed = true;
       if (style === "arrow" && c.type !== "circle") c.arrow ??= "end";
     }
     this.commit();
+  }
+
+  /** One of an element's sizes as it is shown beside its slider, in the drawing's units. */
+  private elementSizeLabel(e: Line | Arc, what: "across" | "pitch"): string {
+    return formatNumber(Number(lookOf(this.sk, e)[what].toPrecision(3)));
+  }
+
+  /** The side panel's fields for the selected springs or dampers: how they are drawn. */
+  private elementPanel(): string {
+    const els = this.selectedElements();
+    const e = els[0];
+    if (!e?.element) return "";
+    const look = lookOf(this.sk, e), length = elementLength(this.sk, e) || 1;
+    const slider = (label: string, field: string, range: [number, number], value: number, what: "across" | "pitch", note: string) =>
+      `<label class="field"><span>${label}</span><span class="slider-row"><input data-field="${field}" type="range" min="0" max="100" step="1" value="${ratioPos(value / length, range)}"><output>${this.elementSizeLabel(e, what)}</output></span><small>${note}</small></label>`;
+    let html = "";
+    if (e.element === "spring") {
+      html += `<div class="field"><span id="coil-label">Look</span><div class="segmented" role="group" aria-labelledby="coil-label">` +
+        `<button type="button" data-coil="0" aria-pressed="${!look.coil}">Zigzag</button><button type="button" data-coil="1" aria-pressed="${!!look.coil}">Coil</button></div></div>`;
+      html += slider("Width", "el-across", ELEMENT_ACROSS_RANGE, look.across, "across", "Across the spring, in the drawing's units.");
+      html += slider("Turns apart", "el-pitch", ELEMENT_PITCH_RANGE, look.pitch, "pitch",
+        `${springTurns(length, look)} turns now. Their spacing stays as it is set: a spring pulled longer gets more turns.`);
+    } else if (e.element === "damper") {
+      html += slider("Size", "el-across", ELEMENT_ACROSS_RANGE, look.across, "across", "How wide the cylinder is, in the drawing's units; its length goes with it.");
+      html += `<button type="button" class="plain" data-act="el-flip">Turn it round</button>`;
+    } else {
+      html += slider("Windings apart", "el-pitch", ELEMENT_PITCH_RANGE, look.pitch, "pitch",
+        "The spring is wound about the start of its line and ends at the other end: drag that end to make it larger.");
+      html += `<button type="button" class="plain" data-act="el-flip">Wind it the other way</button>`;
+    }
+    return html;
   }
 
   /** A line thickness as it is shown beside its slider. */
@@ -3921,19 +4070,38 @@ export class App {
     this.commit();
   }
 
-  /** The one selected line or arc, when it is drawn as an arrow. */
-  private selectedArrow(): Line | Arc | null {
+  /** The one selected line or arc, when it is drawn as something with a name: an arrow, a spring, a damper. */
+  private selectedNamed(): Line | Arc | null {
     if (this.selection.size !== 1) return null;
     const e = entity(this.sk, [...this.selection][0]);
-    return e && (e.type === "line" || e.type === "arc") && e.arrow ? e : null;
+    return isNamed(e) ? e : null;
   }
 
   /** Sets which end of the selected arrow carries the head. */
   private setArrowHead(ends: ArrowEnds): void {
-    const e = this.selectedArrow();
-    if (!e) return;
+    const e = this.selectedNamed();
+    if (!e?.arrow) return;
     e.arrow = ends;
     this.commit();
+  }
+
+  /** The selected springs and dampers, when everything selected is one kind of them. */
+  private selectedElements(): (Line | Arc)[] {
+    const { lines, rounds, pts, syms, cons } = this.picked();
+    const cs = [...lines, ...rounds];
+    const first = cs[0];
+    if (!first || first.type === "circle" || !first.element || pts.length || syms.length || cons.length) return [];
+    return cs.every((c) => c.type !== "circle" && c.element === first.element) ? (cs as (Line | Arc)[]) : [];
+  }
+
+  /** Changes how the selected springs and dampers are drawn. */
+  private editElements(change: (look: ElementLook, e: Line | Arc) => void, record = true): void {
+    for (const e of this.selectedElements()) {
+      e.look = { ...lookOf(this.sk, e) };
+      change(e.look, e);
+    }
+    if (record) this.commit();
+    else this.render();
   }
 
   /** Moves the selected radius dimension inside or outside its circle. */
@@ -4185,8 +4353,26 @@ export class App {
       return this.touch();
     }
 
+    if (field === "el-across" || field === "el-pitch") {
+      const els = this.selectedElements();
+      if (!els.length) return;
+      // The slider is in shares of the first one's length; the size it gives is the same for all of them.
+      const length = elementLength(this.sk, els[0]);
+      const size = length * ratioValue(Number(input.value), field === "el-across" ? ELEMENT_ACROSS_RANGE : ELEMENT_PITCH_RANGE);
+      if (!(size > 0)) return;
+      this.editElements((look) => { if (field === "el-across") look.across = size; else look.pitch = size; }, false);
+      return slide(this.elementSizeLabel(els[0], field === "el-across" ? "across" : "pitch"));
+    }
+    if (field === "arrow-tail") {
+      const e = this.selectedNamed();
+      if (!e?.arrow) return;
+      if (input.checked) e.tail = true;
+      else delete e.tail;
+      return this.commit();
+    }
+
     if (field === "arrow-label") {
-      const e = this.selectedArrow();
+      const e = this.selectedNamed();
       if (!e) return;
       const name = input.value.trim().replace(/^\$+|\$+$/g, "");
       if (name) e.label = name;

@@ -6,8 +6,9 @@ import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
   type Arc, type Line, type Curve, type Sym, type Support, type Frame, type CenterMark, type Balloon,
   type Fill as FillSym, type Hatch, type Datum, type Note, type Load, type LineLoad, type Moment, type AnyLoad, type LoadKind, type Diagram,
-  entity, point, arcRadius, arcAngles, isDimension, geometryBox, geometryExtent,
+  entity, point, arcRadius, arcAngles, isDimension, isNamed, geometryBox, geometryExtent,
 } from "./model";
+import { elementPaths, elementReach } from "./element";
 import {
   type V, type Box, add, sub, mul, dot, norm, perp, mid, polar, dist, len, angleOf, wrap, inSweep,
   distToSegment, intersectLines, TWO_PI,
@@ -50,25 +51,34 @@ export const PAPER = {
   arrow: 0.21,          // 0.6 pt arrow annotations
   arrowScale: 1.5,      // their heads, against a dimension's
   datumRadius: 0.7,
+  massRadius: 1.5,      // the mark of a centre of mass
+  element: 0.21,        // 0.6 pt springs and dampers
+  tailBar: 1.5,         // half the bar a coordinate's arrow starts from
   radiusLeader: 8,      // default length of a radius leader drawn outside the circle
   loadHead: 0.62,       // the heads of a spread load's arrows, against a dimension's
   loadShade: 0.16,      // how much of a spread load's colour is in the shading under its arrows
 };
 
 export type Anchor = "c" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
-export type StrokeStyle = "member" | "construction" | "dim" | "symbol" | "hatch" | "centre" | "centreline" | "arrow";
+export type StrokeStyle = "member" | "construction" | "dim" | "symbol" | "hatch" | "centre" | "centreline" | "arrow" | "element";
 /** Line width of each stroke style, in mm. */
 export const STROKE_MM: Record<StrokeStyle, number> = {
   member: PAPER.member, construction: PAPER.construction, dim: PAPER.dim,
   symbol: PAPER.symbol, hatch: PAPER.hatch, centre: PAPER.centre, centreline: PAPER.symbol,
-  arrow: PAPER.arrow,
+  arrow: PAPER.arrow, element: PAPER.element,
 };
 /** One point, in mm. */
 export const PT_MM = 0.3515;
 /** How thick a curve is drawn when it has no thickness of its own, in points. */
 export function standardWeight(e: Curve): number {
-  const style: StrokeStyle = e.construction ? "construction" : e.type !== "circle" && e.arrow ? "arrow" : e.centre ? "centreline" : "member";
-  return Number((STROKE_MM[style] / PT_MM).toFixed(2));
+  return Number((STROKE_MM[curveStroke(e)] / PT_MM).toFixed(2));
+}
+/** The stroke style a curve of the sketch is drawn in. */
+function curveStroke(e: Curve): StrokeStyle {
+  if (e.construction) return "construction";
+  if (e.type !== "circle" && e.arrow) return "arrow";
+  if (e.type !== "circle" && e.element) return "element";
+  return e.centre ? "centreline" : "member";
 }
 /** Width a primitive is stroked with, in mm: its own, or that of its style. */
 export function strokeWidth(p: { stroke: StrokeStyle; width?: number }): number {
@@ -78,6 +88,12 @@ export function strokeWidth(p: { stroke: StrokeStyle; width?: number }): number 
 export const STROKE_DASH: Partial<Record<StrokeStyle, number[]>> = {
   centreline: [2, 0.6, 0.3, 0.6], // long dash, short dash
 };
+/** The pattern of a curve that is drawn dashed, as on and off lengths in mm. */
+export const DASHED = [2, 1.2];
+/** The pattern a stroked primitive is drawn with: its own, or that of its style. Null for a solid line. */
+export function dashOf(p: { stroke: StrokeStyle; dash?: number[] }): number[] | null {
+  return p.dash ?? STROKE_DASH[p.stroke] ?? null;
+}
 /** "paper" fills a shape with the background, hiding what lies under it; "ink" makes it solid. */
 export type Fill = "paper" | "ink";
 
@@ -94,15 +110,18 @@ interface Base {
   /** CSS hex colour it is drawn in instead of black: its stroke, its arrowheads, its text. */
   ink?: string;
 }
-/** `head` scales the arrowheads; 1 is the size used on dimensions. `width`, in mm, replaces the width of the stroke style. */
-export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeStyle; width?: number; arrowA?: boolean; arrowB?: boolean; head?: number }
-export interface CirclePrim extends Base { k: "circle"; c: V; r: number; stroke: StrokeStyle; width?: number; fill?: Fill }
+/**
+ * `head` scales the arrowheads; 1 is the size used on dimensions. `width`, in mm, replaces the width of the stroke style,
+ * and `dash` its pattern, as on and off lengths in mm.
+ */
+export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeStyle; width?: number; dash?: number[]; arrowA?: boolean; arrowB?: boolean; head?: number }
+export interface CirclePrim extends Base { k: "circle"; c: V; r: number; stroke: StrokeStyle; width?: number; dash?: number[]; fill?: Fill }
 /** A closed outline. */
-export interface PolyPrim extends Base { k: "poly"; pts: V[]; stroke: StrokeStyle; fill?: Fill }
+export interface PolyPrim extends Base { k: "poly"; pts: V[]; stroke: StrokeStyle; fill?: Fill; dash?: undefined }
 /** An open run of straight pieces: a plotted curve. `dash` is its pattern, as on and off lengths in mm. */
 export interface PathPrim extends Base { k: "path"; pts: V[]; stroke: StrokeStyle; width?: number; dash?: number[] }
 /** Counter-clockwise from a0 to a1, with a1 > a0. */
-export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a1: number; stroke: StrokeStyle; width?: number; arrowA?: boolean; arrowB?: boolean; head?: number }
+export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a1: number; stroke: StrokeStyle; width?: number; dash?: number[]; arrowA?: boolean; arrowB?: boolean; head?: number }
 /**
  * `anchor` names the side of the text box that sits at `at`, as in TikZ.
  * `rot` turns the text about `at`, counter-clockwise in radians.
@@ -662,7 +681,17 @@ function balloonPrims(sk: Sketch, s: Balloon, mm: number): Prim[] {
 function datumPrims(sk: Sketch, s: Datum, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const };
   const at = P(sk, s.at, mm);
-  const out: Prim[] = [{ ...base, k: "circle", c: at, r: PAPER.datumRadius, stroke: "symbol", fill: "ink", color: s.color }];
+  const out: Prim[] = [];
+  if (s.mass) {
+    // A circle in quarters, the upper right and the lower left filled: the mark of a centre of mass.
+    const r = PAPER.massRadius;
+    out.push({ ...base, k: "circle", c: at, r, stroke: "symbol", fill: "paper", ink: s.color });
+    for (const from of [0, Math.PI]) {
+      const pts: V[] = [at];
+      for (let i = 0; i <= 8; i++) pts.push(polar(at, r, from + (i * Math.PI) / 16));
+      out.push({ ...base, k: "poly", pts, stroke: "symbol", fill: "ink", color: s.color, ink: s.color });
+    }
+  } else out.push({ ...base, k: "circle", c: at, r: PAPER.datumRadius, stroke: "symbol", fill: "ink", color: s.color });
   if (s.label.trim()) out.push({ ...base, k: "text", at: [at[0] + s.dx, at[1] + s.dy], tex: labelTex(s.label), anchor: "c", part: "label" });
   return out;
 }
@@ -975,23 +1004,33 @@ export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
   }
 }
 
-/** The middle of an arrow, in paper mm: where its name is measured from. */
+/** The middle of an arrow, a spring or a damper, in paper mm: where its name is measured from. */
 export function arrowAnchor(sk: Sketch, e: Line | Arc, mm: number): V {
-  if (e.type === "line") return mid(P(sk, e.p1, mm), P(sk, e.p2, mm));
+  // A spiral spring is wound about the start of its line.
+  if (e.type === "line") return e.element === "spiral" ? P(sk, e.p1, mm) : mid(P(sk, e.p1, mm), P(sk, e.p2, mm));
   const { a0, a1 } = arcAngles(sk, e);
   return polar(P(sk, e.c, mm), arcRadius(sk, e) * mm, (a0 + a1) / 2);
 }
 
 /**
- * Centre of an arrow's name in paper mm, or null when it has none. With
- * `always`, where the name would go even though there is none yet.
+ * Centre of the name of an arrow, a spring or a damper in paper mm, or null
+ * when it has none. With `always`, where the name would go even though there
+ * is none yet.
  */
 export function arrowLabelAt(sk: Sketch, e: Line | Arc, mm: number, always = false): V | null {
   const tex = labelTex(e.label ?? "");
-  if (!e.arrow || (!tex && !always)) return null;
+  if (!isNamed(e) || (!tex && !always)) return null;
   const m = arrowAnchor(sk, e, mm);
   if (e.lx !== undefined && e.ly !== undefined) return [m[0] + e.lx, m[1] + e.ly];
   let n: V;
+  if (e.type === "line" && e.element === "spiral") {
+    // Outside the spiral, across from where its outer end is held.
+    const a = P(sk, e.p1, mm), b = P(sk, e.p2, mm);
+    n = len(sub(a, b)) < 1e-9 ? [0, 1] : norm(sub(a, b));
+    const t = texEngine().measure(tex || "F");
+    const reach = (Math.abs(n[0]) * t.w + Math.abs(n[1]) * (t.asc + t.desc)) * PAPER.em / 2;
+    return add(m, mul(n, len(sub(a, b)) + reach + PAPER.textSep + 0.6));
+  }
   if (e.type === "line") {
     // Beside the arrow, on its upper side.
     const a = P(sk, e.p1, mm), b = P(sk, e.p2, mm);
@@ -1002,10 +1041,10 @@ export function arrowLabelAt(sk: Sketch, e: Line | Arc, mm: number, always = fal
     const c = P(sk, e.c, mm);
     n = len(sub(m, c)) < 1e-9 ? [0, 1] : norm(sub(m, c));
   }
-  // Just clear of the stroke, however wide the name is.
+  // Just clear of the stroke, or of the coils of a spring, however wide the name is.
   const t = texEngine().measure(tex || "F");
   const reach = (Math.abs(n[0]) * t.w + Math.abs(n[1]) * (t.asc + t.desc)) * PAPER.em / 2;
-  return add(m, mul(n, reach + PAPER.textSep + 0.6));
+  return add(m, mul(n, reach + PAPER.textSep + 0.6 + elementReach(sk, e) * mm));
 }
 
 // ---- the list -------------------------------------------------------------
@@ -1026,36 +1065,57 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
   for (const e of sk.entities) {
     if (e.type === "point") continue;
     if (e.construction && !opts.editor) continue;
-    const arrow = e.type === "line" ? e.arrow : undefined;
-    const stroke: StrokeStyle = e.construction ? "construction" : arrow ? "arrow" : e.centre ? "centreline" : "member";
-    const base: { ref: Id; layer: "geom"; stroke: StrokeStyle; width?: number } = { ref: e.id, layer: "geom", stroke };
+    const base: { ref: Id; layer: "geom"; stroke: StrokeStyle; width?: number; dash?: number[] } = { ref: e.id, layer: "geom", stroke: curveStroke(e) };
     if (e.weight !== undefined) base.width = e.weight * PT_MM;
+    if (e.dashed && !e.construction) base.dash = DASHED;
+    const named = isNamed(e) ? e : null;
+    const name = (): void => {
+      const at = named ? arrowLabelAt(sk, named, mm) : null;
+      if (at) out.push({ ref: e.id, layer: "geom", k: "text", at, tex: labelTex(named?.label ?? ""), anchor: "c", part: "label" });
+    };
+    if (e.type !== "circle" && e.element && !e.construction) {
+      // A spring or a damper: drawn in its place, from one end to the other.
+      for (const run of elementPaths(sk, e)) out.push({ ...base, k: "path", pts: run.map((q): V => [q[0] * mm, q[1] * mm]) });
+      name();
+      continue;
+    }
+    const arrow = e.type !== "circle" && !e.construction ? e.arrow : undefined;
     // The head of a thicker arrow grows with it, though not as fast, so it still reads as a head.
-    const head = PAPER.arrowScale * Math.sqrt(Math.max(1, (e.weight ?? 0) / standardWeight(e)));
+    const grown = Math.sqrt(Math.max(1, (e.weight ?? 0) / standardWeight(e)));
+    const head = PAPER.arrowScale * grown;
     if (e.type === "line") {
-      const line: LinePrim = { ...base, k: "line", a: P(sk, e.p1, mm), b: P(sk, e.p2, mm) };
+      const a = P(sk, e.p1, mm), b = P(sk, e.p2, mm);
+      const line: LinePrim = { ...base, k: "line", a, b };
       if (arrow) {
         line.head = head;
         if (arrow !== "end") line.arrowA = true;
         if (arrow !== "start") line.arrowB = true;
+        // A coordinate starts from a short bar across it: where it is measured from.
+        if (e.tail && arrow !== "both" && len(sub(b, a)) > 1e-9) {
+          const from = arrow === "end" ? a : b, across = mul(perp(norm(sub(b, a))), PAPER.tailBar * grown);
+          out.push({ ...base, k: "line", a: sub(from, across), b: add(from, across), part: "tail" });
+        }
       }
       out.push(line);
-      const at = arrow ? arrowLabelAt(sk, e, mm) : null;
-      if (at) out.push({ ref: e.id, layer: "geom", k: "text", at, tex: labelTex(e.label ?? ""), anchor: "c", part: "label" });
+      name();
     } else if (e.type === "circle") {
       out.push({ ...base, k: "circle", c: P(sk, e.c, mm), r: e.r * mm });
     } else {
       const { a0, a1 } = arcAngles(sk, e);
-      const arc: ArcPrim = { ...base, k: "arc", c: P(sk, e.c, mm), r: arcRadius(sk, e) * mm, a0, a1 };
-      if (e.arrow && !e.construction) {
-        arc.stroke = "arrow";
+      const c = P(sk, e.c, mm), r = arcRadius(sk, e) * mm;
+      const arc: ArcPrim = { ...base, k: "arc", c, r, a0, a1 };
+      if (arrow) {
         arc.head = head;
-        if (e.arrow !== "end") arc.arrowA = true;
-        if (e.arrow !== "start") arc.arrowB = true;
+        if (arrow !== "end") arc.arrowA = true;
+        if (arrow !== "start") arc.arrowB = true;
+        // An angle starts from a short bar across the arc, along the radius there.
+        if (e.tail && arrow !== "both") {
+          const from = arrow === "end" ? a0 : a1, half = PAPER.tailBar * grown;
+          out.push({ ...base, k: "line", a: polar(c, Math.max(0, r - half), from), b: polar(c, r + half, from), part: "tail" });
+        }
       }
       out.push(arc);
-      const at = e.arrow ? arrowLabelAt(sk, e, mm) : null;
-      if (at) out.push({ ref: e.id, layer: "geom", k: "text", at, tex: labelTex(e.label ?? ""), anchor: "c", part: "label" });
+      name();
     }
   }
   for (const sym of sk.symbols) if (sym.type !== "fill") out.push(...symbolPrims(sk, sym, mm));

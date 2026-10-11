@@ -5,7 +5,7 @@
 import type { Sketch } from "./model";
 import {
   type Prim, type StrokeStyle, type Outline, type Anchor, type LinePrim, type ArcPrim,
-  PAPER, PT_MM, STROKE_DASH, strokeWidth, printMm, buildPrims, arrowHeads, strokedEnds, strokedSweep, textBox, textCorners, outlinePolygon,
+  PAPER, PT_MM, STROKE_DASH, dashOf, strokeWidth, printMm, buildPrims, arrowHeads, strokedEnds, strokedSweep, textBox, textCorners, outlinePolygon,
 } from "./prims";
 import { type V, type Box, emptyBox, grow, boxIsEmpty, polar, wrap, TWO_PI } from "./geom";
 import { texEngine } from "./tex";
@@ -93,7 +93,7 @@ export function primsToSvg(prims: Prim[], k = 1): string | null {
       } else body.push(glyphs);
       continue;
     }
-    const dash = p.k === "path" && p.dash ? p.dash : STROKE_DASH[p.stroke];
+    const dash = dashOf(p);
     const stroke = `stroke-width="${num(strokeWidth(p))}"` + (dash ? ` stroke-dasharray="${dash.map((d) => num(d)).join(" ")}"` : "") +
       (p.ink ? ` stroke="${p.ink}"` : "");
     const fill = (p.k === "circle" || p.k === "poly") && p.fill ? ` fill="${p.fill === "ink" ? p.color ?? "#000" : "#fff"}"` : "";
@@ -133,7 +133,7 @@ export function primsToSvg(prims: Prim[], k = 1): string | null {
 
 /** Line widths in points, as LaTeX users know them. */
 const TIKZ_WIDTH: Record<StrokeStyle, number> = {
-  member: 0.8, construction: 0.4, dim: 0.3, symbol: 0.4, hatch: 0.3, centre: 0.3, centreline: 0.4, arrow: 0.6,
+  member: 0.8, construction: 0.4, dim: 0.3, symbol: 0.4, hatch: 0.3, centre: 0.3, centreline: 0.4, arrow: 0.6, element: 0.6,
 };
 const TIKZ_ANCHOR: Record<Anchor, string> = {
   c: "center", n: "north", s: "south", e: "east", w: "west",
@@ -207,11 +207,14 @@ export function primsToTikz(prims: Prim[], k = 1): string | null {
     else if (name === "smalltip") needSmallTip = true;
     else if (name === "tip") needTip = true;
   };
-  /** The style of a stroke, with its own thickness where it has one. */
-  const style = (p: { stroke: StrokeStyle; width?: number; ink?: string }): string =>
+  /** A dash pattern as TikZ writes it. */
+  const pattern = (dash: number[]): string => `, dash pattern=${dash.map((d, i) => `${i % 2 ? "off" : "on"} ${num(d * k, 2)}mm`).join(" ")}`;
+  /** The style of a stroke, with its own thickness and its own dashes where it has them. */
+  const style = (p: { stroke: StrokeStyle; width?: number; ink?: string; dash?: number[] }): string =>
     p.stroke + (p.width === undefined ? "" : `, line width=${num((p.width / PT_MM) * k, 2)}pt`) +
     // An arrow tip takes the colour of its line.
-    (p.ink ? `, draw=${tikzColor(p.ink)}` : "");
+    (p.ink ? `, draw=${tikzColor(p.ink)}` : "") +
+    (p.dash ? pattern(p.dash) : "");
   const lines: string[] = [];
   /** Plain line segments of one style and symbol in a row share a \draw. */
   let run: { style: string; ref: string | undefined; parts: string[] } | null = null;
@@ -253,11 +256,10 @@ export function primsToTikz(prims: Prim[], k = 1): string | null {
       }
       lines.push(`  \\draw[${style(p)}${tips(p, k)}] ${co(polar(p.c, p.r, p.a0))} arc[start angle=${deg(p.a0)}, end angle=${deg(p.a1)}, radius=${num(p.r, 2)}];`);
     } else if (p.k === "path") {
-      const pattern = p.dash ? `, dash pattern=${p.dash.map((d, i) => `${i % 2 ? "off" : "on"} ${num(d * k, 2)}mm`).join(" ")}` : "";
       // A long curve is broken over lines of the file, so no line of it grows past what an editor shows.
       const rows: string[] = [];
       for (let i = 0; i < p.pts.length; i += 6) rows.push(p.pts.slice(i, i + 6).map(co).join(" -- "));
-      lines.push(`  \\draw[${style(p)}${pattern}] ${rows.join("\n    -- ")};`);
+      lines.push(`  \\draw[${style(p)}] ${rows.join("\n    -- ")};`);
     } else {
       const fill = p.fill ? `, fill=${p.fill === "ink" ? (p.color ? tikzColor(p.color) : "black") : "white"}` : "";
       const shape = p.k === "circle" ? `${co(p.c)} circle[radius=${num(p.r, 2)}]` : `${p.pts.map(co).join(" -- ")} -- cycle`;
@@ -270,8 +272,7 @@ export function primsToTikz(prims: Prim[], k = 1): string | null {
   for (const s of Object.keys(TIKZ_WIDTH) as StrokeStyle[]) {
     if (!used.has(s)) continue;
     const dash = STROKE_DASH[s];
-    const pattern = dash ? `, dash pattern=${dash.map((d, i) => `${i % 2 ? "off" : "on"} ${num(d * k, 2)}mm`).join(" ")}` : "";
-    styles.push(`${s}/.style={line width=${num(TIKZ_WIDTH[s] * k, 2)}pt${pattern}}`);
+    styles.push(`${s}/.style={line width=${num(TIKZ_WIDTH[s] * k, 2)}pt${dash ? pattern(dash) : ""}}`);
   }
   if (needLabel) styles.push(`label/.style={inner sep=${num(PAPER.textSep, 2)}mm}`);
   const tip = (name: string, size: number) => styles.push(`${name}/.tip={${stealth(size)}}`);
