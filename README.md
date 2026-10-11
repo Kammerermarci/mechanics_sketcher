@@ -286,6 +286,16 @@ offline use. `.github/workflows/pages.yml` builds and publishes it to GitHub
 Pages on every push to `main`; in the repository settings, Pages has to be
 set to the source "GitHub Actions" once.
 
+## Search engines and shared links
+
+The `<head>` of `index.html` carries what a search engine and a shared link
+show: the title, the description, the address the page is known by
+(`canonical`), the Open Graph tags and a short description in schema.org
+form. `public/preview.png` (1200 × 630) is the picture a chat or a post
+shows beside the link; put another file of that size in its place to change
+it. All of them name `https://mech-sketch.org/`, so a copy published
+somewhere else needs its own address there.
+
 ## Status
 
 Working: geometry, centre lines, trim, constraints, distance / angle / radius
