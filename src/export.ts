@@ -35,7 +35,7 @@ export function figureBounds(prims: Prim[]): Box {
         grow(b, p.a, half);
         grow(b, p.b, half);
       } else if (p.k === "circle") grow(b, p.c, p.r + half);
-      else if (p.k === "poly") for (const q of p.pts) grow(b, q, half);
+      else if (p.k === "poly" || p.k === "path") for (const q of p.pts) grow(b, q, half);
       else {
         const n = Math.max(2, Math.ceil((p.a1 - p.a0) / (Math.PI / 30)));
         for (let i = 0; i <= n; i++) grow(b, polar(p.c, p.r, p.a0 + ((p.a1 - p.a0) * i) / n), half);
@@ -49,7 +49,7 @@ export function figureBounds(prims: Prim[]): Box {
 // ---- SVG ----------------------------------------------------------------------
 
 /** Trims a number to at most `digits` decimals, without trailing zeros. */
-const num = (v: number, digits = 3): string => {
+export const num = (v: number, digits = 3): string => {
   if (Math.abs(v) < 0.5 / 10 ** digits) return "0"; // also keeps "-0" out
   const s = v.toFixed(digits);
   return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
@@ -60,10 +60,13 @@ const num = (v: number, digits = 3): string => {
  * Sizes are in millimetres; labels are outlines, so no font is needed to show it.
  */
 export function toSvg(sk: Sketch): string | null {
-  const prims = figurePrims(sk);
+  return primsToSvg(figurePrims(sk), sk.dimScale);
+}
+
+/** The same for any list of primitives in annotation mm, enlarged `k` times on paper. */
+export function primsToSvg(prims: Prim[], k = 1): string | null {
   const box = figureBounds(prims);
   if (boxIsEmpty(box)) return null;
-  const k = sk.dimScale;
   const margin = 1 / k; // 1 mm on paper
   const w = box.x1 - box.x0 + 2 * margin, h = box.y1 - box.y0 + 2 * margin;
   // SVG's y axis points down: flip, and put the top-left corner of the figure at the origin.
@@ -90,7 +93,7 @@ export function toSvg(sk: Sketch): string | null {
       } else body.push(glyphs);
       continue;
     }
-    const dash = STROKE_DASH[p.stroke];
+    const dash = p.k === "path" && p.dash ? p.dash : STROKE_DASH[p.stroke];
     const stroke = `stroke-width="${num(strokeWidth(p))}"` + (dash ? ` stroke-dasharray="${dash.map((d) => num(d)).join(" ")}"` : "") +
       (p.ink ? ` stroke="${p.ink}"` : "");
     const fill = (p.k === "circle" || p.k === "poly") && p.fill ? ` fill="${p.fill === "ink" ? p.color ?? "#000" : "#fff"}"` : "";
@@ -102,6 +105,8 @@ export function toSvg(sk: Sketch): string | null {
       body.push(`<circle cx="${num(c[0])}" cy="${num(c[1])}" r="${num(p.r)}" ${stroke}${fill}/>`);
     } else if (p.k === "poly") {
       body.push(`<polygon points="${p.pts.map(pt).join(" ")}" ${stroke}${fill}/>`);
+    } else if (p.k === "path") {
+      body.push(`<polyline points="${p.pts.map(pt).join(" ")}" ${stroke}/>`);
     } else {
       const [a0, a1] = strokedSweep(p);
       const s = M(polar(p.c, p.r, a0)), e = M(polar(p.c, p.r, a1));
@@ -137,7 +142,7 @@ const TIKZ_ANCHOR: Record<Anchor, string> = {
 const deg = (rad: number) => num((rad * 180) / Math.PI, 2);
 const co = (q: V) => `(${num(q[0], 2)},${num(q[1], 2)})`;
 
-function tikzColor(hex: string): string {
+export function tikzColor(hex: string): string {
   const v = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
   if (!v) return "black!15";
   return `{rgb,255:red,${parseInt(v[1], 16)};green,${parseInt(v[2], 16)};blue,${parseInt(v[3], 16)}}`;
@@ -185,9 +190,12 @@ function tips(p: LinePrim | ArcPrim, k: number): string {
  * they come out in the document's own font.
  */
 export function toTikz(sk: Sketch): string | null {
-  const prims = figurePrims(sk);
+  return primsToTikz(figurePrims(sk), sk.dimScale);
+}
+
+/** The same for any list of primitives in annotation mm, enlarged `k` times on paper. */
+export function primsToTikz(prims: Prim[], k = 1): string | null {
   if (!prims.length) return null;
-  const k = sk.dimScale;
   const used = new Set<StrokeStyle>();
   let needTip = false, needBigTip = false, needSmallTip = false, needArrows = false, needLabel = false;
   /** A tip sits on an arc: the bending library turns it to follow the curve. */
@@ -244,6 +252,12 @@ export function toTikz(sk: Sketch): string | null {
         bentTip = true;
       }
       lines.push(`  \\draw[${style(p)}${tips(p, k)}] ${co(polar(p.c, p.r, p.a0))} arc[start angle=${deg(p.a0)}, end angle=${deg(p.a1)}, radius=${num(p.r, 2)}];`);
+    } else if (p.k === "path") {
+      const pattern = p.dash ? `, dash pattern=${p.dash.map((d, i) => `${i % 2 ? "off" : "on"} ${num(d * k, 2)}mm`).join(" ")}` : "";
+      // A long curve is broken over lines of the file, so no line of it grows past what an editor shows.
+      const rows: string[] = [];
+      for (let i = 0; i < p.pts.length; i += 6) rows.push(p.pts.slice(i, i + 6).map(co).join(" -- "));
+      lines.push(`  \\draw[${style(p)}${pattern}] ${rows.join("\n    -- ")};`);
     } else {
       const fill = p.fill ? `, fill=${p.fill === "ink" ? (p.color ? tikzColor(p.color) : "black") : "white"}` : "";
       const shape = p.k === "circle" ? `${co(p.c)} circle[radius=${num(p.r, 2)}]` : `${p.pts.map(co).join(" -- ")} -- cycle`;

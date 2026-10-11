@@ -97,6 +97,8 @@ export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeSt
 export interface CirclePrim extends Base { k: "circle"; c: V; r: number; stroke: StrokeStyle; width?: number; fill?: Fill }
 /** A closed outline. */
 export interface PolyPrim extends Base { k: "poly"; pts: V[]; stroke: StrokeStyle; fill?: Fill }
+/** An open run of straight pieces: a plotted curve. `dash` is its pattern, as on and off lengths in mm. */
+export interface PathPrim extends Base { k: "path"; pts: V[]; stroke: StrokeStyle; width?: number; dash?: number[] }
 /** Counter-clockwise from a0 to a1, with a1 > a0. */
 export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a1: number; stroke: StrokeStyle; width?: number; arrowA?: boolean; arrowB?: boolean; head?: number }
 /**
@@ -120,7 +122,7 @@ export type OutlineSeg =
   | { k: "A"; to: V; c: V; r: number; a0: number; a1: number; ccw: boolean };
 /** A filled area with no outline of its own. Later outlines cut holes (even-odd). */
 export interface RegionPrim extends Base { k: "region"; outlines: Outline[]; color: string }
-export type Prim = LinePrim | CirclePrim | PolyPrim | ArcPrim | TextPrim | RegionPrim;
+export type Prim = LinePrim | CirclePrim | PolyPrim | PathPrim | ArcPrim | TextPrim | RegionPrim;
 
 // ---- scale ------------------------------------------------------------------
 
@@ -1133,6 +1135,11 @@ export function primDistance(p: Prim, q: V): number {
       if (p.fill && insidePolygon(q, p.pts)) return 0;
       let best = Infinity;
       p.pts.forEach((a, i) => { best = Math.min(best, distToSegment(q, a, p.pts[(i + 1) % p.pts.length])); });
+      return best;
+    }
+    case "path": {
+      let best = Infinity;
+      for (let i = 1; i < p.pts.length; i++) best = Math.min(best, distToSegment(q, p.pts[i - 1], p.pts[i]));
       return best;
     }
     case "arc": {

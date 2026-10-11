@@ -402,6 +402,55 @@ export interface Sketch {
   loadScale?: Partial<Record<LoadKind, number>>;
   /** How large supports are drawn, against their standard size. It scales the supports and nothing else. Unset: 1. */
   supportScale?: number;
+  /** The plots kept with the sketch. */
+  plots?: Plot[];
+}
+
+// ---- plots ------------------------------------------------------------------
+
+/** One stretch of a plotted function: its formula, and where along the horizontal axis it holds. No end given: as far as the plot goes. */
+export interface PlotPiece { expr: string; from?: number; to?: number }
+export type PlotDash = "dashed" | "dotted";
+/** A function drawn in a plot, in one piece or several, as an internal force diagram is. */
+export interface PlotCurve {
+  id: Id;
+  pieces: PlotPiece[];
+  color: string;
+  /** Line thickness in points. Unset: that of a member. */
+  weight?: number;
+  /** Unset: a solid line. */
+  dash?: PlotDash;
+  /** False leaves a jump between two pieces open; otherwise it is drawn as an upright line. */
+  join?: boolean;
+  /** The area between the curve and the horizontal axis is shaded, and the curve closed down to the axis at its ends. */
+  fill?: boolean;
+  /** Its name, written as TeX math, and where the middle of the name sits in the plot's own coordinates. Unset: beside the curve. */
+  label?: string;
+  lx?: number;
+  ly?: number;
+}
+export interface PlotAxis {
+  min: number;
+  max: number;
+  /** Written as TeX math. */
+  label: string;
+  /** Distance between ticks. Unset: chosen to suit the size of the plot. */
+  step?: number;
+}
+/** A plot of functions: a figure of its own beside the sketch, with its size on paper in mm. */
+export interface Plot {
+  id: Id;
+  name: string;
+  curves: PlotCurve[];
+  x: PlotAxis;
+  y: PlotAxis;
+  width: number;
+  height: number;
+  /** Unset: arrowed axes through the origin. */
+  frame?: "box";
+  grid?: "lines" | "dots";
+  /** Unset: tick marks with their numbers. */
+  ticks?: "marks" | "none";
 }
 
 /**
@@ -428,7 +477,7 @@ export function isLink(c: Constraint): c is Link {
   return c.type === "mirror" || c.type === "shift" || c.type === "turn";
 }
 
-const PREFIX: Record<string, string> = { point: "p", line: "l", circle: "c", arc: "a", symbol: "s" };
+const PREFIX: Record<string, string> = { point: "p", line: "l", circle: "c", arc: "a", symbol: "s", plot: "g", curve: "f" };
 
 export function newId(sk: Sketch, kind: string): Id {
   return `${PREFIX[kind] ?? "k"}${sk.nextId++}`;
@@ -755,6 +804,13 @@ function upgradeV1(raw: SketchV1, entities: Entity[]): Pick<Sketch, "constraints
   return { constraints, symbols: sizesToModel(symbols, mm, { axes: true }), figureWidthMm: width };
 }
 
+/** True for something that has the shape of a plot, so a damaged file cannot bring in one that will not draw. */
+function isPlot(p: Plot): boolean {
+  const axis = (a: PlotAxis) => !!a && Number.isFinite(a.min) && Number.isFinite(a.max) && a.max > a.min && typeof a.label === "string";
+  return !!p && typeof p.id === "string" && Array.isArray(p.curves) && axis(p.x) && axis(p.y) && p.width > 0 && p.height > 0 &&
+    p.curves.every((c) => !!c && typeof c.id === "string" && Array.isArray(c.pieces) && c.pieces.every((x) => !!x && typeof x.expr === "string"));
+}
+
 export function deserialize(text: string): Sketch {
   const raw = JSON.parse(text) as (Omit<Partial<Sketch>, "version"> & { version: 2 | 3 | 4 }) | SketchV1;
   if (![1, 2, 3, 4].includes(raw.version) || !Array.isArray(raw.entities) || !Array.isArray(raw.constraints)) {
@@ -784,6 +840,7 @@ export function deserialize(text: string): Sketch {
     showOrigin: raw.showOrigin ?? true,
     ...(raw.loadScale && typeof raw.loadScale === "object" ? { loadScale: raw.loadScale } : {}),
     ...(typeof raw.supportScale === "number" && raw.supportScale > 0 ? { supportScale: raw.supportScale } : {}),
+    ...(Array.isArray(raw.plots) && raw.plots.length ? { plots: raw.plots.filter(isPlot) } : {}),
   };
 }
 

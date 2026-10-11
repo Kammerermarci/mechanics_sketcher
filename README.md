@@ -260,7 +260,7 @@ the picture and can be changed there.
 labels and in notes. On screen and in the SVG each is drawn as its letter
 with the accent over it, from the same font as the rest of the label. In the
 TikZ, a label is math, where LaTeX takes no accented letters: there é is
-written `\acute{e}`, ö `\ddot{o}`, and ő and ű with `\mathaccent"707D`, the
+written `\acute{e}`, ö `\ddot{o}`, and ő and ű with `\mathaccent28797`, the
 long umlaut of the roman font. The text of a note, and of `\text{...}` in a
 label, stays as typed; `\text` needs `amsmath`, and low quote marks („) need
 `\usepackage[T1]{fontenc}` with pdfLaTeX.
@@ -280,6 +280,54 @@ label, stays as typed; `\text` needs `amsmath`, and low quote marks („) need
 | Wheel | Zoom | Middle-drag | Pan |
 | 0 | Zoom to fit | Ctrl+A | Select all |
 | Ctrl+S, Ctrl+O | Save, open (JSON) | | |
+
+## Plots
+
+The **Plot** tab is a workspace of its own, beside the sketcher, for plotting
+functions: an internal force diagram, a velocity over time. A file holds the
+sketch and any number of plots; undo, Save and Open take them along.
+
+- **Functions.** Type a formula of x (or t) in the side panel: `2x + 1`,
+  `-5x^2/2`, `3 sin(2x)`. Things written side by side are multiplied; a comma
+  or a point goes before decimals. `sin cos tan asin acos atan sinh cosh
+  tanh exp ln lg log2 sqrt abs sign floor ceil round min max`, `pi` and `e`
+  are known. What cannot be read is said under the field while it is typed.
+  Nothing typed is ever run as code.
+- **Pieces.** *Split into pieces* gives a function one formula for each
+  stretch of the axis, as a shear force diagram has. Where two pieces meet at
+  different values the jump is drawn as an upright line, unless that is
+  switched off.
+- **Looks.** Each function has a colour, a thickness, a solid, dashed or
+  dotted line, and a name set beside the curve that can be dragged anywhere.
+  *Shade down to the axis* fills the area under it and closes it at the ends.
+- **Axes.** Each axis has a name, written as TeX math, and the range it runs
+  over. They are drawn as arrows through the origin, or as a box with the
+  names centred along it. Ticks carry numbers, are bare marks, or are left
+  out; their spacing suits the size of the plot unless one is typed. A grid
+  of lines or of dots follows the ticks.
+- **Size.** Drag a handle of the dotted box to set the size of the axes on
+  paper; it snaps to whole millimetres (hold Alt for any size), or type it in
+  centimetres. Text is 10 pt at any size. Inside the plot, dragging moves what
+  it shows and the wheel zooms it (Shift: sideways only, Alt: up and down
+  only). Outside it, dragging and the wheel move and zoom the view, and 0
+  brings the whole plot back.
+- **Export.** In this tab Export saves the plot on show. The SVG is drawn from
+  the same shapes as the screen. The TikZ is written for `pgfplots`: the size,
+  the ranges, every tick and where each label sits are pinned in it, so it
+  comes out as the screen shows it, while the formulas stay formulas that can
+  be changed in the LaTeX.
+
+```latex
+\usepackage{pgfplots}                   % any version from 1.11 on; no compat line is needed
+\usetikzlibrary{arrows.meta}
+...
+\input{plot-1.tex}
+```
+
+A curve is drawn through the same points on screen and by pgfplots: two for a
+straight line, about one every half millimetre for anything else. Where a
+function has no value, or runs more than the height of the plot outside it,
+the curve stops, so the two sides of an asymptote are not joined.
 
 ## How it is built
 
@@ -302,6 +350,11 @@ label, stays as typed; `\text` needs `amsmath`, and low quote marks („) need
   one *link* constraint per mirror or pattern holds each copied point to its
   original. `src/solver.ts` turns a link into equations: two per point, but
   one for a point the copied arc already ties down, so nothing is said twice.
+- `src/expr.ts`: reads a typed function into a tree, works it out for a
+  value of x, and writes it in the notation of pgfplots.
+- `src/plot.ts`: lays a plot out on paper as primitives, for the screen and
+  the SVG, and writes it for pgfplots. `src/plotwork.ts` is its workspace:
+  the canvas, the handles and the side panel.
 - `src/guide.ts`: the tips, and what the browser remembers about which have
   been seen. `src/config.ts`: where the Support button leads and how long an
   export waits.
@@ -346,7 +399,7 @@ Working: geometry, centre lines, trim, constraints, distance / angle / radius
 dimensions with labels typeset by MathJax, supports, coordinate axes, straight
 and curved arrows, forces, distributed loads and moments, notes, datum points,
 centre marks, balloons, fills, hatching, straight and curved beams, mirror and
-patterns, the fixed origin,
+patterns, plots of functions with pgfplots export, the fixed origin,
 snapping, dragging, undo, save and load, print preview, SVG and TikZ export,
 install as an app.
 

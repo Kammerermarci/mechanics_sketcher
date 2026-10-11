@@ -48,6 +48,7 @@ export const TIPS: Record<string, Tip> = {
   fill: { title: "Fill", body: "Click inside a closed shape to fill it. The lines around it have to meet at shared points. The colour is picked in the side panel." },
   hatch: { title: "Hatching", body: "Click a line, arc or circle on the side the strokes should go, as for the ground under a support. Their size and number are set in the side panel." },
 
+  plot: { title: "Plot", body: "A workspace of its own, for plotting functions. Type a formula of x in the side panel, such as 2x + 1 or sin(x); a function can have several pieces, each over its own stretch of the axis. Drag the handles to set the size of the plot on paper; inside it, drag and the wheel change what it shows. Export saves the plot on show, as SVG or for pgfplots." },
   preview: { title: "Print preview", body: "This is the figure as it is exported: no helper lines, markers or grid, and text at its size in print. Press Q again to go back to editing." },
   export: { title: "Export", body: "SVG saves a picture file. TikZ saves a .tex file to \\input in LaTeX, and Copy TikZ puts the same text on the clipboard. How wide the figure is, and how large its text, is set in the box in the corner." },
 };

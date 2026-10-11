@@ -34,6 +34,7 @@ import { EXPORT_WAIT_SECONDS, REPORT_EMAIL, SUPPORT_URL } from "./config";
 import { type ReportKind, composeReport } from "./report";
 import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
 import { type BeamEnds, straightBeam, curvedBeam } from "./beam";
+import { PlotWorkspace } from "./plotwork";
 
 type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam" | "arcbeam";
 type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "note" | "load" | "lineload" | "moment";
@@ -45,7 +46,9 @@ type Command =
 /** A constraint or the dimension command is a tool too: pick it, then the geometry. */
 type Tool = "select" | DrawTool | "trim" | CopyTool | SymbolTool | Command;
 /** Sketch holds what shapes the geometry; Annotate what is added to the figure. */
-type Tab = "sketch" | "annotate";
+/** Plot is a workspace of its own: its tab swaps the sketch for the plots that are kept with it. */
+type Tab = "sketch" | "annotate" | "plot";
+const TAB_NAMES: Record<Tab, string> = { sketch: "Sketch", annotate: "Annotate", plot: "Plot" };
 
 /** How a curve is drawn: a solid edge, a centre line, an arrow, or a helper that is not exported. */
 type LineStyle = "solid" | "centre" | "arrow" | "construction";
@@ -217,7 +220,7 @@ const SKETCH_NAME_KEY = "mech-sketch.sketchName";
 /** Range of the line thickness slider, in points. */
 const WEIGHT_MIN = 0.1, WEIGHT_MAX = 3;
 /** What is written to a file: the exported figure, or the sketch itself. Each remembers its own name and folder. */
-type SaveSlot = "figure" | "sketch";
+type SaveSlot = "figure" | "sketch" | "plot";
 const EDIT_SCALE_KEY = "mech-sketch.editScale";
 /** Range of the slider for the size of annotations while editing, in percent. */
 const EDIT_SCALE_MIN = 50, EDIT_SCALE_MAX = 250;
@@ -324,6 +327,11 @@ export class App {
   private emptyEl = $<HTMLElement>("#empty");
   private dimEditor = $<HTMLInputElement>("#dim-editor");
   private fileInput = $<HTMLInputElement>("#file-input");
+  /** The Plot workspace. It works on the plots of the same sketch, so saving and undo take them along. */
+  private plots = new PlotWorkspace(
+    { sketch: () => this.sk, commit: () => this.commit(), render: () => this.render(), touch: () => this.touch(), toast: (m) => this.toast(m) },
+    $<SVGSVGElement>("#plot-canvas"), this.panel, $("#plot-empty"),
+  );
 
   constructor(private solver: SketchSolver) {
     this.buildToolbars();
@@ -442,7 +450,7 @@ export class App {
     $("#tip-title").textContent = tip.title;
     $("#tip-body").textContent = tip.body;
     const def = TOOLS.find((t) => t.id === id);
-    $("#tip-icon").innerHTML = def ? icon(def.icon, 18) : id === "preview" ? icon("eye", 18) : "";
+    $("#tip-icon").innerHTML = def ? icon(def.icon, 18) : id === "preview" ? icon("eye", 18) : id === "plot" ? icon("curve", 18) : "";
     $<HTMLInputElement>("#tip-never").checked = true;
     $("#tip").hidden = false;
   }
@@ -529,6 +537,7 @@ export class App {
     this.pending = null;
     this.closeEditor();
     this.solve();
+    this.plots.sync();
   }
 
   private exists(id: Id): boolean {
@@ -555,6 +564,7 @@ export class App {
   // ---- drawing the screen -----------------------------------------------------
 
   private draw(): void {
+    if (this.tab === "plot") return this.drawPlot();
     const mm = this.mm();
     this.prims = buildPrims(this.sk, mm, { editor: !this.preview });
     this.glyphs = this.preview ? [] : layoutGlyphs(this.sk, this.view, this.glyphFilter());
@@ -592,6 +602,18 @@ export class App {
       this.updateButtons();
     }
     if (this.editing) this.placeEditor();
+  }
+
+  /** The same for the Plot workspace, which draws its own canvas and panel. */
+  private drawPlot(): void {
+    this.plots.draw();
+    this.coordsEl.textContent = this.plots.coords();
+    this.hintEl.textContent = this.hintOverride ?? this.plots.hint();
+    if (this.chromeDirty) {
+      this.chromeDirty = false;
+      this.plots.drawPanel();
+      this.updateButtons();
+    }
   }
 
   /**
@@ -2748,13 +2770,15 @@ export class App {
    * to wherever the browser puts downloads.
    */
   private async saveAs(text: string, ext: string, mime: string, what: string, slot: SaveSlot = "figure"): Promise<void> {
-    const last = slot === "sketch" ? this.sketchName : this.exportName;
+    // A plot is offered its own name each time; the other two remember the name used last.
+    const last = slot === "sketch" ? this.sketchName : slot === "plot" ? this.plots.fileName() : this.exportName;
     const clean = (name: string) => {
       let base = name.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, "");
       if (base.toLowerCase().endsWith(ext)) base = base.slice(0, -ext.length);
       return base.replace(/[. ]+$/, "");
     };
     const remember = (base: string) => {
+      if (slot === "plot") return;
       if (slot === "sketch") this.sketchName = base;
       else this.exportName = base;
       try { localStorage.setItem(slot === "sketch" ? SKETCH_NAME_KEY : EXPORT_NAME_KEY, base); } catch { /* storage unavailable */ }
@@ -2845,12 +2869,15 @@ export class App {
 
   /** Exports the figure. `how` picks the format and whether it is saved or copied. */
   private async exportFigure(how: "svg" | "tikz" | "copy-tikz"): Promise<void> {
-    const text = how === "svg" ? toSvg(this.sk) : toTikz(this.sk);
-    if (!text) return this.toast("There is nothing to export yet.");
+    // Each workspace exports what it shows: the figure, or the plot.
+    const plotting = this.tab === "plot";
+    const text = plotting ? this.plots.exported(how === "svg" ? "svg" : "tikz") : how === "svg" ? toSvg(this.sk) : toTikz(this.sk);
+    if (!text) return this.toast(plotting ? "There is no plot to export yet." : "There is nothing to export yet.");
     const title = how === "svg" ? "Export SVG" : how === "tikz" ? "Export TikZ" : "Copy TikZ";
     if (!(await this.waitToExport(title, how === "copy-tikz" ? "Copy" : "Save"))) return;
-    if (how === "svg") return this.saveAs(text, ".svg", "image/svg+xml", "SVG image");
-    if (how === "tikz") return this.saveAs(text, ".tex", "text/x-tex", "TikZ picture");
+    const slot: SaveSlot = plotting ? "plot" : "figure";
+    if (how === "svg") return this.saveAs(text, ".svg", "image/svg+xml", "SVG image", slot);
+    if (how === "tikz") return this.saveAs(text, ".tex", "text/x-tex", plotting ? "pgfplots picture" : "TikZ picture", slot);
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -2881,6 +2908,7 @@ export class App {
       this.replaceSketch(sk);
       this.commit();
       this.fit();
+      if (this.tab === "plot") this.plots.fit();
     } catch (err) {
       this.toast(err instanceof SyntaxError ? "That file is not valid JSON." : (err as Error).message);
     }
@@ -2891,6 +2919,7 @@ export class App {
     this.view.w = Math.max(50, r.width);
     this.view.h = Math.max(50, r.height);
     this.svg.setAttribute("viewBox", `0 0 ${this.view.w} ${this.view.h}`);
+    this.plots.resize(this.view.w, this.view.h);
     this.render();
   }
 
@@ -2957,8 +2986,8 @@ export class App {
   // ---- chrome ---------------------------------------------------------------
 
   private buildToolbars(): void {
-    $("#tabs").innerHTML = (["sketch", "annotate"] as Tab[]).map((t) =>
-      `<button type="button" role="tab" class="tab" data-tab="${t}" id="tab-${t}" aria-controls="ribbon">${t === "sketch" ? "Sketch" : "Annotate"}</button>`,
+    $("#tabs").innerHTML = (["sketch", "annotate", "plot"] as Tab[]).map((t) =>
+      `<button type="button" role="tab" class="tab${t === "plot" ? " apart" : ""}" data-tab="${t}" id="tab-${t}" aria-controls="ribbon"${t === "plot" ? ` title="Plot functions: a workspace of its own beside the sketch"` : ""}>${TAB_NAMES[t]}</button>`,
     ).join("");
     $("#view-actions").innerHTML =
       `<button type="button" class="icon-btn" data-act="undo" aria-label="Undo" title="Undo (Ctrl+Z)">${icon("undo")}</button>` +
@@ -3009,6 +3038,13 @@ export class App {
 
   /** The ribbon shows the tools of the open tab, in groups. */
   private buildRibbon(): void {
+    if (this.tab === "plot") {
+      const bar = $("#ribbon");
+      bar.innerHTML = this.plots.ribbonHtml();
+      bar.setAttribute("aria-labelledby", "tab-plot");
+      bar.dataset.shown = "plot";
+      return;
+    }
     const tools = TOOLS.filter((t) => t.tab === this.tab || t.tab === "both");
     let html = "";
     let group = -1;
@@ -3026,7 +3062,23 @@ export class App {
 
   private setTab(tab: Tab): void {
     if (tab === this.tab) return;
+    const was = this.tab;
+    if (tab === "plot") {
+      // The sketch is left as it is, with nothing half done in it.
+      if (this.tool !== "select") this.setTool("select");
+      this.closeEditor();
+      if (this.preview) this.setPreview(false);
+    }
     this.tab = tab;
+    if (tab === "plot" || was === "plot") {
+      $("#app").dataset.workspace = tab === "plot" ? "plot" : "sketch";
+      if (this.tip) this.closeTip();
+    }
+    if (tab === "plot") {
+      this.plots.enter();
+      this.showTip("plot");
+      return this.touch();
+    }
     // A tool that lives on the other tab is put down.
     const home = toolDef(this.tool).tab;
     if (home !== "both" && home !== tab) return this.setTool("select");
@@ -3039,7 +3091,8 @@ export class App {
   }
 
   private updateButtons(): void {
-    if ($("#ribbon").dataset.shown !== this.tab) this.buildRibbon();
+    // The Plot ribbon greys out what needs a plot, so it is drawn afresh each time.
+    if ($("#ribbon").dataset.shown !== this.tab || this.tab === "plot") this.buildRibbon();
     document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((b) => {
       b.setAttribute("aria-selected", String(b.dataset.tab === this.tab));
     });
@@ -3454,6 +3507,7 @@ export class App {
       const ds = btn.dataset;
       // A click made from the keyboard (detail 0) moves focus into the menu.
       if (menuBtn) return this.setMenu(menuBtn, menuBtn.getAttribute("aria-expanded") !== "true", e.detail === 0);
+      if (ds.pact) return this.plots.act(ds.pact, ds);
       if (ds.tab) this.setTab(ds.tab as Tab);
       else if (ds.tool) this.setTool(ds.tool as Tool);
       else if (ds.cmd) this.activate(ds.cmd as Command);
@@ -3509,9 +3563,14 @@ export class App {
     bar.addEventListener("mouseleave", unexplain);
     bar.addEventListener("focusout", unexplain);
 
-    this.panel.addEventListener("change", (e) => this.onPanelChange(e.target as HTMLInputElement));
+    this.panel.addEventListener("change", (e) => {
+      if (this.tab === "plot") return this.plots.change(e.target as HTMLInputElement | HTMLSelectElement);
+      this.onPanelChange(e.target as HTMLInputElement);
+    });
     this.panel.addEventListener("input", (e) => {
       const input = e.target as HTMLInputElement;
+      // A plot follows its fields as they are typed in; a list of choices acts when one is chosen.
+      if (this.tab === "plot") { if (input.tagName !== "SELECT") this.plots.change(input, true); return; }
       if (input.type === "range") this.onPanelChange(input, true);
     });
     this.panel.addEventListener("dblclick", (e) => {
@@ -3610,7 +3669,7 @@ export class App {
     switch (act) {
       case "undo": return this.undo();
       case "redo": return this.redo();
-      case "fit": return this.fit();
+      case "fit": return this.tab === "plot" ? this.plots.fit() : this.fit();
       case "new": return this.newSketch();
       case "open": return this.fileInput.click();
       case "save": return this.save();
@@ -3650,8 +3709,10 @@ export class App {
         return this.commit();
       }
       case "preview":
+        if (this.tab === "plot") return;
         return this.setPreview(!this.preview);
       case "origin":
+        if (this.tab === "plot") return;
         this.sk.showOrigin = !this.sk.showOrigin;
         return this.commit();
     }
@@ -4021,7 +4082,7 @@ export class App {
       if (k === "y") { e.preventDefault(); return this.redo(); }
       if (k === "s") { e.preventDefault(); return this.save(); }
       if (k === "o") { e.preventDefault(); return this.fileInput.click(); }
-      if (k === "a") {
+      if (k === "a" && this.tab !== "plot") {
         e.preventDefault();
         this.setTool("select");
         this.selection = new Set([
@@ -4037,6 +4098,11 @@ export class App {
       return;
     }
 
+    if (this.tab === "plot") {
+      // The sketcher's shortcuts are for the sketcher; the plot has a few of its own.
+      if (this.plots.key(e)) e.preventDefault();
+      return;
+    }
     if (e.code === "Space") {
       // Space on a focused button should press it, not start a pan.
       if (target.tagName === "BUTTON") return;

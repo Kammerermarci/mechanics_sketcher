@@ -4,6 +4,12 @@ import { createSolver } from "./solver-web";
 import { createMathJaxEngine } from "./mathjax";
 import { setTexEngine } from "./tex";
 
+// A build made for trying things out says so beside its name, so it is not taken for the one on the site.
+if (import.meta.env.VITE_CHANNEL === "beta") {
+  document.querySelector(".brand")?.insertAdjacentHTML("beforeend", ` <span class="beta">beta</span>`);
+  document.title = "Mech Sketch beta";
+}
+
 try {
   setTexEngine(createMathJaxEngine());
 } catch (err) {

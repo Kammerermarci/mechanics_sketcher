@@ -580,3 +580,67 @@ dialog.welcome h2 { font-size: 21px; margin-bottom: 6px; }
 @media (prefers-reduced-motion: reduce) {
   .toast { transition: none; }
 }
+
+/* ---- the Plot workspace ---------------------------------------------------------- */
+
+/* One workspace is on screen at a time: the sketch with its corner box, or the plot. */
+#plot-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: none; touch-action: none; user-select: none; }
+#app[data-workspace="plot"] #plot-canvas { display: block; }
+#app[data-workspace="plot"] #canvas,
+#app[data-workspace="plot"] #empty,
+#app[data-workspace="plot"] #titleblock,
+#app[data-workspace="plot"] #dim-editor,
+#app[data-workspace="plot"] [data-act="preview"],
+#app[data-workspace="plot"] [data-act="origin"] { display: none; }
+#app:not([data-workspace="plot"]) #plot-empty { display: none; }
+#plot-empty { top: 38%; }
+#plot-empty p + p { margin-top: 12px; }
+#plot-empty button { pointer-events: auto; }
+#plot-canvas[data-over="ew"] { cursor: ew-resize; }
+#plot-canvas[data-over="ns"] { cursor: ns-resize; }
+#plot-canvas[data-over="nesw"] { cursor: nesw-resize; }
+#plot-canvas[data-over="nwse"] { cursor: nwse-resize; }
+#plot-canvas[data-over="grab"] { cursor: grabbing; }
+#plot-canvas[data-over="move"] { cursor: move; }
+#plot-canvas[data-over="pointer"] { cursor: pointer; }
+.tab.apart { margin-left: 14px; }
+.tab.apart::before { content: ""; position: absolute; left: -8px; top: 9px; bottom: 9px; width: 1px; background: var(--rule); }
+
+.tool:disabled { opacity: 0.4; cursor: default; }
+.tool:disabled:hover { background: none; color: var(--ink-2); }
+
+.plot-box { fill: none; stroke: var(--blue); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.55; pointer-events: none; }
+.plot-handle { fill: var(--paper); stroke: var(--blue); stroke-width: 1.4; }
+.plot-handle.on { fill: var(--blue); }
+.plot-halo { fill: none; stroke: var(--sel); opacity: 0.2; stroke-linecap: round; stroke-linejoin: round; }
+.plot-size { fill: var(--blue); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* A function in the side panel: a heading that opens it, then its pieces. */
+.fn { border: 1px solid var(--rule); border-radius: 6px; margin-bottom: 7px; background: var(--paper); }
+.fn.open { padding: 0 9px 10px; }
+.fn-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 0 9px; border: 0; background: none; text-align: left; font-weight: 500; }
+.fn.open .fn-head { padding: 0; margin-bottom: 6px; }
+.fn-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(0, 0, 0, 0.18); }
+.fn-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, ui-monospace, "Cascadia Mono", Consolas, monospace); font-size: 13px; }
+.piece { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.piece > input, .pair input, .panel select {
+  height: 32px; min-width: 0; padding: 0 8px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); font: inherit;
+}
+.piece > input { font-family: var(--mono, ui-monospace, "Cascadia Mono", Consolas, monospace); font-size: 13.5px; }
+.piece > input.bad { border-color: var(--bad); }
+.piece > input:focus, .pair input:focus, .panel select:focus { outline: 2px solid var(--blue); outline-offset: -1px; }
+.piece-msg { min-height: 0; color: var(--ink-2); font-size: 12.5px; }
+.piece-msg.bad { color: var(--bad); }
+.piece-msg:empty { display: none; }
+.pair { display: flex; align-items: center; gap: 7px; }
+.pair input { flex: 1 1 0; width: 0; font-variant-numeric: tabular-nums; }
+.pair > span { flex: none; color: var(--ink-2); font-size: 13px; }
+.pair.small input { height: 28px; }
+.pair .icon-btn { flex: none; width: 26px; height: 26px; }
+.field + small.under { display: block; margin: -7px 0 11px; color: var(--ink-2); font-size: 13px; }
+.panel select { width: 100%; }
+#plot-empty .primary {
+  height: 34px; padding: 0 16px; border: 1px solid var(--ink); border-radius: 6px; background: var(--ink); color: var(--paper); font-weight: 500;
+}
+#plot-empty .primary:hover { background: #2a3630; }
+.beta { margin-left: 4px; padding: 1px 6px; border-radius: 9px; background: var(--sel); color: #fff; font-size: 11px; font-weight: 600; letter-spacing: 0.03em; vertical-align: 2px; }

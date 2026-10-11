@@ -222,7 +222,10 @@ function background(view: View, showOrigin: boolean, plain: boolean): string {
 /** Marks the dimension a tool is about to place; never part of the sketch. */
 export const PREVIEW_REF = "__preview";
 
-function primClass(s: Scene, p: Prim): string {
+/** What it takes to draw primitives: where they go on screen, and what is lit up. */
+export type PrimScene = Pick<Scene, "view" | "mm" | "prims" | "selection" | "related" | "hover" | "conflicting" | "redundant" | "freeIds">;
+
+function primClass(s: PrimScene, p: Prim): string {
   // Typeset text is a nested <svg>; it gets its own base class so the stroke
   // rules for drawn shapes do not leak into it.
   const cls = p.k === "text" ? ["tex", p.layer] : p.k === "region" ? ["region"] : ["prim", p.layer, p.stroke];
@@ -282,7 +285,8 @@ export function outlinePath(outlines: Outline[], M: (p: V) => V, pxPerMm: number
   return d;
 }
 
-function drawPrims(s: Scene): string {
+/** The primitives as SVG markup for the screen. */
+export function drawPrims(s: PrimScene): string {
   const { view, mm } = s;
   const pxPerMm = view.scale / mm;
   const M = (p: V): V => toScreen(view, [p[0] / mm, p[1] / mm]);
@@ -307,7 +311,7 @@ function drawPrims(s: Scene): string {
       } else out += glyphs;
       continue;
     }
-    const dash = STROKE_DASH[p.stroke];
+    const dash = p.k === "path" && p.dash ? p.dash : STROKE_DASH[p.stroke];
     // The colour goes in as a variable, so the highlight rules for selection and hover still win.
     const sw = `stroke-width="${n2(strokePx(p, pxPerMm))}"` +
       (dash ? ` stroke-dasharray="${dash.map((d) => n2(d * pxPerMm)).join(" ")}"` : "") +
@@ -320,6 +324,8 @@ function drawPrims(s: Scene): string {
       out += `<circle class="${cls}" cx="${n2(c[0])}" cy="${n2(c[1])}" r="${n2(p.r * pxPerMm)}" ${sw}/>`;
     } else if (p.k === "poly") {
       out += `<polygon class="${cls}" points="${p.pts.map((q) => M(q).map(n2).join(",")).join(" ")}" ${sw}/>`;
+    } else if (p.k === "path") {
+      out += `<polyline class="${cls}" points="${p.pts.map((q) => M(q).map(n2).join(",")).join(" ")}" ${sw}/>`;
     } else {
       const [a0, a1] = strokedSweep(p);
       out += `<path class="${cls}" d="${arcPath(view, [p.c[0] / mm, p.c[1] / mm], p.r / mm, a0, a1)}" ${sw}/>`;

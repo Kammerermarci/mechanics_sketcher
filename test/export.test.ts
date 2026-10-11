@@ -235,7 +235,7 @@ describe("export", () => {
     const tikz = toTikz(sk)!;
     expect(tikz).toContain("{$hossz\\acute{u}s\\acute{a}g$}");
     // The long umlaut has no math command of its own.
-    expect(tikz).toContain("{$F_{ered\\mathaccent\"707D{o}}$}");
+    expect(tikz).toContain("{$F_{ered\\mathaccent28797{o}}$}");
     expect(tikz).toContain("{$\\acute{A}$}");
     // In a note only the math is touched; a subscript that is one accented letter is kept together.
     expect(tikz).toContain("{Görgős támasz: $F_{\\acute{e}} = 2a$, \\textbf{tűrés} $\\text{erő} + \\mathrm{\\acute{a}ll\\acute{o}}$}");

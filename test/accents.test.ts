@@ -16,12 +16,12 @@ describe("accented letters", () => {
   });
 
   it("turns them into accent commands where LaTeX is in math mode", () => {
-    expect(latexAccents("erő", "math")).toBe("er\\mathaccent\"707D{o}");
+    expect(latexAccents("erő", "math")).toBe("er\\mathaccent28797{o}");
     expect(latexAccents("árvíz", "math")).toBe("\\acute{a}rv\\acute{\\imath}z");
     expect(latexAccents("ÖÜ", "math")).toBe("\\ddot{O}\\ddot{U}");
     // What follows _ or ^, or a command, is one piece: the accent is wrapped up to stay one.
     expect(latexAccents("F_é", "math")).toBe("F_{\\acute{e}}");
-    expect(latexAccents("x^ő_{é}", "math")).toBe("x^{\\mathaccent\"707D{o}}_{\\acute{e}}");
+    expect(latexAccents("x^ő_{é}", "math")).toBe("x^{\\mathaccent28797{o}}_{\\acute{e}}");
     expect(latexAccents("\\vec é", "math")).toBe("\\vec {\\acute{e}}");
     expect(latexAccents("\\vec{é}", "math")).toBe("\\vec{\\acute{e}}");
     expect(latexAccents("2\\,é", "math")).toBe("2\\,\\acute{e}");
@@ -31,8 +31,8 @@ describe("accented letters", () => {
 
   it("leaves text as typed, and knows text from math", () => {
     expect(latexAccents("erő", "text")).toBe("erő");
-    expect(latexAccents("\\text{erő} + ő", "math")).toBe("\\text{erő} + \\mathaccent\"707D{o}");
-    expect(latexAccents("\\mathrm{erő}", "math")).toBe("\\mathrm{er\\mathaccent\"707D{o}}");
+    expect(latexAccents("\\text{erő} + ő", "math")).toBe("\\text{erő} + \\mathaccent28797{o}");
+    expect(latexAccents("\\mathrm{erő}", "math")).toBe("\\mathrm{er\\mathaccent28797{o}}");
     expect(latexAccents("\\textbf {é}é", "math")).toBe("\\textbf {é}\\acute{e}");
     // Math inside text inside math, and back out again.
     expect(latexAccents("\\text{é $é$ é}é", "math")).toBe("\\text{é $\\acute{e}$ é}\\acute{e}");

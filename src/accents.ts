@@ -18,8 +18,9 @@ const MATH_ACCENT: Record<string, string> = {
   "\u0307": "\\dot",
   "\u0308": "\\ddot",
   "\u030A": "\\mathring",
-  // No math command of its own: this takes it from the roman font, the way \acute is defined.
-  [DOUBLE_ACUTE]: "\\mathaccent\"707D",
+  // No math command of its own: this takes it from the roman font, the way \acute is defined. The number is
+  // hexadecimal 707D written in decimal: with babel, some languages take the quote sign that marks a hexadecimal one.
+  [DOUBLE_ACUTE]: "\\mathaccent28797",
   "\u030C": "\\check",
 };
 
