@@ -3,13 +3,44 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mech Sketch</title>
+<title>Mech Sketch – draw truss and beam figures, export TikZ and SVG</title>
+<meta name="description" content="Free browser tool for mechanics figures. Sketch trusses and beams like in CAD, add constraints and dimensions, and export TikZ or SVG for LaTeX.">
+<link rel="canonical" href="https://mech-sketch.org/">
+<!-- What a link to the page shows when it is shared in a chat or a post. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Mech Sketch">
+<meta property="og:title" content="Mech Sketch – draw truss and beam figures, export TikZ and SVG">
+<meta property="og:description" content="Free browser tool for mechanics figures. Sketch like in CAD, add constraints and dimensions, and export TikZ or SVG for LaTeX.">
+<meta property="og:url" content="https://mech-sketch.org/">
+<meta property="og:image" content="https://mech-sketch.org/preview.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Mech Sketch editor with a figure that has axes, balloons, a fill and hatched ground">
+<meta name="twitter:card" content="summary_large_image">
+<!-- The same facts in the form search engines read. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "Mech Sketch",
+  "url": "https://mech-sketch.org/",
+  "description": "Constraint sketcher for truss and beam figures, with TikZ and SVG export for LaTeX.",
+  "applicationCategory": "EducationalApplication",
+  "operatingSystem": "Any",
+  "browserRequirements": "Requires JavaScript",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" }
+}
+</script>
 <meta name="theme-color" content="#e7ebe5">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icon-192.png">
 </head>
 <body>
+<noscript>
+  <p>Mech Sketch is a free sketching tool for mechanics figures such as trusses and beams. Draw roughly, then constrain and dimension the drawing as in a CAD sketcher, and export it to TikZ or SVG for LaTeX. It runs in the browser and needs JavaScript.</p>
+</noscript>
 <div id="app">
   <header class="topbar">
     <span class="brand">Mech Sketch</span>
