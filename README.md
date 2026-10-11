@@ -324,6 +324,27 @@ sketch and any number of plots; undo, Save and Open take them along.
 \input{plot-1.tex}
 ```
 
+**Diagrams.** A plot can be laid along a member of the sketch, the way an
+internal force diagram is drawn. On the Annotate tab, pick *Diagram* and click
+a line, an arc or a side of a beam, on the side positive values should go.
+
+- The plot's horizontal range is stretched over the member, from its start to
+  its end, and the values are set off square to it: radially on an arc. *The
+  plot runs from* turns it round. On a side of a beam, straight or curved, the
+  diagram runs along the middle of the beam and brings a thin zero line of its
+  own; the side panel can put it on the edge instead.
+- Drag the handle at the peak to set the height (across the member, the side),
+  and the handles at the ends to cover only part of the member.
+- It is shaded in a light tone of each function's colour, can have strokes
+  drawn across it, and can have the values at its ends, jumps and peaks
+  written beside it. The colours and line styles are the plot's.
+- The diagram stays tied to its plot: change a function on the Plot tab and it
+  follows. *Edit this plot*, or a double-click on the diagram, goes there.
+  Deleting the plot deletes its diagrams.
+- Unlike the plot itself, a diagram is not cut off at the plot's vertical
+  range. In the SVG and the TikZ it is part of the figure, drawn through
+  points like the rest of it: no pgfplots is needed for the sketch.
+
 A curve is drawn through the same points on screen and by pgfplots: two for a
 straight line, about one every half millimetre for anything else. Where a
 function has no value, or runs more than the height of the plot outside it,
@@ -355,6 +376,9 @@ the curve stops, so the two sides of an asymptote are not joined.
 - `src/plot.ts`: lays a plot out on paper as primitives, for the screen and
   the SVG, and writes it for pgfplots. `src/plotwork.ts` is its workspace:
   the canvas, the handles and the side panel.
+- `src/plotmath.ts`: the formulas of a plot read and sampled into points, for
+  the plot and for `src/diagram.ts`, which lays those points along a line, an
+  arc or the middle of a beam. A beam is told by its shape, not by a record.
 - `src/guide.ts`: the tips, and what the browser remembers about which have
   been seen. `src/config.ts`: where the Support button leads and how long an
   export waits.
@@ -399,7 +423,8 @@ Working: geometry, centre lines, trim, constraints, distance / angle / radius
 dimensions with labels typeset by MathJax, supports, coordinate axes, straight
 and curved arrows, forces, distributed loads and moments, notes, datum points,
 centre marks, balloons, fills, hatching, straight and curved beams, mirror and
-patterns, plots of functions with pgfplots export, the fixed origin,
+patterns, plots of functions with pgfplots export, diagrams laid along
+members, the fixed origin,
 snapping, dragging, undo, save and load, print preview, SVG and TikZ export,
 install as an app.
 

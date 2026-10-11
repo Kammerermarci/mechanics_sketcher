@@ -348,13 +348,48 @@ export interface Moment {
   dx?: number;
   dy?: number;
 }
+/**
+ * A plot laid along a member, as an internal force diagram is drawn: the
+ * plot's horizontal axis runs along a line, an arc or the middle of a beam,
+ * and the values of its functions are set off square to it. It stays tied to
+ * the plot: change a function there and the diagram follows.
+ */
+export interface Diagram {
+  id: Id;
+  type: "diagram";
+  /** The plot whose functions it draws. */
+  plot: Id;
+  /** The line or arc it was put on. */
+  on: Id;
+  /**
+   * Set when that curve is a side of a beam and the diagram is drawn along
+   * the middle of the beam instead: the centres of the beam's two ends, and
+   * of its bend when it is curved (it then runs counter-clockwise from a to b).
+   */
+  axis?: { a: Id; b: Id; o?: Id };
+  /** Where along the member it starts and ends, as fractions of it from its start. */
+  t0: number;
+  t1: number;
+  /** The plot's axis runs from the far end of the member back towards its start. */
+  back?: boolean;
+  /** Which side positive values are drawn on, seen along the member: 1 left, -1 right. */
+  side: 1 | -1;
+  /** How far a value of one is set off from the member, in model units. */
+  scale: number;
+  /** Drawn without the shading between the member and the curves. */
+  plain?: boolean;
+  /** How many strokes are drawn from the member to the curves, square to it. Unset: none. */
+  strokes?: number;
+  /** The values at the ends, the jumps and the peaks are written beside the curves. */
+  values?: boolean;
+}
 export type AnyLoad = Load | LineLoad | Moment;
 /** Which scale a load is drawn at: forces, loads along a line and moments are different quantities. */
 export type LoadKind = "force" | "line" | "moment";
 export const loadKind = (s: AnyLoad): LoadKind => (s.type === "load" ? "force" : s.type === "lineload" ? "line" : "moment");
 export const isLoad = (s: Sym): s is AnyLoad => s.type === "load" || s.type === "lineload" || s.type === "moment";
 
-export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch | Datum | Note | AnyLoad;
+export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch | Datum | Note | AnyLoad | Diagram;
 
 /** Everything a symbol needs to exist; it is removed when any of these is. */
 export function symbolRefs(s: Sym): Id[] {
@@ -365,6 +400,7 @@ export function symbolRefs(s: Sym): Id[] {
     case "moment":
       return [s.at];
     case "lineload": return [s.on];
+    case "diagram": return s.axis ? [s.on, s.axis.a, s.axis.b, ...(s.axis.o ? [s.axis.o] : [])] : [s.on];
     case "frame": return s.at ? [s.at] : [];
     case "note": return [];
     case "centermark":
@@ -829,6 +865,9 @@ export function deserialize(text: string): Sketch {
     const extent = geometryExtent({ entities });
     symbols = sizesToModel(symbols, extent > 1e-9 ? figureWidthMm / dimScale / extent : 10, { axes: raw.version === 2 });
   }
+  const plots = Array.isArray(raw.plots) ? raw.plots.filter(isPlot) : [];
+  // A diagram is a plot laid along a member: without its plot there is nothing to lay.
+  symbols = symbols.filter((s) => s.type !== "diagram" || plots.some((p) => p.id === s.plot));
   return {
     version: 4,
     nextId: raw.nextId ?? 1,
@@ -840,7 +879,7 @@ export function deserialize(text: string): Sketch {
     showOrigin: raw.showOrigin ?? true,
     ...(raw.loadScale && typeof raw.loadScale === "object" ? { loadScale: raw.loadScale } : {}),
     ...(typeof raw.supportScale === "number" && raw.supportScale > 0 ? { supportScale: raw.supportScale } : {}),
-    ...(Array.isArray(raw.plots) && raw.plots.length ? { plots: raw.plots.filter(isPlot) } : {}),
+    ...(plots.length ? { plots } : {}),
   };
 }
 

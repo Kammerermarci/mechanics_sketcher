@@ -4,7 +4,7 @@
 import {
   type Sketch, type Id, type Point, type Line, type Circle, type Arc, type Curve, type Constraint,
   type ConstraintDraft, type Dimension, type DistanceMode, type Sym, type SupportKind, type LeaderEnd,
-  type ArrowEnds, type Datum, type BalloonFrame, type AnyLoad, type LoadKind, isLoad, loadKind, geometryExtent,
+  type ArrowEnds, type Datum, type BalloonFrame, type AnyLoad, type LoadKind, type Diagram, type Plot, isLoad, loadKind, geometryExtent,
   ORIGIN, emptySketch, entity, point, constraint, symbol, symbolRefs, points, curves, curvePoints,
   constraintRefs, isDimension, isLink, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint,
   addSupport, addFrame, addSymbol, remove, serialize, deserialize, clone,
@@ -35,9 +35,10 @@ import { type ReportKind, composeReport } from "./report";
 import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
 import { type BeamEnds, straightBeam, curvedBeam } from "./beam";
 import { PlotWorkspace } from "./plotwork";
+import { baseline, beamAxis, diagramShape, plotPeak } from "./diagram";
 
 type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam" | "arcbeam";
-type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "note" | "load" | "lineload" | "moment";
+type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "note" | "load" | "lineload" | "moment" | "diagram";
 /** Tools that copy what is selected and take one more click to say how: about which line, around which point. */
 type CopyTool = "mirror" | "turn";
 type Command =
@@ -85,6 +86,8 @@ type DragState =
   | { kind: "sym"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean; edit?: EditTarget; part?: string }
   /** Pulling an end of a spread load along its line. */
   | { kind: "span"; id: Id; end: 0 | 1; startScreen: V; moved: boolean }
+  /** The handle at the peak of a diagram: pulled away from the member or towards it to set how high the diagram is. */
+  | { kind: "height"; id: Id; startScreen: V; moved: boolean }
   /** Pulling the tip of one of a pair of axes; `slack` is how far from the tip it was grabbed, in mm. */
   | { kind: "axis"; id: Id; axis: "x" | "y"; startScreen: V; slack: number; moved: boolean; edit?: EditTarget }
   /** Pulling an end of a centre mark to make the mark larger or smaller. */
@@ -156,6 +159,7 @@ const TOOLS: ToolDef[] = [
   { id: "load", label: "Load", icon: "load", tab: "annotate", group: 3 },
   { id: "lineload", label: "Distributed load", short: "Distributed", icon: "lineload", tab: "annotate", group: 3 },
   { id: "moment", label: "Moment", icon: "moment", tab: "annotate", group: 3 },
+  { id: "diagram", label: "Diagram", icon: "diagram", tab: "annotate", group: 3 },
   { id: "frame", label: "Axes", icon: "frame", tab: "annotate", group: 4 },
   { id: "arrow", label: "Arrow", icon: "arrow", tab: "annotate", group: 4 },
   { id: "arcarrow", label: "Curved arrow", icon: "arcarrow", tab: "annotate", group: 4 },
@@ -172,7 +176,7 @@ const COMMAND_IDS: Command[] = [
 ];
 const isCommand = (t: Tool): t is Command => (COMMAND_IDS as Tool[]).includes(t);
 const isSymbolTool = (t: Tool): t is SymbolTool =>
-  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum", "note", "load", "lineload", "moment"].includes(t);
+  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum", "note", "load", "lineload", "moment", "diagram"].includes(t);
 const isCopyTool = (t: Tool): t is CopyTool => t === "mirror" || t === "turn";
 const toolDef = (t: Tool | "shift"): ToolDef => TOOLS.find((d) => d.id === t)!;
 
@@ -213,6 +217,9 @@ const LOAD_TITLE: Record<AnyLoad["type"], string> = { load: "Load", lineload: "D
 const LOAD_SIZE: [number, number] = [1 / 100, 2];
 /** Most arrows a spread load is drawn with. */
 const LINE_ARROWS_MAX = 60;
+/** How high a diagram can be set with its slider, against the length of its member, and the most strokes it is drawn with. */
+const DIAGRAM_SIZE: [number, number] = [1 / 50, 2];
+const DIAGRAM_STROKES_MAX = 80;
 /** Where a datum's name starts out, in mm from its point. */
 const DATUM_LABEL_OFFSET: V = [2.4, 2.4];
 const EXPORT_NAME_KEY = "mech-sketch.exportName";
@@ -281,6 +288,8 @@ export class App {
   private reportKind: ReportKind = "bug";
   private datumColor = DATUM_COLORS[0];
   private loadColor = LOAD_COLORS[0];
+  /** The plot the Diagram tool lays along what is clicked; none chosen means the first there is. */
+  private diagramPlotId: Id | null = null;
   /** Print preview: only what is exported is drawn, with annotations at their size in print. */
   private preview = false;
   /** How large annotations are on screen while editing, against the standard size. A setting of this browser, not of the sketch. */
@@ -656,6 +665,9 @@ export class App {
     else if (s.type === "lineload") {
       const f = lineLoadFrame(this.sk, s, mm);
       if (f) at = [f.e0, f.e1];
+    } else if (s.type === "diagram") {
+      const shape = diagramShape(this.sk, s);
+      if (shape) at = [...shape.ends, ...(shape.peak ? [shape.peak.at] : [])].map((q) => mul(q, mm));
     }
     return at.map((t) => toScreen(this.view, [t[0] / mm, t[1] / mm]));
   }
@@ -717,6 +729,7 @@ export class App {
       case "load": return `Click a joint, or a spot on a line, to put a force there. Its magnitude, in the side panel, sets its length. ${done}`;
       case "moment": return `Click a joint, or a spot on a line, to put a moment about it. Its magnitude sets its radius. ${done}`;
       case "lineload": return `Click a line, on the side the distributed load should be drawn. ${done}`;
+      case "diagram": return `Click a line, an arc or a side of a beam to lay the plot along it, on the side positive values should go. ${done}`;
       case "circle": return p ? "Click to set the radius." : `Click the centre. ${done}`;
       case "arc":
       case "arcarrow": {
@@ -1536,6 +1549,31 @@ export class App {
       return this.commit();
     }
 
+    if (tool === "diagram") {
+      const plot = this.diagramPlot();
+      if (!plot) return this.toast("There is no plot to lay along a member yet. Make one on the Plot tab first.");
+      // The nearest line or arc, clicked on or beside: the side of it says where positive values go.
+      let on: Id | null = null, nearest = 40 / this.view.scale;
+      for (const c of curves(this.sk)) {
+        const b = c.type === "circle" ? null : baseline(this.sk, { on: c.id });
+        if (!b) continue;
+        const d = dist(raw, b.at(b.nearest(raw)));
+        if (d < nearest) { nearest = d; on = c.id; }
+      }
+      if (!on) return this.toast("Click a line, an arc or a side of a beam to lay the plot along it.");
+      // On a side of a beam it runs along the middle of the beam.
+      const axis = beamAxis(this.sk, on);
+      const base = baseline(this.sk, { on, ...(axis ? { axis } : {}) });
+      if (!base) return;
+      const t = base.nearest(raw);
+      const side = dot(sub(raw, base.at(t)), base.left(t)) >= 0 ? 1 : -1;
+      // Its largest value comes out a quarter as high as the member is long; from then on the height is the diagram's own.
+      const peak = plotPeak(plot);
+      const d = addSymbol(this.sk, { type: "diagram", plot: plot.id, on, ...(axis ? { axis } : {}), t0: 0, t1: 1, side, scale: peak > 0 ? (0.25 * base.length) / peak : 1 });
+      this.selection = new Set([d.id]);
+      return this.commit();
+    }
+
     if (tool === "load" || tool === "moment") {
       const snap = this.snapAt(sp);
       if (!snap.pointId && !snap.curveId) return this.toast(`Click a joint, or a spot on a line, to put the ${tool === "load" ? "load" : "moment"} there.`);
@@ -1621,9 +1659,63 @@ export class App {
     return near(f.e0) ? 0 : near(f.e1) ? 1 : null;
   }
 
+  /** The plot the Diagram tool is set to lay along a member. */
+  private diagramPlot(): Plot | null {
+    const plots = this.sk.plots ?? [];
+    return plots.find((p) => p.id === this.diagramPlotId) ?? plots[0] ?? null;
+  }
+
+  /** Which handle of a diagram is under a screen position: an end of the stretch it covers, or its peak. */
+  private diagramGripAt(s: Sym, sp: V): 0 | 1 | "peak" | null {
+    if (s.type !== "diagram") return null;
+    const shape = diagramShape(this.sk, s);
+    if (!shape) return null;
+    const near = (q: V) => dist(toScreen(this.view, q), sp) < 10;
+    if (shape.peak && near(shape.peak.at)) return "peak";
+    return near(shape.ends[0]) ? 0 : near(shape.ends[1]) ? 1 : null;
+  }
+
+  /** Pulls the peak of a diagram away from its member or towards it: that sets how high the diagram is, and across the member, which side it is on. */
+  private dragHeight(d: Extract<DragState, { kind: "height" }>, sp: V): void {
+    const s = symbol(this.sk, d.id);
+    const shape = s?.type === "diagram" ? diagramShape(this.sk, s) : null;
+    if (s?.type !== "diagram" || !shape?.peak) return;
+    const { t, v } = shape.peak;
+    const h = dot(sub(toModel(this.view, sp), shape.base.at(t)), shape.base.left(t));
+    if (Math.abs(h) * this.view.scale < 3) return; // on the member itself it has no height to take
+    s.scale = Math.abs(h / v);
+    s.side = h * v >= 0 ? 1 : -1;
+  }
+
+  /** How a diagram's height is shown beside its slider: that of its largest value, in the drawing's units. */
+  private diagramHeightLabel(s: Diagram): string {
+    const peak = diagramShape(this.sk, s)?.peak;
+    return peak ? formatNumber(Number((Math.abs(peak.v) * s.scale).toPrecision(3))) : "–";
+  }
+
+  /** Opens the plot of a diagram in the Plot workspace. */
+  private editPlotOf(s: Sym | null): void {
+    if (s?.type !== "diagram") return;
+    this.plots.show(s.plot);
+    this.setTab("plot");
+  }
+
   /** Pulls an end of a spread load along its line, so it covers more or less of it. */
   private dragSpan(d: Extract<DragState, { kind: "span" }>, sp: V): void {
     const s = symbol(this.sk, d.id);
+    if (s?.type === "diagram") {
+      // The same for a diagram: its end follows the pointer along the member.
+      const base = baseline(this.sk, s);
+      if (!base) return;
+      let t = base.nearest(toModel(this.view, sp));
+      if (!this.altKey) for (const stop of [0, 0.5, 1]) if (Math.abs(t - stop) * base.length * this.view.scale < 8) t = stop;
+      const [t0, t1] = d.end === 0 ? [Math.min(t, s.t1 - 0.02), s.t1] : [s.t0, Math.max(t, s.t0 + 0.02)];
+      // Its strokes stay as far apart as they were.
+      if (s.strokes) s.strokes = Math.max(1, Math.min(DIAGRAM_STROKES_MAX, Math.round(((s.strokes + 1) * (t1 - t0)) / (s.t1 - s.t0)) - 1));
+      s.t0 = t0;
+      s.t1 = t1;
+      return;
+    }
     if (s?.type !== "lineload") return;
     const f = lineLoadFrame(this.sk, s, 1);
     if (!f) return;
@@ -1833,6 +1925,12 @@ export class App {
       this.drag = { kind: "span", id: chosen.id, end, startScreen: sp, moved: false };
       return this.touch();
     }
+    // The same goes for the handles of a selected diagram: its two ends and its peak.
+    const grip = chosen && !ev.shiftKey ? this.diagramGripAt(chosen, sp) : null;
+    if (chosen && grip !== null) {
+      this.drag = grip === "peak" ? { kind: "height", id: chosen.id, startScreen: sp, moved: false } : { kind: "span", id: chosen.id, end: grip, startScreen: sp, moved: false };
+      return this.touch();
+    }
 
     const hit = this.pickAt(sp, ev.timeStamp, !ev.shiftKey);
     if (!hit || hit.kind === "fill") {
@@ -1950,6 +2048,11 @@ export class App {
       d.moved = true;
       this.dragSpan(d, sp);
       this.chromeDirty = true;
+    } else if (d?.kind === "height") {
+      if (!d.moved && dist(sp, d.startScreen) < 3) return;
+      d.moved = true;
+      this.dragHeight(d, sp);
+      this.chromeDirty = true;
     } else if (d?.kind === "label") {
       if (!d.moved && dist(sp, d.startScreen) < 3) return;
       d.moved = true;
@@ -2024,7 +2127,7 @@ export class App {
     } else if ((d.kind === "sym" || d.kind === "axis" || d.kind === "label") && !d.moved && d.edit && ev.type === "pointerup") {
       // The same for a name: a click on it, and it is typed where it stands.
       this.openEditor(d.edit);
-    } else if ((d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label" || d.kind === "reach" || d.kind === "span") && d.moved) {
+    } else if ((d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label" || d.kind === "reach" || d.kind === "span" || d.kind === "height") && d.moved) {
       this.commit();
     }
     this.touch();
@@ -2079,6 +2182,8 @@ export class App {
     if (this.tool !== "select") return;
     const hit = this.hitTest(this.screenPos(ev));
     if (!hit) return;
+    // On a diagram it opens the plot the diagram draws.
+    if (symbol(this.sk, hit.id)?.type === "diagram") return this.editPlotOf(symbol(this.sk, hit.id) ?? null);
     // A double-click opens the text of what was hit, also where there is no text yet to click on.
     let target: EditTarget | null = null;
     if (hit.kind === "dim") target = { kind: "dim", id: hit.id };
@@ -2938,6 +3043,7 @@ export class App {
         if (s.type === "balloon") grow(b, add(balloonAnchor(this.sk, s), [s.dx, s.dy]));
         if (s.type === "note") grow(b, [s.x, s.y]);
         if (isLoad(s)) for (const q of loadReach(this.sk, s)) grow(b, q);
+        if (s.type === "diagram") for (const part of diagramShape(this.sk, s)?.parts ?? []) for (const line of part.lines) for (const q of line) grow(b, q);
       }
       if (boxIsEmpty(b) || (b.x1 - b.x0 < 1e-9 && b.y1 - b.y0 < 1e-9)) {
         this.view.cx = 0;
@@ -3254,6 +3360,33 @@ export class App {
         html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
         html += `<button type="button" class="plain" data-act="lean">Lean the strokes the other way</button>`;
         break;
+      case "diagram": {
+        const plots = this.sk.plots ?? [];
+        const shape = diagramShape(this.sk, s);
+        const height = shape?.peak ? Math.abs(shape.peak.v) * s.scale : 0;
+        const pick = (label: string, id: string, options: [string, string, boolean][]) =>
+          `<div class="field"><span id="${id}-label">${label}</span><div class="segmented wrap" role="group" aria-labelledby="${id}-label">${options.map(([attr, name, on]) =>
+            `<button type="button" ${attr} aria-pressed="${on}">${name}</button>`).join("")}</div></div>`;
+        const check = (label: string, field: string, on: boolean) => `<label class="check"><input data-field="${field}" type="checkbox"${on ? " checked" : ""}><span>${label}</span></label>`;
+        const plain = (v: number) => formatNumber(Number(v.toPrecision(6)));
+        html += `<h2>Diagram</h2>`;
+        html += `<label class="field"><span>Plot</span><select data-field="sym-plot">${plots.map((p) =>
+          `<option value="${p.id}"${p.id === s.plot ? " selected" : ""}>${esc(p.name || "Plot")}</option>`).join("")}</select>` +
+          `<small>The functions, their colours and their line styles are the plot's own. Its range is stretched over the member.</small></label>`;
+        html += `<button type="button" class="plain" data-act="edit-plot">Edit this plot</button>`;
+        html += slider("Height", "sym-height", 0, 100, 1, ratioPos(height / (shape?.base.length || 1), DIAGRAM_SIZE), this.diagramHeightLabel(s),
+          "How far the largest value is set off from the member, in the drawing's units. Dragging the handle at the peak sets it too.", !shape?.peak);
+        html += pick("The plot runs from", "back", [[`data-back="0"`, "The start", !s.back], [`data-back="1"`, "The far end", !!s.back]]);
+        if (s.axis || beamAxis(this.sk, s.on)) html += pick("Drawn along", "along", [[`data-along="axis"`, "The middle of the beam", !!s.axis], [`data-along="edge"`, "This edge", !s.axis]]);
+        html += number("Covers the member from (%)", "sym-t0", plain(s.t0 * 100));
+        html += number("to (%)", "sym-t1", plain(s.t1 * 100), "Dragging an end of the diagram along the member sets these too.");
+        html += check("Shade the area", "sym-shade", !s.plain);
+        html += check("Draw strokes across it", "sym-strokes", !!s.strokes);
+        if (s.strokes) html += slider("Number of strokes", "sym-count", 1, DIAGRAM_STROKES_MAX, 1, s.strokes, String(s.strokes));
+        html += check("Write the values at the ends, jumps and peaks", "sym-values", !!s.values);
+        html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
+        break;
+      }
       case "load":
       case "lineload":
       case "moment": {
@@ -3343,6 +3476,20 @@ export class App {
       html += `<h2>${SUPPORT_NAMES[this.tool === "wall" ? "fixed" : this.tool]}</h2>`;
       html += `<p class="muted">Click a joint, or a spot on a line, to put the support there.</p>`;
       html += this.supportSizeField();
+    } else if (this.tool === "diagram" && !syms.length && !entities && !cons.length) {
+      const plots = this.sk.plots ?? [];
+      html += `<h2>Diagram</h2>`;
+      if (!plots.length) {
+        html += `<p class="muted">A diagram lays a plot along a member, the way an internal force diagram is drawn. There is no plot yet: make one on the Plot tab first.</p>` +
+          `<button type="button" class="plain" data-tab="plot">Go to the Plot tab</button>`;
+      } else {
+        const chosen = this.diagramPlot();
+        if (plots.length > 1) html += `<label class="field"><span>Plot to lay along the member</span><select data-field="diagram-plot">${plots.map((p) =>
+          `<option value="${p.id}"${p.id === chosen?.id ? " selected" : ""}>${esc(p.name || "Plot")}</option>`).join("")}</select></label>`;
+        html += `<ol class="steps"><li>Click a line, an arc or a side of a beam, on the side positive values should go.</li>` +
+          `<li>Drag the handle at the peak to set the height, and the handles at the ends to cover only part of the member.</li></ol>`;
+        html += `<p class="muted note-block">${plots.length > 1 ? "" : `It draws ${esc(chosen?.name || "the plot")}. `}The plot's range is stretched over the member. On a side of a beam the diagram runs along the middle of the beam.</p>`;
+      }
     } else if (isCopyTool(this.tool)) {
       html += `<h2>${toolDef(this.tool).label}</h2>`;
       html += this.tool === "mirror"
@@ -3533,6 +3680,17 @@ export class App {
         // Starting out as it is drawn now, so nothing jumps: straight down where that makes sense.
         else x.angle ??= -Math.PI / 2;
       });
+      else if (ds.back) this.editSymbol((x) => {
+        if (x.type !== "diagram") return;
+        if (ds.back === "1") x.back = true;
+        else delete x.back;
+      });
+      else if (ds.along) this.editSymbol((x) => {
+        if (x.type !== "diagram") return;
+        const axis = ds.along === "axis" ? beamAxis(this.sk, x.on) : null;
+        if (axis) x.axis = axis;
+        else delete x.axis;
+      });
       else if (ds.frame) this.editSymbol((x) => {
         if (x.type !== "balloon") return;
         if (ds.frame === "circle") delete x.frame;
@@ -3697,7 +3855,8 @@ export class App {
       case "delete": return this.deleteSelection();
       case "rotate": return this.rotateSelected(Math.PI / 2);
       case "flip":
-        return this.editSymbol((x) => { if (x.type === "hatch" || x.type === "lineload") x.side = x.side === 1 ? -1 : 1; });
+        return this.editSymbol((x) => { if (x.type === "hatch" || x.type === "lineload" || x.type === "diagram") x.side = x.side === 1 ? -1 : 1; });
+      case "edit-plot": return this.editPlotOf(this.selectedSymbol());
       case "lean":
         return this.editSymbol((x) => { if (x.type === "hatch") x.lean = (x.lean ?? 1) === 1 ? -1 : 1; });
       case "undatum": {
@@ -3934,6 +4093,37 @@ export class App {
         if (!Number.isFinite(v) || v < 0) { this.toast("A magnitude must be a number, zero or more."); return this.touch(); }
         if (field === "sym-q1") s.q1 = v;
         else s.q2 = v;
+      } else if (s.type === "diagram" && field === "sym-plot") {
+        // Another plot, drawn as high as the one before it.
+        const peakOf = (id: Id) => { const p = this.sk.plots?.find((x) => x.id === id); return p ? plotPeak(p) : 0; };
+        const before = peakOf(s.plot), after = peakOf(input.value);
+        s.plot = input.value;
+        if (before > 0 && after > 0) s.scale *= before / after;
+      } else if (s.type === "diagram" && field === "sym-height") {
+        const shape = diagramShape(this.sk, s);
+        if (!Number.isFinite(v) || !shape?.peak) return;
+        s.scale = (ratioValue(v, DIAGRAM_SIZE) * shape.base.length) / Math.abs(shape.peak.v);
+        return slide(this.diagramHeightLabel(s));
+      } else if (s.type === "diagram" && (field === "sym-t0" || field === "sym-t1")) {
+        const t = v / 100;
+        const [t0, t1] = field === "sym-t0" ? [t, s.t1] : [s.t0, t];
+        if (!Number.isFinite(t) || t0 < 0 || t1 > 1 || t1 - t0 < 0.02) { this.toast("The diagram runs from a smaller to a larger share of the member, between 0 and 100 %."); return this.touch(); }
+        s.t0 = t0;
+        s.t1 = t1;
+      } else if (s.type === "diagram" && field === "sym-shade") {
+        if (input.checked) delete s.plain;
+        else s.plain = true;
+      } else if (s.type === "diagram" && field === "sym-strokes") {
+        const base = baseline(this.sk, s);
+        // A handy spacing for the view as it is now; from then on the number is the diagram's own.
+        if (input.checked) s.strokes = Math.max(3, Math.min(DIAGRAM_STROKES_MAX, Math.round(((base?.length ?? 0) * (s.t1 - s.t0) * this.view.scale) / 16)));
+        else delete s.strokes;
+      } else if (s.type === "diagram" && field === "sym-count") {
+        s.strokes = Math.max(1, Math.min(DIAGRAM_STROKES_MAX, Math.round(v) || 1));
+        return slide(String(s.strokes));
+      } else if (s.type === "diagram" && field === "sym-values") {
+        if (input.checked) s.values = true;
+        else delete s.values;
       } else if (s.type === "lineload" && field === "sym-shade") {
         if (input.checked) delete s.plain;
         else s.plain = true;
@@ -3958,6 +4148,11 @@ export class App {
         return slide(this.hatchLabel(s, field === "sym-depth" ? "depth" : "freq"));
       }
       return this.commit();
+    }
+
+    if (field === "diagram-plot") {
+      this.diagramPlotId = input.value;
+      return this.touch();
     }
 
     if (field === "support-scale") {

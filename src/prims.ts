@@ -5,7 +5,7 @@
 import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
   type Arc, type Line, type Curve, type Sym, type Support, type Frame, type CenterMark, type Balloon,
-  type Fill as FillSym, type Hatch, type Datum, type Note, type Load, type LineLoad, type Moment, type AnyLoad, type LoadKind,
+  type Fill as FillSym, type Hatch, type Datum, type Note, type Load, type LineLoad, type Moment, type AnyLoad, type LoadKind, type Diagram,
   entity, point, arcRadius, arcAngles, isDimension, geometryBox, geometryExtent,
 } from "./model";
 import {
@@ -13,6 +13,8 @@ import {
   distToSegment, intersectLines, TWO_PI,
 } from "./geom";
 import { texEngine } from "./tex";
+import { baseline, diagramShape } from "./diagram";
+import { PLOT, PLOT_DASH } from "./plotmath";
 
 /** Sizes of annotations in annotation mm: what they measure on paper at a dimension size of 100%. 1 pt = 0.3515 mm. */
 export const PAPER = {
@@ -473,6 +475,10 @@ export function symbolPosition(sk: Sketch, s: Sym): V {
       const f = lineLoadFrame(sk, s, 1);
       return f ? mid(f.s0, f.s1) : [0, 0];
     }
+    case "diagram": {
+      const b = baseline(sk, s);
+      return b ? b.at((s.t0 + s.t1) / 2) : [0, 0];
+    }
     case "centermark": return curveShape(sk, s.on)?.kind === "round" ? (curveShape(sk, s.on) as { c: V }).c : [0, 0];
     case "balloon": return balloonAnchor(sk, s);
     case "hatch": return pointOnCurve(sk, s.on, curveShape(sk, s.on)?.kind === "round" && (curveShape(sk, s.on) as { full: boolean }).full ? 0 : 0.5) ?? [0, 0];
@@ -764,6 +770,49 @@ function loadShade(sk: Sketch, s: LineLoad, mm: number): Prim[] {
   return [{ k: "region", outlines: [{ kind: "path", start: f.s0, segs }], color: tint(s.color, PAPER.loadShade), ref: s.id, layer: "fill" }];
 }
 
+/** How a value is written beside a diagram: to four digits, so 2.5 and 12.25 come out as they are and a third does not run on. */
+export function valueText(v: number): string {
+  return String(Number(v.toPrecision(4)));
+}
+
+/** The shading of a diagram: the areas between its member and its curves, each in a light tone of its curve's colour. */
+function diagramShade(sk: Sketch, s: Diagram, mm: number): Prim[] {
+  if (s.plain) return [];
+  const shape = diagramShape(sk, s);
+  if (!shape) return [];
+  const out: Prim[] = [];
+  for (const part of shape.parts) {
+    for (const area of part.areas) {
+      const [start, ...rest] = area.map((q) => mul(q, mm));
+      out.push({ k: "region", layer: "fill", ref: s.id, color: tint(part.curve.color, PLOT.shade), outlines: [{ kind: "path", start, segs: [...rest, start].map((to) => ({ k: "L" as const, to })) }] });
+    }
+  }
+  return out;
+}
+
+/** A plot laid along a member: its curves, the lines that close them down to the member, and whatever strokes and values go with them. */
+function diagramPrims(sk: Sketch, s: Diagram, mm: number): Prim[] {
+  const shape = diagramShape(sk, s);
+  if (!shape) return [];
+  const base = { ref: s.id, layer: "sym" as const };
+  const M = (q: V) => mul(q, mm);
+  const out: Prim[] = [];
+  // Along the middle of a beam there is no line to be the diagram's zero, so it brings one.
+  if (s.axis) {
+    const n = shape.base.kind === "arc" ? 48 : 1;
+    out.push({ ...base, k: "path", pts: Array.from({ length: n + 1 }, (_, i) => M(shape.base.at(s.t0 + ((s.t1 - s.t0) * i) / n))), stroke: "dim", part: "zero" });
+  }
+  for (const part of shape.parts) {
+    const c = part.curve;
+    for (const [a, b] of part.strokes) out.push({ ...base, k: "line", a: M(a), b: M(b), stroke: "hatch", ink: c.color, part: "stroke" });
+    const line = { ...base, k: "path" as const, stroke: "member" as const, width: (c.weight ?? PLOT.weight) * PT_MM, ink: c.color, ...(c.dash ? { dash: PLOT_DASH[c.dash] } : {}) };
+    for (const pts of part.lines) out.push({ ...line, pts: pts.map(M) });
+    for (const up of part.uprights) out.push({ ...line, pts: up.map(M) });
+    for (const v of part.values) out.push({ ...base, k: "text", at: M(v.at), tex: valueText(v.v), anchor: anchorFor(v.out), ink: c.color, part: "value" });
+  }
+  return out;
+}
+
 function loadPrims(sk: Sketch, s: AnyLoad, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const, ink: s.color };
   const out: Prim[] = [];
@@ -917,6 +966,7 @@ export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
     case "lineload":
     case "moment":
       return loadPrims(sk, s, mm);
+    case "diagram": return diagramPrims(sk, s, mm);
   }
 }
 
@@ -966,6 +1016,7 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
   for (const sym of sk.symbols) {
     if (sym.type === "fill") out.push(...symbolPrims(sk, sym, mm));
     else if (sym.type === "lineload") out.push(...loadShade(sk, sym, mm));
+    else if (sym.type === "diagram") out.push(...diagramShade(sk, sym, mm));
   }
   for (const e of sk.entities) {
     if (e.type === "point") continue;

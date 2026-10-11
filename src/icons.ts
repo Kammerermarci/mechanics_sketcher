@@ -69,6 +69,8 @@ export const ICONS: Record<string, string> = {
   plotnew: `<path d="M4 3.5V16h12.5" stroke-width="1.3"/><path d="M12.5 4v6M9.5 7h6"/>`,
   curve: `<path d="M3.5 3.5V16.5h13" stroke-width="1.2"/><path d="M5 13.5c2.2 0 2.6-8 5-8s2.8 6.500 6 6.500"/>`,
   fity: `<path d="M10 3v14M7 5.800L10 3l3 2.800M7 14.200L10 17l3-2.800"/><path d="M3.500 3h3M3.500 17h3M13.500 3h3M13.500 17h3" stroke-width="1.2"/>`,
+  // A plot laid along a member: a hump over a line, with the strokes that tie it down.
+  diagram: `<path d="M2.500 15h15"/><path d="M4 15c1.500-8 10.500-8 12 0"/><path d="M7 15v-4.500M10 15v-6M13 15v-4.500" stroke-width="1.1"/>`,
   copy: `<rect x="7" y="7" width="9.500" height="9.500" rx="1.500"/><path d="M4.500 13V5a1.500 1.500 0 0 1 1.500-1.500h7"/>`,
 };
 

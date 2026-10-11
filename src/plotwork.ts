@@ -118,6 +118,11 @@ export class PlotWorkspace {
     this.hover = { kind: "none" };
   }
 
+  /** Puts a plot on show, for when the workspace is next on screen. */
+  show(id: Id): void {
+    this.current = id;
+  }
+
   /** The workspace comes on screen. */
   enter(): void {
     this.sync();
@@ -612,6 +617,8 @@ export class PlotWorkspace {
       case "del-plot":
         sk.plots = this.plots().filter((x) => x !== p);
         if (!sk.plots.length) delete sk.plots;
+        // The diagrams that laid it along a member have nothing to draw any more.
+        sk.symbols = sk.symbols.filter((x) => x.type !== "diagram" || x.plot !== p.id);
         this.current = null;
         this.sync();
         this.host.commit();
