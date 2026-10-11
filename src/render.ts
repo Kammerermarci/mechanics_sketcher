@@ -218,6 +218,7 @@ function primClass(s: Scene, p: Prim): string {
   const cls = p.k === "text" ? ["tex", p.layer] : p.k === "region" ? ["region"] : ["prim", p.layer, p.stroke];
   if ((p.k === "circle" || p.k === "poly") && p.fill) cls.push(p.fill === "ink" ? "solid" : "filled");
   if (p.color) cls.push("tinted");
+  if (p.ink) cls.push("inked");
   if (p.ghost) cls.push("ghost");
   const id = p.ref;
   if (p.layer === "geom") cls.push(id && s.freeIds.has(id) ? "free" : "defined");
@@ -286,7 +287,9 @@ function drawPrims(s: Scene): string {
     if (p.k === "text") {
       const b = textBox(p);
       const topLeft = M([b.x0, b.y1]);
-      const glyphs = engine.svg(p.tex, topLeft[0], topLeft[1], PAPER.em * pxPerMm, cls);
+      let glyphs = engine.svg(p.tex, topLeft[0], topLeft[1], PAPER.em * pxPerMm, cls);
+      // Its colour goes in as a variable on a group around it, so the highlight rules still win.
+      if (p.ink && glyphs) glyphs = `<g style="--ink:${p.ink}">${glyphs}</g>`;
       if (p.rot && glyphs) {
         // Counter-clockwise on paper is a negative angle on the y-down screen.
         const at = M(p.at);
@@ -298,7 +301,7 @@ function drawPrims(s: Scene): string {
     // The colour goes in as a variable, so the highlight rules for selection and hover still win.
     const sw = `stroke-width="${n2(strokePx(p, pxPerMm))}"` +
       (dash ? ` stroke-dasharray="${dash.map((d) => n2(d * pxPerMm)).join(" ")}"` : "") +
-      (p.color ? ` style="--tint:${p.color}"` : "");
+      (p.color || p.ink ? ` style="${p.color ? `--tint:${p.color};` : ""}${p.ink ? `--ink:${p.ink}` : ""}"` : "");
     if (p.k === "line") {
       const [a, b] = strokedEnds(p).map(M);
       out += `<line class="${cls}" x1="${n2(a[0])}" y1="${n2(a[1])}" x2="${n2(b[0])}" y2="${n2(b[1])}" ${sw}/>`;
@@ -313,7 +316,7 @@ function drawPrims(s: Scene): string {
     }
     if (p.k === "line" || p.k === "arc") {
       for (const head of arrowHeads(p)) {
-        out += `<polygon class="${cls} head" points="${head.map((q) => M(q).map(n2).join(",")).join(" ")}"/>`;
+        out += `<polygon class="${cls} head" points="${head.map((q) => M(q).map(n2).join(",")).join(" ")}"${p.ink ? ` style="--ink:${p.ink}"` : ""}/>`;
       }
     }
   }

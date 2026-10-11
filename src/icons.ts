@@ -50,6 +50,11 @@ export const ICONS: Record<string, string> = {
   close: `<path d="M5 5l10 10M15 5L5 15"/>`,
   report: `<path d="M4.2 4h11.6a1.7 1.7 0 0 1 1.7 1.7v6.6a1.7 1.7 0 0 1-1.7 1.7H9.6L6 17v-3H4.2a1.7 1.7 0 0 1-1.7-1.7V5.7A1.7 1.7 0 0 1 4.2 4z"/><path d="M10 6.6v3"/>${dot(10, 11.6, 0.9)}`,
 
+  // Loads: a force arriving at a beam, a row of them under their envelope, and a moment about a point.
+  load: `<path d="M10 2.5v9.2"/><path d="M10 15.6l-3.2-5.4h6.4z" fill="currentColor" stroke="none"/><path d="M3 16.5h14"/>`,
+  lineload: `<path d="M3 4.5h14" stroke-width="1.3"/><path d="M4.5 4.5v7M10 4.5v7M15.5 4.5v7" stroke-width="1.3"/><path d="M4.5 14.2l-1.9-3.2h3.8zM10 14.2l-1.9-3.2h3.8zM15.5 14.2l-1.9-3.2h3.8z" fill="currentColor" stroke="none"/><path d="M2.5 16.5h15"/>`,
+  moment: `<path d="M15.6 12.9A6.2 6.2 0 1 1 13.2 4.7"/><path d="M16.9 6.6l-5.6.6 3.2-5z" fill="currentColor" stroke="none"/>${dot(10, 10, 1.3)}`,
+
   centerline: `<path d="M3 17l4.2-4.2M8.6 11.4l.8-.8M10.8 9.2L15 5M16.2 3.8l.8-.8"/>`,
   // Scissors over a line they have cut a piece out of.
   trim: `<path d="M2.5 15.5h5M12.5 15.5h5"/><circle cx="6.2" cy="4.6" r="1.9" stroke-width="1.4"/><circle cx="13.8" cy="4.6" r="1.9" stroke-width="1.4"/><path d="M7.4 6.1l5.4 7.6M12.6 6.1l-5.4 7.6" stroke-width="1.5"/>`,

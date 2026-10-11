@@ -65,9 +65,12 @@ function attachedTo(s: Sym, hosts: Set<Id>): boolean {
   switch (s.type) {
     case "support":
     case "datum":
+    case "load":
+    case "moment":
       return hosts.has(s.at);
     case "centermark":
     case "hatch":
+    case "lineload":
       return hosts.has(s.on);
     case "fill":
       return s.circle ? hosts.has(s.circle) : s.curves.length > 0 && s.curves.every((c) => hosts.has(c));
@@ -209,6 +212,30 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
       if (at && at !== s.at) {
         const [dx, dy] = move.vec([s.dx, s.dy]);
         made = addSymbol(sk, { type: "datum", at, color: s.color, label: s.label.trim() ? nextDatumName(sk) : "", dx, dy });
+      }
+    } else if (s.type === "load" || s.type === "moment") {
+      const at = pmap.get(s.at);
+      if (at && at !== s.at) {
+        const { id: _id, dx, dy, ...rest } = s;
+        const copy = addSymbol(sk, { ...rest, at, angle: move.angle(s.angle) });
+        if (dx !== undefined && dy !== undefined) [copy.dx, copy.dy] = move.vec([dx, dy]);
+        if (copy.type === "moment" && move.flips) {
+          // In a mirror a moment turns the other way, and its arc runs back from where it started.
+          if (s.type === "moment" && s.cw) delete copy.cw;
+          else copy.cw = true;
+          copy.angle = move.angle(s.angle) - 1.5 * Math.PI;
+        }
+        made = copy;
+      }
+    } else if (s.type === "lineload") {
+      const on = cmap.get(s.on);
+      if (on && on !== s.on) {
+        const { id: _id, dx, dy, ...rest } = s;
+        const copy = addSymbol(sk, { ...rest, on });
+        if (move.flips) copy.side = s.side === 1 ? -1 : 1;
+        if (s.angle !== undefined) copy.angle = move.angle(s.angle);
+        if (dx !== undefined && dy !== undefined) [copy.dx, copy.dy] = move.vec([dx, dy]);
+        made = copy;
       }
     } else if (s.type === "centermark") {
       const on = cmap.get(s.on);

@@ -281,14 +281,87 @@ export interface Note {
   /** As typed: plain text, with $...$ for math and \\ between lines. */
   text: string;
 }
-export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch | Datum | Note;
+/**
+ * A force on a point, drawn as an arrow. How long the arrow is follows the
+ * magnitude, at the scale the sketch keeps for forces.
+ */
+export interface Load {
+  id: Id;
+  type: "load";
+  /** The point it acts on. */
+  at: Id;
+  /** Which way it acts, in radians. */
+  angle: number;
+  /** Its magnitude: what its length is worked out from. Not negative. */
+  value: number;
+  /** Name as TeX math; empty for none. */
+  label: string;
+  /** CSS hex colour of the arrow and its name. */
+  color: string;
+  /** Drawn leaving the point, as a pull. Unset: arriving at it, as a push. */
+  pull?: boolean;
+  /** How far the name has been moved from where it is put by default, in annotation mm. */
+  dx?: number;
+  dy?: number;
+}
+/**
+ * A load spread along a line: a row of arrows under a straight envelope,
+ * growing from magnitude q1 at one end of its span to q2 at the other.
+ */
+export interface LineLoad {
+  id: Id;
+  type: "lineload";
+  on: Id;
+  /** Where along the line it starts and ends, as fractions of the line from its first point. */
+  t0: number;
+  t1: number;
+  q1: number;
+  q2: number;
+  /** Which side of the line it is drawn on, seen along the line: 1 left, -1 right. */
+  side: 1 | -1;
+  /** Which way the arrows point, in radians, for a load that is not square to the line (weight on a slope, say). Unset: square to the line. */
+  angle?: number;
+  /** The arrows leave the line. Unset: they arrive at it. */
+  pull?: boolean;
+  /** How many arrows it is drawn with. */
+  count: number;
+  label: string;
+  color: string;
+  dx?: number;
+  dy?: number;
+}
+/** A moment about a point: an arc with a head, whose radius follows the magnitude. */
+export interface Moment {
+  id: Id;
+  type: "moment";
+  at: Id;
+  value: number;
+  /** Turning clockwise. Unset: counter-clockwise. */
+  cw?: boolean;
+  /** Where the arc starts, in radians. It runs three quarters of the way round from there. */
+  angle: number;
+  label: string;
+  color: string;
+  dx?: number;
+  dy?: number;
+}
+export type AnyLoad = Load | LineLoad | Moment;
+/** Which scale a load is drawn at: forces, loads along a line and moments are different quantities. */
+export type LoadKind = "force" | "line" | "moment";
+export const loadKind = (s: AnyLoad): LoadKind => (s.type === "load" ? "force" : s.type === "lineload" ? "line" : "moment");
+export const isLoad = (s: Sym): s is AnyLoad => s.type === "load" || s.type === "lineload" || s.type === "moment";
+
+export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch | Datum | Note | AnyLoad;
 
 /** Everything a symbol needs to exist; it is removed when any of these is. */
 export function symbolRefs(s: Sym): Id[] {
   switch (s.type) {
     case "support":
     case "datum":
+    case "load":
+    case "moment":
       return [s.at];
+    case "lineload": return [s.on];
     case "frame": return s.at ? [s.at] : [];
     case "note": return [];
     case "centermark":
@@ -318,6 +391,12 @@ export interface Sketch {
   dimScale: number;
   /** Whether the editor draws axes at the origin. They are never exported. */
   showOrigin: boolean;
+  /**
+   * How large loads are drawn: model units of arrow length (or of radius, for
+   * a moment) per unit of magnitude. Each kind gets its scale when the first
+   * load of that kind is placed.
+   */
+  loadScale?: Partial<Record<LoadKind, number>>;
 }
 
 /**
@@ -698,6 +777,7 @@ export function deserialize(text: string): Sketch {
     figureWidthMm,
     dimScale,
     showOrigin: raw.showOrigin ?? true,
+    ...(raw.loadScale && typeof raw.loadScale === "object" ? { loadScale: raw.loadScale } : {}),
   };
 }
 

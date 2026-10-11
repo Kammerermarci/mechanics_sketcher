@@ -36,7 +36,7 @@ text* is there for mail that is read in a browser. The address is
 
 The tools sit on two tabs. **Sketch** has what shapes the geometry: drawing
 tools, copying tools and constraints. **Annotate** has what is added to the
-figure: dimensions, supports, axes, arrows, notes, centre marks, balloons,
+figure: dimensions, supports, loads, axes, arrows, notes, centre marks, balloons,
 fills and hatching.
 
 1. **Draw.** Pick Line (L): one click starts a line, the next one ends it,
@@ -105,6 +105,26 @@ fills and hatching.
 4. **Annotate.**
    - *Supports:* pick Pin, Roller or Fixed and click a joint. Drag a support
      around its joint, or press R, to turn it.
+   - *Load:* a force on a joint, or on a spot on a line. Its *magnitude*, typed
+     in the side panel, sets how long the arrow is: every force in the sketch
+     is drawn at one scale, so one of twice the magnitude is twice as long.
+     Drag the arrow round its point, or press R, to turn it. It can arrive at
+     the point or leave it.
+   - *Distributed load:* click beside a line, on the side the load should be
+     drawn. It has a magnitude at each end, so it can be uniform, a trapezium,
+     or a triangle that runs down to a point. Drag an end of it along the line
+     to cover only part of the line. The arrows are square to the line, or at
+     an angle of their own (weight on a sloping beam); a slider sets how many
+     there are.
+   - *Moment:* an arc with a head about a joint. Its magnitude sets the
+     radius; it turns clockwise or anticlockwise.
+
+     All three have a colour, picked in the side panel and carried into the
+     SVG and the TikZ, and a name that is typed where it stands and can be
+     dragged. A *Size* slider sets the scale for all loads of the same kind
+     together. That scale belongs to the drawing, like the length of axes: it
+     follows the zoom, and neither size slider changes it. Loads are copied
+     by Mirror and the patterns along with what they are on.
    - *Axes:* placed anywhere; dropped on a joint they stay pinned to it. Each
      axis has its own length and label; drag an arrow tip to change the
      length. The lengths are in the drawing's units, so neither size slider

@@ -4,7 +4,7 @@
 import {
   type Sketch, type Id, type Point, type Line, type Circle, type Arc, type Curve, type Constraint,
   type ConstraintDraft, type Dimension, type DistanceMode, type Sym, type SupportKind, type LeaderEnd,
-  type ArrowEnds, type Datum, type BalloonFrame,
+  type ArrowEnds, type Datum, type BalloonFrame, type AnyLoad, type LoadKind, isLoad, loadKind, geometryExtent,
   ORIGIN, emptySketch, entity, point, constraint, symbol, symbolRefs, points, curves, curvePoints,
   constraintRefs, isDimension, isLink, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint,
   addSupport, addFrame, addSymbol, remove, serialize, deserialize, clone,
@@ -19,7 +19,7 @@ import {
   type Prim, PAPER, printMm, geometryBox, buildPrims, dimensionPrims,
   primDistance, textCentre, distanceFrame, angleFrame, roundFrame, symbolPosition, balloonAnchor,
   curveParam, sideOfCurve, formatNumber, frameTips, arrowLabelAt, arrowAnchor, centerMarkEnds,
-  centerMarkDashes, curveLength, hatchCount, standardWeight,
+  centerMarkDashes, curveLength, hatchCount, standardWeight, loadScaleOf, loadLabel, loadReach, lineLoadFrame,
 } from "./prims";
 import {
   type View, type Glyph, type Preview, type SnapMark, GLYPH_SIZE, PREVIEW_REF, toScreen, toModel,
@@ -35,7 +35,7 @@ import { type ReportKind, composeReport } from "./report";
 import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
 
 type DrawTool = "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam";
-type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "note";
+type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "note" | "load" | "lineload" | "moment";
 /** Tools that copy what is selected and take one more click to say how: about which line, around which point. */
 type CopyTool = "mirror" | "turn";
 type Command =
@@ -78,7 +78,9 @@ type DragState =
   /** `onText`: the press was on the number, so a plain click opens it for typing. */
   | { kind: "dim"; id: Id; startScreen: V; moved: boolean; onText: boolean }
   /** `origin`: where the symbol was when the drag began (a position, or the offset of a balloon or a name). */
-  | { kind: "sym"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean; edit?: EditTarget }
+  | { kind: "sym"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean; edit?: EditTarget; part?: string }
+  /** Pulling an end of a spread load along its line. */
+  | { kind: "span"; id: Id; end: 0 | 1; startScreen: V; moved: boolean }
   /** Pulling the tip of one of a pair of axes; `slack` is how far from the tip it was grabbed, in mm. */
   | { kind: "axis"; id: Id; axis: "x" | "y"; startScreen: V; slack: number; moved: boolean; edit?: EditTarget }
   /** Pulling an end of a centre mark to make the mark larger or smaller. */
@@ -95,6 +97,8 @@ type EditTarget =
   | { kind: "balloon"; id: Id }
   | { kind: "datum"; id: Id }
   | { kind: "note"; id: Id }
+  /** The name of a force, a spread load or a moment. */
+  | { kind: "load"; id: Id }
   /** The name of an arrow; `id` is its line or arc. */
   | { kind: "arrow"; id: Id }
   | { kind: "axis"; id: Id; axis: "x" | "y" };
@@ -144,15 +148,18 @@ const TOOLS: ToolDef[] = [
   { id: "pin", label: "Pin", icon: "pin", tab: "annotate", group: 2 },
   { id: "roller", label: "Roller", icon: "roller", tab: "annotate", group: 2 },
   { id: "wall", label: "Fixed", icon: "wall", tab: "annotate", group: 2 },
-  { id: "frame", label: "Axes", icon: "frame", tab: "annotate", group: 3 },
-  { id: "arrow", label: "Arrow", icon: "arrow", tab: "annotate", group: 3 },
-  { id: "arcarrow", label: "Curved arrow", icon: "arcarrow", tab: "annotate", group: 3 },
-  { id: "datum", label: "Datum point", icon: "datum", tab: "annotate", group: 3 },
-  { id: "note", label: "Note", key: "N", icon: "note", tab: "annotate", group: 3 },
-  { id: "centermark", label: "Centre mark", icon: "centermark", tab: "annotate", group: 3 },
-  { id: "balloon", label: "Balloon", key: "B", icon: "balloon", tab: "annotate", group: 3 },
-  { id: "fill", label: "Fill", icon: "fill", tab: "annotate", group: 4 },
-  { id: "hatch", label: "Hatching", icon: "hatch", tab: "annotate", group: 4 },
+  { id: "load", label: "Load", icon: "load", tab: "annotate", group: 3 },
+  { id: "lineload", label: "Distributed load", short: "Distributed", icon: "lineload", tab: "annotate", group: 3 },
+  { id: "moment", label: "Moment", icon: "moment", tab: "annotate", group: 3 },
+  { id: "frame", label: "Axes", icon: "frame", tab: "annotate", group: 4 },
+  { id: "arrow", label: "Arrow", icon: "arrow", tab: "annotate", group: 4 },
+  { id: "arcarrow", label: "Curved arrow", icon: "arcarrow", tab: "annotate", group: 4 },
+  { id: "datum", label: "Datum point", icon: "datum", tab: "annotate", group: 4 },
+  { id: "note", label: "Note", key: "N", icon: "note", tab: "annotate", group: 4 },
+  { id: "centermark", label: "Centre mark", icon: "centermark", tab: "annotate", group: 4 },
+  { id: "balloon", label: "Balloon", key: "B", icon: "balloon", tab: "annotate", group: 4 },
+  { id: "fill", label: "Fill", icon: "fill", tab: "annotate", group: 5 },
+  { id: "hatch", label: "Hatching", icon: "hatch", tab: "annotate", group: 5 },
 ];
 
 const COMMAND_IDS: Command[] = [
@@ -160,7 +167,7 @@ const COMMAND_IDS: Command[] = [
 ];
 const isCommand = (t: Tool): t is Command => (COMMAND_IDS as Tool[]).includes(t);
 const isSymbolTool = (t: Tool): t is SymbolTool =>
-  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum", "note"].includes(t);
+  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum", "note", "load", "lineload", "moment"].includes(t);
 const isCopyTool = (t: Tool): t is CopyTool => t === "mirror" || t === "turn";
 const toolDef = (t: Tool | "shift"): ToolDef => TOOLS.find((d) => d.id === t)!;
 
@@ -186,6 +193,19 @@ const ratioPos = (v: number, [lo, hi]: [number, number]) => Math.round(Math.max(
 const ratioValue = (pos: number, [lo, hi]: [number, number]) => lo * (hi / lo) ** (Math.max(0, Math.min(100, pos)) / 100);
 /** Colours offered for datum points: strong ones, so the dot reads on top of the lines. */
 const DATUM_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#17201b"];
+/** Colours offered for loads: red first, as the usual way to set them apart from the structure. */
+const LOAD_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#17201b"];
+/** How large the first load of each kind is drawn, in screen pixels: a force's length, the height of a spread load, a moment's radius. */
+const LOAD_START: Record<LoadKind, number> = { force: 64, line: 34, moment: 30 };
+/** How far apart the arrows of a new spread load are, in screen pixels. */
+const LINE_ARROW_GAP = 30;
+/** What a new load of each kind is called. */
+const LOAD_NAME: Record<AnyLoad["type"], string> = { load: "F", lineload: "q", moment: "M" };
+const LOAD_TITLE: Record<AnyLoad["type"], string> = { load: "Load", lineload: "Distributed load", moment: "Moment" };
+/** The size slider of a load runs over its drawn size as a share of the figure, in equal ratios. */
+const LOAD_SIZE: [number, number] = [1 / 100, 2];
+/** Most arrows a spread load is drawn with. */
+const LINE_ARROWS_MAX = 60;
 /** Where a datum's name starts out, in mm from its point. */
 const DATUM_LABEL_OFFSET: V = [2.4, 2.4];
 const EXPORT_NAME_KEY = "mech-sketch.exportName";
@@ -253,6 +273,7 @@ export class App {
   private supportTimer = 0;
   private reportKind: ReportKind = "bug";
   private datumColor = DATUM_COLORS[0];
+  private loadColor = LOAD_COLORS[0];
   /** Print preview: only what is exported is drawn, with annotations at their size in print. */
   private preview = false;
   /** How large annotations are on screen while editing, against the standard size. A setting of this browser, not of the sketch. */
@@ -606,6 +627,10 @@ export class App {
       const tips = frameTips(this.sk, s, mm);
       at = [tips.x, tips.y].filter((t): t is V => t !== null);
     } else if (s.type === "centermark") at = centerMarkEnds(this.sk, s, mm);
+    else if (s.type === "lineload") {
+      const f = lineLoadFrame(this.sk, s, mm);
+      if (f) at = [f.e0, f.e1];
+    }
     return at.map((t) => toScreen(this.view, [t[0] / mm, t[1] / mm]));
   }
 
@@ -659,6 +684,9 @@ export class App {
       case "mirror": return "Click the line to mirror the selection about. A helper line or a centre line does well. Esc cancels.";
       case "turn": return "Click the point the copies go around: a joint, a circle to use its centre, or anywhere. Esc cancels.";
       case "note": return `Click where the note should start, then type it. ${done}`;
+      case "load": return `Click a joint, or a spot on a line, to put a force there. Its magnitude, in the side panel, sets its length. ${done}`;
+      case "moment": return `Click a joint, or a spot on a line, to put a moment about it. Its magnitude sets its radius. ${done}`;
+      case "lineload": return `Click a line, on the side the distributed load should be drawn. ${done}`;
       case "circle": return p ? "Click to set the radius." : `Click the centre. ${done}`;
       case "arc":
       case "arcarrow": {
@@ -1398,6 +1426,41 @@ export class App {
       return;
     }
 
+    if (tool === "lineload") {
+      // The click is beside the line, on the side the load goes, so it need not be right on it.
+      let e: Line | undefined, nearest = 40 / this.view.scale;
+      for (const c of curves(this.sk)) {
+        if (c.type !== "line") continue;
+        const a = point(this.sk, c.p1), b = point(this.sk, c.p2);
+        const d = dist(raw, projectOnSegment(raw, [a.x, a.y], [b.x, b.y]).point);
+        if (d < nearest) { nearest = d; e = c; }
+      }
+      if (!e) return this.toast("Click beside a line to put the distributed load on it.");
+      const side = sideOfCurve(this.sk, e.id, raw) >= 0 ? 1 : -1;
+      this.startLoadScale("line");
+      // A handy spacing for the view as it is now; from then on the number of arrows is the load's own.
+      const a = point(this.sk, e.p1), b = point(this.sk, e.p2);
+      const count = Math.max(3, Math.min(LINE_ARROWS_MAX, Math.round((dist([a.x, a.y], [b.x, b.y]) * this.view.scale) / LINE_ARROW_GAP) + 1));
+      const q = addSymbol(this.sk, { type: "lineload", on: e.id, t0: 0, t1: 1, q1: 1, q2: 1, side, count, label: this.loadName("lineload"), color: this.loadColor });
+      this.selection = new Set([q.id]);
+      return this.commit();
+    }
+
+    if (tool === "load" || tool === "moment") {
+      const snap = this.snapAt(sp);
+      if (!snap.pointId && !snap.curveId) return this.toast(`Click a joint, or a spot on a line, to put the ${tool === "load" ? "load" : "moment"} there.`);
+      const autos: ConstraintDraft[] = [];
+      const at = this.materialize(snap, autos, true);
+      this.startLoadScale(tool === "load" ? "force" : "moment");
+      const made = tool === "load"
+        // Straight down onto the joint, as weight does.
+        ? addSymbol(this.sk, { type: "load", at, angle: -Math.PI / 2, value: 1, label: this.loadName("load"), color: this.loadColor })
+        : addSymbol(this.sk, { type: "moment", at, angle: -Math.PI / 4, value: 1, label: this.loadName("moment"), color: this.loadColor });
+      this.finishDrawing(autos);
+      this.selection = new Set([made.id]);
+      return;
+    }
+
     if (tool === "centermark" || tool === "hatch") {
       const hit = this.hitTest(sp, true);
       const e = hit ? entity(this.sk, hit.id) : undefined;
@@ -1433,9 +1496,64 @@ export class App {
     this.finishDrawing(autos);
   }
 
+  /**
+   * Gives a kind of load its scale if it has none: the first one, of magnitude
+   * 1, comes out a handy size for the view as it is. From then on the scale
+   * belongs to the sketch, and every load of the kind is drawn at it.
+   */
+  private startLoadScale(kind: LoadKind): void {
+    if (this.sk.loadScale?.[kind]) return;
+    const perPx = this.preview ? EDIT_PX_PER_MM / printMm(this.sk) : 1 / this.view.scale;
+    this.sk.loadScale = { ...this.sk.loadScale, [kind]: LOAD_START[kind] * perPx };
+  }
+
+  /** A name for a new load: F, then F_2, F_3 and so on (q and M likewise). */
+  private loadName(type: AnyLoad["type"]): string {
+    const base = LOAD_NAME[type];
+    const used = new Set(this.sk.symbols.flatMap((s) => (isLoad(s) ? [s.label.trim()] : [])));
+    if (!used.has(base)) return base;
+    for (let n = 2; n < 200; n++) if (!used.has(`${base}_${n}`) && !used.has(`${base}_{${n}}`)) return n < 10 ? `${base}_${n}` : `${base}_{${n}}`;
+    return base;
+  }
+
   /** Where a drag of a symbol starts from: its position, or for a balloon its offset. */
   private symbolDragOrigin(s: Sym): V {
     return s.type === "balloon" || s.type === "datum" ? [s.dx, s.dy] : symbolPosition(this.sk, s);
+  }
+
+  /** Which end of a spread load's envelope is under a screen position, if either. */
+  private lineLoadEndAt(s: Sym, sp: V): 0 | 1 | null {
+    if (s.type !== "lineload") return null;
+    const mm = this.mm();
+    const f = lineLoadFrame(this.sk, s, mm);
+    if (!f) return null;
+    const near = (q: V) => dist(toScreen(this.view, [q[0] / mm, q[1] / mm]), sp) < 10;
+    return near(f.e0) ? 0 : near(f.e1) ? 1 : null;
+  }
+
+  /** Pulls an end of a spread load along its line, so it covers more or less of it. */
+  private dragSpan(d: Extract<DragState, { kind: "span" }>, sp: V): void {
+    const s = symbol(this.sk, d.id);
+    if (s?.type !== "lineload") return;
+    const f = lineLoadFrame(this.sk, s, 1);
+    if (!f) return;
+    const m = toModel(this.view, sp);
+    // Followed along the arrows, back to the line.
+    const foot = intersectLines(m, f.body, f.a, sub(f.b, f.a)) ?? projectOnSegment(m, f.a, f.b).point;
+    const span = sub(f.b, f.a);
+    let t = Math.max(0, Math.min(1, dot(sub(foot, f.a), span) / dot(span, span)));
+    // The ends and the middle of the line catch it, unless Alt is held.
+    if (!this.altKey) for (const stop of [0, 0.5, 1]) if (Math.abs(t - stop) * Math.hypot(span[0], span[1]) * this.view.scale < 8) t = stop;
+    if (d.end === 0) this.setSpan(s, Math.min(t, s.t1 - 0.02), s.t1);
+    else this.setSpan(s, s.t0, Math.max(t, s.t0 + 0.02));
+  }
+
+  /** Changes how much of its line a spread load covers, keeping its arrows as far apart as they were. */
+  private setSpan(s: Extract<Sym, { type: "lineload" }>, t0: number, t1: number): void {
+    const gaps = ((s.count - 1) * (t1 - t0)) / (s.t1 - s.t0);
+    s.count = Math.max(2, Math.min(LINE_ARROWS_MAX, Math.round(gaps) + 1));
+    s.t0 = t0;
+    s.t1 = t1;
   }
 
   private dragSymbol(d: Extract<DragState, { kind: "sym" }>, sp: V): void {
@@ -1445,7 +1563,21 @@ export class App {
     const mm = this.mm();
     const snapAngle = (a: number) => (this.altKey ? a : Math.round(a / (15 * DEG)) * 15 * DEG);
 
-    if (s.type === "support" || s.type === "centermark") {
+    if (isLoad(s) && d.part === "label") {
+      // The name moves on its own; the load stays.
+      const moved = mul(sub(m, d.startModel), mm);
+      s.dx = d.origin[0] + moved[0];
+      s.dy = d.origin[1] + moved[1];
+    } else if (s.type === "load" || s.type === "moment") {
+      const centre = symbolPosition(this.sk, s);
+      if (dist(m, centre) * this.view.scale < 6) return;
+      const dir = sub(m, centre);
+      // The free end of a force follows the pointer, so a push acts the other way; a moment's arc starts at it.
+      s.angle = snapAngle(angleOf(s.type === "load" && !s.pull ? mul(dir, -1) : dir));
+    } else if (s.type === "lineload") {
+      // Pulled across its line, it changes side.
+      if (s.angle === undefined) s.side = sideOfCurve(this.sk, s.on, m) >= 0 ? 1 : -1;
+    } else if (s.type === "support" || s.type === "centermark") {
       const centre = symbolPosition(this.sk, s);
       if (dist(m, centre) * this.view.scale < 6) return;
       const dir = sub(m, centre);
@@ -1542,7 +1674,7 @@ export class App {
     let turned = false;
     for (const id of this.selection) {
       const s = symbol(this.sk, id);
-      if (s && (s.type === "support" || s.type === "frame" || s.type === "centermark")) {
+      if (s && (s.type === "support" || s.type === "frame" || s.type === "centermark" || s.type === "load" || s.type === "moment")) {
         s.angle = wrap(s.angle + by + Math.PI) - Math.PI;
         turned = true;
       }
@@ -1603,6 +1735,15 @@ export class App {
       return;
     }
 
+    // The ends of a selected spread load are handles, grabbed before whatever lies under them:
+    // where the load runs down to nothing, its end is on the line itself.
+    const chosen = this.selectedSymbol();
+    const end = chosen && !ev.shiftKey ? this.lineLoadEndAt(chosen, sp) : null;
+    if (chosen && end !== null) {
+      this.drag = { kind: "span", id: chosen.id, end, startScreen: sp, moved: false };
+      return this.touch();
+    }
+
     const hit = this.pickAt(sp, ev.timeStamp, !ev.shiftKey);
     if (!hit || hit.kind === "fill") {
       // On a fill, a drag still draws a selection box; only a plain click picks the fill.
@@ -1628,6 +1769,7 @@ export class App {
         this.drag = { kind: "axis", id: hit.id, axis: tip.axis, startScreen: sp, slack: tip.slack, moved: false, edit };
       } else if (s.type === "centermark" && this.centerMarkEndAt(s, sp)) {
         this.drag = { kind: "reach", id: hit.id, startScreen: sp, moved: false };
+
       } else if (s.type === "datum" && hit.part !== "label") {
         // The dot is the point itself: dragging it moves the geometry.
         this.selection = new Set([s.at]);
@@ -1636,8 +1778,10 @@ export class App {
         const edit: EditTarget | undefined = !hit.text ? undefined
           : s.type === "balloon" ? { kind: "balloon", id: hit.id }
           : s.type === "datum" ? { kind: "datum", id: hit.id }
-          : s.type === "note" ? { kind: "note", id: hit.id } : undefined;
-        this.drag = { kind: "sym", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin: this.symbolDragOrigin(s), moved: false, edit };
+          : s.type === "note" ? { kind: "note", id: hit.id }
+          : isLoad(s) ? { kind: "load", id: hit.id } : undefined;
+        const origin: V = isLoad(s) && hit.part === "label" ? [s.dx ?? 0, s.dy ?? 0] : this.symbolDragOrigin(s);
+        this.drag = { kind: "sym", id: hit.id, startScreen: sp, startModel: toModel(this.view, sp), origin, moved: false, edit, part: hit.part };
       }
     } else if (hit.kind === "curve" && hit.part === "label") {
       // The name of an arrow: it moves on its own, the arrow stays.
@@ -1710,6 +1854,11 @@ export class App {
       if (!d.moved && dist(sp, d.startScreen) < 3) return;
       d.moved = true;
       this.dragReach(d.id, sp);
+      this.chromeDirty = true;
+    } else if (d?.kind === "span") {
+      if (!d.moved && dist(sp, d.startScreen) < 3) return;
+      d.moved = true;
+      this.dragSpan(d, sp);
       this.chromeDirty = true;
     } else if (d?.kind === "label") {
       if (!d.moved && dist(sp, d.startScreen) < 3) return;
@@ -1785,7 +1934,7 @@ export class App {
     } else if ((d.kind === "sym" || d.kind === "axis" || d.kind === "label") && !d.moved && d.edit && ev.type === "pointerup") {
       // The same for a name: a click on it, and it is typed where it stands.
       this.openEditor(d.edit);
-    } else if ((d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label" || d.kind === "reach") && d.moved) {
+    } else if ((d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label" || d.kind === "reach" || d.kind === "span") && d.moved) {
       this.commit();
     }
     this.touch();
@@ -1852,6 +2001,7 @@ export class App {
     } else if (hit.kind === "sym") {
       const s = symbol(this.sk, hit.id);
       if (s?.type === "balloon" || s?.type === "datum" || s?.type === "note") target = { kind: s.type, id: hit.id };
+      else if (s && isLoad(s)) target = { kind: "load", id: hit.id };
     }
     if (!target) return;
     if (target.kind === "dim") this.selection = new Set([hit.id]);
@@ -2122,7 +2272,7 @@ export class App {
 
   /** The text prim that shows what an edit target holds, if it is on the drawing right now. */
   private editPrim(t: EditTarget): Extract<Prim, { k: "text" }> | undefined {
-    const part = t.kind === "axis" ? t.axis : t.kind === "datum" || t.kind === "arrow" ? "label" : undefined;
+    const part = t.kind === "axis" ? t.axis : t.kind === "datum" || t.kind === "arrow" || t.kind === "load" ? "label" : undefined;
     return this.prims.find((p): p is Extract<Prim, { k: "text" }> => p.k === "text" && p.ref === t.id && (part === undefined || p.part === part));
   }
 
@@ -2140,6 +2290,7 @@ export class App {
     const s = symbol(this.sk, t.id);
     if (t.kind === "balloon") return s?.type === "balloon" ? s.text : null;
     if (t.kind === "note") return s?.type === "note" ? s.text : null;
+    if (t.kind === "load") return s && isLoad(s) ? s.label : null;
     if (t.kind === "datum") return s?.type === "datum" ? s.label : null;
     return s?.type === "frame" ? (t.axis === "x" ? s.xLabel : s.yLabel) : null;
   }
@@ -2183,6 +2334,7 @@ export class App {
       else {
         const s = symbol(this.sk, t.id);
         if (s?.type === "datum") at = add(mul(symbolPosition(this.sk, s), mm), [s.dx, s.dy]);
+        else if (s && isLoad(s)) at = loadLabel(this.sk, s, mm)?.at ?? null;
         else if (s?.type === "balloon") at = mul(add(balloonAnchor(this.sk, s), [s.dx, s.dy]), mm);
         else if (s?.type === "frame" && t.kind === "axis") at = frameTips(this.sk, s, mm)[t.axis];
       }
@@ -2219,7 +2371,7 @@ export class App {
       } else {
         const s = symbol(this.sk, t.id)!;
         if (s.type === "balloon") s.text = text;
-        else if (s.type === "datum") s.label = text;
+        else if (s.type === "datum" || isLoad(s)) s.label = text;
         else if (s.type === "frame" && t.kind === "axis") {
           if (t.axis === "x") s.xLabel = text;
           else s.yLabel = text;
@@ -2687,6 +2839,7 @@ export class App {
         if (s.type === "frame") grow(b, symbolPosition(this.sk, s), boxIsEmpty(b) ? 0 : Math.max(s.xSize, s.ySize));
         if (s.type === "balloon") grow(b, add(balloonAnchor(this.sk, s), [s.dx, s.dy]));
         if (s.type === "note") grow(b, [s.x, s.y]);
+        if (isLoad(s)) for (const q of loadReach(this.sk, s)) grow(b, q);
       }
       if (boxIsEmpty(b) || (b.x1 - b.x0 < 1e-9 && b.y1 - b.y0 < 1e-9)) {
         this.view.cx = 0;
@@ -2886,6 +3039,12 @@ export class App {
     return `${n} ${n === 1 ? "stroke" : "strokes"}`;
   }
 
+  /** What stands beside a load's size slider: how large it is drawn, in the drawing's units. */
+  private loadSizeLabel(s: AnyLoad): string {
+    const magnitude = s.type === "lineload" ? Math.max(s.q1, s.q2) : s.value;
+    return formatNumber(Number((magnitude * loadScaleOf(this.sk, loadKind(s))).toPrecision(3)));
+  }
+
   /** What stands beside the gaps slider: the number asked for, and the number drawn when fewer fit. */
   private gapsLabel(s: Extract<Sym, { type: "centermark" }>): string {
     const asked = s.gaps ?? 2;
@@ -2965,6 +3124,50 @@ export class App {
         html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
         html += `<button type="button" class="plain" data-act="lean">Lean the strokes the other way</button>`;
         break;
+      case "load":
+      case "lineload":
+      case "moment": {
+        const kind = loadKind(s);
+        const which = { force: "loads", line: "distributed loads", moment: "moments" }[kind];
+        const magnitude = s.type === "lineload" ? Math.max(s.q1, s.q2) : s.value;
+        const size = magnitude * loadScaleOf(this.sk, kind);
+        const plain = (v: number) => formatNumber(Number(v.toPrecision(6)));
+        const colours = `<div class="field"><span id="colour-label">Colour</span><div class="swatches" role="group" aria-labelledby="colour-label">${LOAD_COLORS.map((c) =>
+          `<button type="button" class="swatch" data-color="${c}" aria-pressed="${s.color === c}" aria-label="Colour ${c}" title="${c}" style="background:${c}"></button>`).join("")}` +
+          `<label class="swatch custom" title="Another colour"><input data-field="sym-color" type="color" value="${esc(s.color)}" aria-label="Another colour"></label></div></div>`;
+        const sizeSlider = slider(`Size (all ${which} together)`, "sym-size", 0, 100, 1, ratioPos(size / (geometryExtent(this.sk) || 1), LOAD_SIZE), this.loadSizeLabel(s),
+          `Every one of the ${which} is drawn at one scale, so their sizes compare as their magnitudes do. This sets that scale; it belongs to the drawing, and neither size slider changes it.`, magnitude <= 0);
+        const choice = (label: string, id: string, options: [string, string, boolean][]) =>
+          `<div class="field"><span id="${id}-label">${label}</span><div class="segmented wrap" role="group" aria-labelledby="${id}-label">${options.map(([attr, name, on]) =>
+            `<button type="button" ${attr} aria-pressed="${on}">${name}</button>`).join("")}</div></div>`;
+        html += `<h2>${LOAD_TITLE[s.type]}</h2>`;
+        html += text("Name", "sym-label", s.label, "Written as TeX math, such as F_1 or 10\\,\\mathrm{kN}. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.");
+        if (s.type === "lineload") {
+          html += number("Magnitude at the start", "sym-q1", plain(s.q1));
+          html += number("Magnitude at the end", "sym-q2", plain(s.q2), "The start is the end of the line that was drawn first. Two different values give a trapezium; 0 at one end brings the load to a point.");
+          html += sizeSlider;
+          html += slider("Number of arrows", "sym-count", 2, LINE_ARROWS_MAX, 1, s.count, String(s.count));
+          html += choice("The arrows", "pull", [[`data-pull="0"`, "Point at the line", !s.pull], [`data-pull="1"`, "Point away", !!s.pull]]);
+          html += choice("Direction", "square", [[`data-square="1"`, "Square to the line", s.angle === undefined], [`data-square="0"`, "At an angle", s.angle !== undefined]]);
+          if (s.angle !== undefined) html += number("Angle the arrows point at (degrees)", "sym-dir", degrees(s.angle), "0 points right, 90 up, -90 down: weight on a sloping beam is -90.");
+          html += number("Covers the line from (%)", "sym-t0", plain(s.t0 * 100));
+          html += number("to (%)", "sym-t1", plain(s.t1 * 100), "Dragging an end of the load along its line sets these too.");
+          if (s.angle === undefined) html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
+        } else {
+          html += number("Magnitude", "sym-value", plain(s.value), s.type === "load" ? "Sets the length of the arrow." : "Sets the radius of the arc.");
+          html += sizeSlider;
+          if (s.type === "load") {
+            html += choice("Drawn", "pull", [[`data-pull="0"`, "Arriving at the point", !s.pull], [`data-pull="1"`, "Leaving it", !!s.pull]]);
+            html += number("Direction it acts in (degrees)", "sym-angle", degrees(s.angle), "0 points right, 90 up, -90 down. Dragging the arrow round its point turns it too.");
+          } else {
+            html += choice("Turns", "turn", [[`data-turn="ccw"`, "Anticlockwise", !s.cw], [`data-turn="cw"`, "Clockwise", !!s.cw]]);
+            html += number("Rotation (degrees)", "sym-angle", degrees(s.angle), "Where the arc starts. Dragging it round its point turns it too.");
+          }
+          html += rotate;
+        }
+        html += colours;
+        break;
+      }
       case "note":
         html += `<h2>Note</h2>`;
         html += text("Text", "sym-text", s.text, "Plain text. Put math between dollar signs, as in $F_1 = 2a$, and \\\\ where a new line starts. Clicking the note on the drawing edits it there; dragging moves it.");
@@ -3169,6 +3372,22 @@ export class App {
       else if (ds.kind) this.setSupportKind(ds.kind as SupportKind);
       else if (ds.style) this.setLineStyle(ds.style as LineStyle);
       else if (ds.end) this.editSymbol((x) => { if (x.type === "balloon") x.end = ds.end as LeaderEnd; });
+      else if (ds.pull) this.editSymbol((x) => {
+        if (x.type !== "load" && x.type !== "lineload") return;
+        if (ds.pull === "1") x.pull = true;
+        else delete x.pull;
+      });
+      else if (ds.turn) this.editSymbol((x) => {
+        if (x.type !== "moment") return;
+        if (ds.turn === "cw") x.cw = true;
+        else delete x.cw;
+      });
+      else if (ds.square) this.editSymbol((x) => {
+        if (x.type !== "lineload") return;
+        if (ds.square === "1") delete x.angle;
+        // Starting out as it is drawn now, so nothing jumps: straight down where that makes sense.
+        else x.angle ??= -Math.PI / 2;
+      });
       else if (ds.frame) this.editSymbol((x) => {
         if (x.type !== "balloon") return;
         if (ds.frame === "circle") delete x.frame;
@@ -3325,7 +3544,7 @@ export class App {
       case "delete": return this.deleteSelection();
       case "rotate": return this.rotateSelected(Math.PI / 2);
       case "flip":
-        return this.editSymbol((x) => { if (x.type === "hatch") x.side = x.side === 1 ? -1 : 1; });
+        return this.editSymbol((x) => { if (x.type === "hatch" || x.type === "lineload") x.side = x.side === 1 ? -1 : 1; });
       case "lean":
         return this.editSymbol((x) => { if (x.type === "hatch") x.lean = (x.lean ?? 1) === 1 ? -1 : 1; });
       case "undatum": {
@@ -3466,8 +3685,9 @@ export class App {
     if (!/^#[0-9a-f]{6}$/i.test(color)) return;
     const s = this.selectedSymbol();
     if (s?.type === "datum") this.datumColor = color;
+    else if (s && isLoad(s)) this.loadColor = color;
     else this.fillColor = color;
-    this.editSymbol((x) => { if (x.type === "fill" || x.type === "datum") x.color = color; });
+    this.editSymbol((x) => { if (x.type === "fill" || x.type === "datum" || isLoad(x)) x.color = color; });
   }
 
   private setSupportKind(kind: SupportKind): void {
@@ -3518,7 +3738,7 @@ export class App {
       if (!s) return;
       const v = parseNumber(input.value);
       const label = input.value.trim().replace(/^\$+|\$+$/g, "");
-      if (field === "sym-angle" && (s.type === "support" || s.type === "frame" || s.type === "centermark")) {
+      if (field === "sym-angle" && (s.type === "support" || s.type === "frame" || s.type === "centermark" || s.type === "load" || s.type === "moment")) {
         if (!Number.isFinite(v)) { this.toast("Type the rotation as a number of degrees."); return this.touch(); }
         s.angle = v * DEG;
       } else if (s.type === "centermark" && field === "sym-scale") {
@@ -3545,8 +3765,33 @@ export class App {
         if (!input.value.trim()) { this.toast("A note needs some text. Delete removes it."); return this.touch(); }
         s.text = input.value.trim();
       }
-      else if (s.type === "datum" && field === "sym-label") s.label = label;
-      else if ((s.type === "fill" || s.type === "datum") && field === "sym-color") return this.setColor(input.value);
+      else if ((s.type === "datum" || isLoad(s)) && field === "sym-label") s.label = label;
+      else if (isLoad(s) && field === "sym-size") {
+        const magnitude = s.type === "lineload" ? Math.max(s.q1, s.q2) : s.value;
+        if (!Number.isFinite(v) || magnitude <= 0) return;
+        const size = ratioValue(v, LOAD_SIZE) * (geometryExtent(this.sk) || 1);
+        this.sk.loadScale = { ...this.sk.loadScale, [loadKind(s)]: size / magnitude };
+        return slide(this.loadSizeLabel(s));
+      } else if ((s.type === "load" || s.type === "moment") && field === "sym-value") {
+        if (!Number.isFinite(v) || v < 0) { this.toast("The magnitude must be a number, zero or more. The direction is set separately."); return this.touch(); }
+        s.value = v;
+      } else if (s.type === "lineload" && (field === "sym-q1" || field === "sym-q2")) {
+        if (!Number.isFinite(v) || v < 0) { this.toast("A magnitude must be a number, zero or more."); return this.touch(); }
+        if (field === "sym-q1") s.q1 = v;
+        else s.q2 = v;
+      } else if (s.type === "lineload" && field === "sym-count") {
+        s.count = Math.max(2, Math.min(LINE_ARROWS_MAX, Math.round(v) || 2));
+        return slide(String(s.count));
+      } else if (s.type === "lineload" && field === "sym-dir") {
+        if (!Number.isFinite(v)) { this.toast("Type the angle as a number of degrees."); return this.touch(); }
+        s.angle = v * DEG;
+      } else if (s.type === "lineload" && (field === "sym-t0" || field === "sym-t1")) {
+        const t = v / 100;
+        const [t0, t1] = field === "sym-t0" ? [t, s.t1] : [s.t0, t];
+        if (!Number.isFinite(t) || t0 < 0 || t1 > 1 || t1 - t0 < 0.02) { this.toast("The load runs from a smaller to a larger share of the line, between 0 and 100 %."); return this.touch(); }
+        this.setSpan(s, t0, t1);
+      }
+      else if ((s.type === "fill" || s.type === "datum" || isLoad(s)) && field === "sym-color") return this.setColor(input.value);
       else if (s.type === "hatch" && (field === "sym-depth" || field === "sym-freq")) {
         const whole = curveLength(this.sk, s.on);
         if (!Number.isFinite(v) || whole <= 0) return;

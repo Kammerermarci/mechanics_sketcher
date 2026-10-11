@@ -80,7 +80,8 @@ export function toSvg(sk: Sketch): string | null {
       const t = textBox(p);
       const corner = M([t.x0, t.y1]);
       // currentColor would depend on where the file is placed; make it black outright.
-      const glyphs = engine.svg(p.tex, corner[0], corner[1], PAPER.em, "label").replace(/currentColor/g, "#000").replace(' class="label"', ' fill="#000" stroke="none"');
+      const ink = p.ink ?? "#000";
+      const glyphs = engine.svg(p.tex, corner[0], corner[1], PAPER.em, "label").replace(/currentColor/g, ink).replace(' class="label"', ` fill="${ink}" stroke="none"`);
       if (p.rot && glyphs) {
         // Counter-clockwise on paper is a negative angle once y points down.
         const at = M(p.at);
@@ -89,7 +90,8 @@ export function toSvg(sk: Sketch): string | null {
       continue;
     }
     const dash = STROKE_DASH[p.stroke];
-    const stroke = `stroke-width="${num(strokeWidth(p))}"` + (dash ? ` stroke-dasharray="${dash.map((d) => num(d)).join(" ")}"` : "");
+    const stroke = `stroke-width="${num(strokeWidth(p))}"` + (dash ? ` stroke-dasharray="${dash.map((d) => num(d)).join(" ")}"` : "") +
+      (p.ink ? ` stroke="${p.ink}"` : "");
     const fill = (p.k === "circle" || p.k === "poly") && p.fill ? ` fill="${p.fill === "ink" ? p.color ?? "#000" : "#fff"}"` : "";
     if (p.k === "line") {
       const [a, b] = strokedEnds(p).map(M);
@@ -107,7 +109,7 @@ export function toSvg(sk: Sketch): string | null {
       body.push(`<path d="M${num(s[0])} ${num(s[1])}A${r} ${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 0 ${num(e[0])} ${num(e[1])}" ${stroke}/>`);
     }
     if (p.k === "line" || p.k === "arc") {
-      for (const head of arrowHeads(p)) body.push(`<polygon points="${head.map(pt).join(" ")}" fill="#000" stroke="none"/>`);
+      for (const head of arrowHeads(p)) body.push(`<polygon points="${head.map(pt).join(" ")}" fill="${p.ink ?? "#000"}" stroke="none"/>`);
     }
   }
 
@@ -195,8 +197,10 @@ export function toTikz(sk: Sketch): string | null {
     else if (name === "tip") needTip = true;
   };
   /** The style of a stroke, with its own thickness where it has one. */
-  const style = (p: { stroke: StrokeStyle; width?: number }): string =>
-    p.width === undefined ? p.stroke : `${p.stroke}, line width=${num((p.width / PT_MM) * k, 2)}pt`;
+  const style = (p: { stroke: StrokeStyle; width?: number; ink?: string }): string =>
+    p.stroke + (p.width === undefined ? "" : `, line width=${num((p.width / PT_MM) * k, 2)}pt`) +
+    // An arrow tip takes the colour of its line.
+    (p.ink ? `, draw=${tikzColor(p.ink)}` : "");
   const lines: string[] = [];
   /** Plain line segments of one style and symbol in a row share a \draw. */
   let run: { style: string; ref: string | undefined; parts: string[] } | null = null;
@@ -222,7 +226,8 @@ export function toTikz(sk: Sketch): string | null {
       const where = (p.anchor === "c" ? "inner sep=0pt" : `label, anchor=${TIKZ_ANCHOR[p.anchor]}`) +
         (p.rot ? `, rotate=${deg(p.rot)}` : "") +
         // A node breaks its text into lines only once it is told how to align them.
-        (p.lines ? ", align=left" : "");
+        (p.lines ? ", align=left" : "") +
+        (p.ink ? `, text=${tikzColor(p.ink)}` : "");
       if (p.anchor !== "c") needLabel = true;
       lines.push(`  \\node[${where}] at ${co(p.at)} {${p.latex ?? `$${p.tex}$`}};`);
     } else if (p.k === "line") {
@@ -237,7 +242,7 @@ export function toTikz(sk: Sketch): string | null {
     } else {
       const fill = p.fill ? `, fill=${p.fill === "ink" ? (p.color ? tikzColor(p.color) : "black") : "white"}` : "";
       const shape = p.k === "circle" ? `${co(p.c)} circle[radius=${num(p.r, 2)}]` : `${p.pts.map(co).join(" -- ")} -- cycle`;
-      lines.push(`  \\draw[${p.k === "circle" ? style(p) : p.stroke}${fill}] ${shape};`);
+      lines.push(`  \\draw[${p.k === "circle" ? style(p) : style({ stroke: p.stroke, ink: p.ink })}${fill}] ${shape};`);
     }
   }
   flush();

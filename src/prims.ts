@@ -5,7 +5,7 @@
 import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
   type Arc, type Line, type Curve, type Sym, type Support, type Frame, type CenterMark, type Balloon,
-  type Fill as FillSym, type Hatch, type Datum, type Note,
+  type Fill as FillSym, type Hatch, type Datum, type Note, type Load, type LineLoad, type Moment, type AnyLoad, type LoadKind,
   entity, point, arcRadius, arcAngles, isDimension, geometryBox, geometryExtent,
 } from "./model";
 import {
@@ -87,6 +87,8 @@ interface Base {
   part?: string;
   /** CSS hex colour a solid shape is filled with instead of black. Its outline stays black. */
   color?: string;
+  /** CSS hex colour it is drawn in instead of black: its stroke, its arrowheads, its text. */
+  ink?: string;
 }
 /** `head` scales the arrowheads; 1 is the size used on dimensions. `width`, in mm, replaces the width of the stroke style. */
 export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeStyle; width?: number; arrowA?: boolean; arrowB?: boolean; head?: number }
@@ -456,6 +458,15 @@ export function symbolPosition(sk: Sketch, s: Sym): V {
       }
       return [s.x, s.y];
     case "note": return [s.x, s.y];
+    case "load":
+    case "moment": {
+      const p = point(sk, s.at);
+      return [p.x, p.y];
+    }
+    case "lineload": {
+      const f = lineLoadFrame(sk, s, 1);
+      return f ? mid(f.s0, f.s1) : [0, 0];
+    }
     case "centermark": return curveShape(sk, s.on)?.kind === "round" ? (curveShape(sk, s.on) as { c: V }).c : [0, 0];
     case "balloon": return balloonAnchor(sk, s);
     case "hatch": return pointOnCurve(sk, s.on, curveShape(sk, s.on)?.kind === "round" && (curveShape(sk, s.on) as { full: boolean }).full ? 0 : 0.5) ?? [0, 0];
@@ -650,6 +661,116 @@ function notePrims(s: Note, mm: number): Prim[] {
   return [text];
 }
 
+// ---- loads ------------------------------------------------------------------
+
+/** Model units of length per unit of magnitude, for a kind of load that has not been given a scale. */
+const LOAD_UNIT = 1;
+/** Smallest sizes in annotation mm, so a small load is still an arrow: a force's length, a moment's radius, and the shortest arrow drawn in a spread load. */
+const LOAD_MIN = { force: PAPER.arrowLen * PAPER.arrowScale * 1.6, moment: 2.4, lineArrow: PAPER.arrowLen * 1.4 };
+/** How far round a moment's arc runs. */
+const MOMENT_SWEEP = 1.5 * Math.PI;
+
+/** How large a load of magnitude 1 is drawn, in model units. */
+export function loadScaleOf(sk: Sketch, kind: LoadKind): number {
+  const k = sk.loadScale?.[kind];
+  return k !== undefined && k > 0 ? k : LOAD_UNIT;
+}
+
+/** The arrow of a force, in paper mm: `free` is the end that is not on its point, and `out` points on from there. */
+export function loadArrow(sk: Sketch, s: Load, mm: number): { tail: V; tip: V; free: V; out: V } {
+  const p = P(sk, s.at, mm);
+  const d: V = [Math.cos(s.angle), Math.sin(s.angle)];
+  const reach = mul(d, Math.max(s.value * loadScaleOf(sk, "force") * mm, LOAD_MIN.force));
+  if (s.pull) return { tail: p, tip: add(p, reach), free: add(p, reach), out: d };
+  return { tail: sub(p, reach), tip: p, free: sub(p, reach), out: mul(d, -1) };
+}
+
+/**
+ * Where a load spread along a line lies, in paper mm: s0 to s1 on the line,
+ * e0 to e1 the far ends of its first and last arrow. `body` points from the
+ * line to that far side. Null when it is not on a line with some length.
+ */
+export function lineLoadFrame(sk: Sketch, s: LineLoad, mm: number): { s0: V; s1: V; e0: V; e1: V; body: V; a: V; b: V } | null {
+  const l = entity(sk, s.on);
+  if (l?.type !== "line") return null;
+  const a = P(sk, l.p1, mm), b = P(sk, l.p2, mm);
+  if (dist(a, b) < 1e-9) return null;
+  const span = sub(b, a);
+  const n = mul(perp(norm(span)), s.side);
+  // The arrows arrive from the far side, or leave towards it. Square to the line that side is
+  // the one chosen; at an angle of its own it is whichever side the arrows come from or go to.
+  const body: V = s.angle === undefined ? n : mul([Math.cos(s.angle), Math.sin(s.angle)], s.pull ? 1 : -1);
+  const k = loadScaleOf(sk, "line") * mm;
+  const s0 = add(a, mul(span, s.t0)), s1 = add(a, mul(span, s.t1));
+  return { s0, s1, e0: add(s0, mul(body, s.q1 * k)), e1: add(s1, mul(body, s.q2 * k)), body, a, b };
+}
+
+/** The arc of a moment, in paper mm. */
+export function momentArc(sk: Sketch, s: Moment, mm: number): { c: V; r: number; a0: number; a1: number } {
+  return { c: P(sk, s.at, mm), r: Math.max(s.value * loadScaleOf(sk, "moment") * mm, LOAD_MIN.moment), a0: s.angle, a1: s.angle + MOMENT_SWEEP };
+}
+
+/** Where the name of a load goes, in paper mm, and which side of it sits there. */
+export function loadLabel(sk: Sketch, s: AnyLoad, mm: number): { at: V; anchor: Anchor } | null {
+  let at: V, out: V;
+  if (s.type === "load") {
+    const f = loadArrow(sk, s, mm);
+    at = f.free;
+    out = f.out;
+  } else if (s.type === "moment") {
+    const f = momentArc(sk, s, mm);
+    const middle = (f.a0 + f.a1) / 2;
+    out = [Math.cos(middle), Math.sin(middle)];
+    at = polar(f.c, f.r, middle);
+  } else {
+    const f = lineLoadFrame(sk, s, mm);
+    if (!f) return null;
+    at = mid(f.e0, f.e1);
+    out = f.body;
+  }
+  return { at: [at[0] + (s.dx ?? 0), at[1] + (s.dy ?? 0)], anchor: anchorFor(out) };
+}
+
+/** How far a load reaches, in model units: the points a view has to hold to show all of it. */
+export function loadReach(sk: Sketch, s: AnyLoad): V[] {
+  if (s.type === "load") { const f = loadArrow(sk, s, 1); return [f.tail, f.tip]; }
+  if (s.type === "moment") { const f = momentArc(sk, s, 1); return [[f.c[0] - f.r, f.c[1] - f.r], [f.c[0] + f.r, f.c[1] + f.r]]; }
+  const f = lineLoadFrame(sk, s, 1);
+  return f ? [f.s0, f.s1, f.e0, f.e1] : [];
+}
+
+function loadPrims(sk: Sketch, s: AnyLoad, mm: number): Prim[] {
+  const base = { ref: s.id, layer: "sym" as const, ink: s.color };
+  const out: Prim[] = [];
+  if (s.type === "load") {
+    const f = loadArrow(sk, s, mm);
+    out.push({ ...base, k: "line", a: f.tail, b: f.tip, stroke: "arrow", arrowB: true, head: PAPER.arrowScale });
+  } else if (s.type === "moment") {
+    const f = momentArc(sk, s, mm);
+    const arc: ArcPrim = { ...base, k: "arc", ...f, stroke: "arrow", head: PAPER.arrowScale };
+    if (s.cw) arc.arrowA = true;
+    else arc.arrowB = true;
+    out.push(arc);
+  } else {
+    const f = lineLoadFrame(sk, s, mm);
+    if (!f) return [];
+    const n = Math.max(2, Math.round(s.count));
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      const foot = add(f.s0, mul(sub(f.s1, f.s0), t)), far = add(f.e0, mul(sub(f.e1, f.e0), t));
+      // Where the load runs down to nothing there is no room for an arrow; the envelope says it.
+      if (dist(foot, far) < LOAD_MIN.lineArrow) continue;
+      out.push(s.pull
+        ? { ...base, k: "line", a: foot, b: far, stroke: "symbol", arrowB: true }
+        : { ...base, k: "line", a: far, b: foot, stroke: "symbol", arrowB: true });
+    }
+    out.push({ ...base, k: "line", a: f.e0, b: f.e1, stroke: "symbol", part: "envelope" });
+  }
+  const label = s.label.trim() ? loadLabel(sk, s, mm) : null;
+  if (label) out.push({ ...base, k: "text", at: label.at, tex: labelTex(s.label), anchor: label.anchor, part: "label" });
+  return out;
+}
+
 /** Most strokes a hatching is drawn with, however fine its spacing. */
 const HATCH_MAX = 2000;
 
@@ -767,6 +888,10 @@ export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
     case "fill": return fillPrims(sk, s, mm);
     case "datum": return datumPrims(sk, s, mm);
     case "note": return notePrims(s, mm);
+    case "load":
+    case "lineload":
+    case "moment":
+      return loadPrims(sk, s, mm);
   }
 }
 

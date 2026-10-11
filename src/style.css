@@ -192,6 +192,8 @@ a.icon-btn.support:hover { background: #f6dde2; }
 /* One class each, so the state colours further down win. */
 .prim.free { color: var(--blue); }
 /* Solid shapes with a fill colour of their own, such as a datum's dot. The outline stays in the line colour. */
+/* Drawn in a colour of its own, such as a load. Listed before the states below, so they still win. */
+.prim.inked, .tex.inked { color: var(--ink); }
 .prim.construction { stroke-dasharray: 7 5; }
 .prim.filled { fill: var(--paper); }
 .prim.head { fill: currentColor; stroke: none; }
