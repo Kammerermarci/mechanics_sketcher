@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dimension scale demo</title>
+<style>
+  :root { --ink: #17201b; --ink-2: #5d6a62; --paper: #ffffff; --board: #e7ebe5; --rule: #c9d1c9; --sel: #e2570a; --blue: #1f6feb; --ref: #8a968e; }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: 1fr 300px; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--board); }
+  header { grid-column: 1 / 3; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--rule); background: #f3f5f1; }
+  header b { margin-right: 10px; }
+  button { font: inherit; padding: 5px 12px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); color: var(--ink); cursor: pointer; }
+  button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .sep { width: 1px; align-self: stretch; background: var(--rule); margin: 0 6px; }
+  label.field { display: flex; gap: 6px; align-items: center; color: var(--ink-2); }
+  label.field input { width: 52px; font: inherit; padding: 4px 6px; border: 1px solid var(--rule); border-radius: 6px; text-align: right; }
+  #stage.paper { background: #d9ded8; }
+  .page { fill: #ffffff; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.25)); }
+  .margin { fill: none; stroke: #1f6feb; stroke-width: 1; stroke-dasharray: 4 4; opacity: 0.55; }
+  .pagesize { font: 13px system-ui, sans-serif; fill: var(--ink-2); text-anchor: middle; }
+  #stage { position: relative; overflow: hidden; background: var(--paper); }
+  svg { display: block; width: 100%; height: 100%; user-select: none; }
+  svg.draw { cursor: crosshair; }
+  svg.dim { cursor: pointer; }
+  aside { grid-row: 2 / 4; grid-column: 2; padding: 14px 16px; border-left: 1px solid var(--rule); overflow: auto; background: #f3f5f1; }
+  aside h2 { font-size: 15px; margin: 0 0 8px; }
+  aside ol { padding-left: 18px; margin: 0 0 12px; }
+  aside li { margin-bottom: 6px; }
+  aside p { color: var(--ink-2); margin: 0 0 10px; }
+  footer { grid-column: 1; padding: 6px 12px; border-top: 1px solid var(--rule); background: #f3f5f1; color: var(--ink-2); min-height: 32px; }
+  footer.warn { color: #b3261e; }
+  #editor-del { position: absolute; transform: translate(0, -50%); padding: 4px 9px; display: none; color: #b3261e; border-color: #e7b4b7; background: #fff5f5; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #editor { position: absolute; transform: translate(-50%, -50%); width: 110px; padding: 4px 6px; font: 15px system-ui; border: 2px solid var(--blue); border-radius: 5px; text-align: center; display: none; }
+  .grid { fill: #c7cec8; }
+  .line { stroke: var(--ink); stroke-width: 2.2; stroke-linecap: round; }
+  .line.hover { stroke: var(--blue); }
+  .pt { fill: var(--paper); stroke: var(--ink); stroke-width: 1.5; }
+  .pt.anchor { fill: var(--ink); }
+  .dimline { stroke: var(--ink-2); stroke-width: 1; fill: none; }
+  .arrow { fill: var(--ink-2); }
+  .dimtext { font: 15px "Cambria Math", "Latin Modern Math", Georgia, serif; fill: var(--ink); text-anchor: middle; dominant-baseline: middle; cursor: text; }
+  .dimbg { fill: var(--paper); }
+  .dimbg.sel { stroke: var(--blue); stroke-width: 1.5; }
+  .preview { stroke: var(--blue); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .snap { fill: none; stroke: var(--blue); stroke-width: 1.5; }
+</style>
+</head>
+<body>
+<header>
+  <b>Dimension scale demo</b>
+  <button data-tool="line">Line (L)</button>
+  <button data-tool="dim">Dimension (D)</button>
+  <button data-tool="move">Move (V)</button>
+  <span class="sep"></span>
+  <button id="example">Example</button>
+  <button id="clear">Clear</button>
+  <button id="deldim" disabled>Delete dimension</button>
+  <span class="sep"></span>
+  <label class="field">Figure width <input id="width" type="text" inputmode="decimal" value="8"> cm</label>
+  <button id="preview">Export preview (P)</button>
+  <button id="download">Download SVG</button>
+</header>
+<div id="stage">
+  <svg id="c"></svg>
+  <input id="editor" type="text" inputmode="decimal" autocomplete="off">
+  <button id="editor-del" title="Delete this dimension">Delete</button>
+</div>
+<aside>
+  <h2>The idea</h2>
+  <p>Draw without caring about sizes. The <b>first</b> dimension does not move anything: it only says what the line you drew is worth, and that sets the scale. Every later dimension is relative to it.</p>
+  <h2>Try this</h2>
+  <ol>
+    <li>The example rectangle is drawn about 9 × 5 grid squares. Pick <b>Dimension</b>, click the bottom edge and type <b>200</b>. Nothing moves: the 200 has set the scale.</li>
+    <li>Dimension the left side <b>150</b>. Only the height changes, to 150/200 of the bottom.</li>
+    <li>Click the 200 and type <b>400</b>. With another dimension there, it now drives its line like any other: the bottom becomes twice as long and the height stays 150.</li>
+    <li>Delete both dimensions: click a number and press <b>Delete</b> beside its box, or <b>Delete dimension</b> at the top, or right-click the number. With none left, the next one sets a new scale again.</li>
+    <li>While the first dimension is the only one, changing it moves nothing: it only renames the scale.</li>
+  </ol>
+  <p>Drag points with <b>Move</b>: dimensioned lines keep their length, the rest follow. The filled point is where each connected part is held.</p>
+  <h2>Export</h2>
+  <p><b>Export preview</b> (P) shows the figure as it is exported. The numbers play no part in its size: whatever the drawing looks like is fitted, dimensions and all, to the figure width, with 5 % of the width as a margin on every side. Text stays 10 pt and arrowheads keep their size; only the drawing is scaled. Change the width and watch it refit. <b>Download SVG</b> saves exactly that.</p>
+  <p>This is a stand-in for the real solver: lines keep the direction they were drawn in where they can, and only lengths are dimensioned.</p>
+</aside>
+<footer id="status"></footer>
+<script>
+"use strict";
+const svg = document.getElementById("c");
+const editor = document.getElementById("editor");
+const statusEl = document.getElementById("status");
+const delButton = document.getElementById("deldim");
+const editorDel = document.getElementById("editor-del");
+
+/** Screen pixels for one drawn unit: one grid square. */
+const ZOOM = 40;
+let ox = 40, oy = 40;
+const S = (p) => [ox + p.x * ZOOM, oy + p.y * ZOOM];
+const M = (sx, sy) => ({ x: (sx - ox) / ZOOM, y: (sy - oy) / ZOOM });
+
+/** Points are shared by the lines that meet there. Each line remembers the direction it was drawn in. */
+let pts = [], lines = [], dims = [];
+/** What one drawn unit is worth: set by the first dimension, null while there is none. */
+let scale = null;
+let nextId = 1, tool = "dim", pending = null, drag = null, selected = null, hover = null, cursor = null, editing = null;
+
+const len = (l) => Math.hypot(l.b.x - l.a.x, l.b.y - l.a.y);
+const fmt = (v) => String(Number(v.toFixed(v >= 100 ? 1 : v >= 10 ? 2 : 3)));
+const dimOf = (l) => dims.find((d) => d.line === l);
+
+function addPoint(x, y) { const p = { id: nextId++, x, y }; pts.push(p); return p; }
+function addLine(a, b) {
+  const L = Math.hypot(b.x - a.x, b.y - a.y);
+  const l = { id: nextId++, a, b, dir: { x: (b.x - a.x) / L, y: (b.y - a.y) / L } };
+  lines.push(l);
+  return l;
+}
+
+function example() {
+  pts = []; lines = []; dims = []; scale = null; selected = null;
+  const p = [[2, 9], [11, 9], [11, 4], [2, 4]].map(([x, y]) => addPoint(x, y));
+  for (let i = 0; i < 4; i++) addLine(p[i], p[(i + 1) % 4]);
+  // A slanted strut beside it, not connected.
+  addLine(addPoint(13.5, 9), addPoint(17.5, 4.5));
+  render();
+}
+
+// ---- the stand-in solver ----------------------------------------------------------------
+
+/** The first point of each connected part is held where it is, so a part grows away from where it was started. */
+function anchors() {
+  const seen = new Set(), held = new Set();
+  for (const start of pts) {
+    if (seen.has(start)) continue;
+    held.add(start);
+    const stack = [start];
+    while (stack.length) {
+      const q = stack.pop();
+      if (seen.has(q)) continue;
+      seen.add(q);
+      for (const l of lines) { if (l.a === q) stack.push(l.b); if (l.b === q) stack.push(l.a); }
+    }
+  }
+  return held;
+}
+
+/** Moves the two ends of a line by +c and -c, all of it onto the free end where one end is held. */
+function shift(l, cx, cy, held) {
+  const ha = held.has(l.a), hb = held.has(l.b);
+  if (ha && hb) return;
+  if (ha) { l.b.x -= 2 * cx; l.b.y -= 2 * cy; }
+  else if (hb) { l.a.x += 2 * cx; l.a.y += 2 * cy; }
+  else { l.a.x += cx; l.a.y += cy; l.b.x -= cx; l.b.y -= cy; }
+}
+
+/**
+ * Makes the dimensioned lines as long as their numbers say, at the scale the first dimension set.
+ * Every line keeps the direction it was drawn in where it can; the undimensioned ones give way in length.
+ */
+function solve(iterations = 1500) {
+  if (scale === null) return;
+  // Lengths alone first; only when they cannot do it do the directions give as well.
+  if (!drag && solveByLengths()) return;
+  const held = anchors();
+  if (drag) held.add(drag);
+  for (let it = 0; it < iterations; it++) {
+    // The directions are a wish, the dimensions a must: the wish is let go of towards the end, so the dimensions hold exactly.
+    const stiff = 0.5 * Math.max(0, 1 - it / (0.6 * iterations));
+    for (const l of lines) {
+      if (!stiff) break;
+      // Its direction, as drawn.
+      const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y, L = Math.hypot(dx, dy);
+      const s = dx * l.dir.x + dy * l.dir.y >= 0 ? 1 : -1;
+      shift(l, (dx - s * l.dir.x * L) * stiff, (dy - s * l.dir.y * L) * stiff, held);
+    }
+    for (let r = 0; r < 2; r++) {
+      for (const d of dims) {
+        const l = d.line, target = d.value / scale;
+        const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y, L = Math.hypot(dx, dy) || 1e-9;
+        const k = ((L - target) / L) * 0.5;
+        shift(l, dx * k, dy * k, held);
+      }
+    }
+  }
+}
+
+/**
+ * The first try: every line keeps the direction it was drawn in, and only lengths change.
+ * Then where the points are follows from the lengths, walking out from the held point of
+ * each connected part; each closed loop has to close, which ties some lengths together.
+ * Of all the lengths that close every loop and give the dimensions their values, the one
+ * nearest to what was drawn is taken. False when there is none, as when a triangle is
+ * given two sides it cannot have at the angles it was drawn with: then the angles give.
+ */
+function solveByLengths() {
+  const held = anchors();
+  const free = lines.filter((l) => !dimOf(l));
+  const index = new Map(free.map((l, i) => [l, i]));
+  const known = (l) => dimOf(l).value / scale;
+  // Each part as a tree from its held point; the lines left over each close a loop.
+  const parent = new Map(), seen = new Set(), loops = [];
+  for (const root of held) {
+    seen.add(root); parent.set(root, null);
+    const queue = [root];
+    while (queue.length) {
+      const q = queue.shift();
+      for (const l of lines) {
+        const other = l.a === q ? l.b : l.b === q ? l.a : null;
+        if (!other) continue;
+        if (!seen.has(other)) { seen.add(other); parent.set(other, { line: l, from: q }); queue.push(other); }
+        else if (parent.get(q)?.line !== l && !loops.includes(l)) loops.push(l);
+      }
+    }
+  }
+  /** The way from the held point to p, as lines and which way each is walked: +1 from a to b. */
+  const path = (p) => { const out = []; for (let e = parent.get(p); e; e = parent.get(e.from)) out.push([e.line, e.line.a === e.from ? 1 : -1]); return out; };
+  // One pair of equations for each loop: walking round it comes back to where it started.
+  const rows = [], rhs = [];
+  for (const l of loops) {
+    for (const axis of ["x", "y"]) {
+      const row = new Array(free.length).fill(0);
+      let c = 0;
+      const add = (line, k) => { if (index.has(line)) row[index.get(line)] += k * line.dir[axis]; else c -= k * line.dir[axis] * known(line); };
+      for (const [line, sgn] of path(l.b)) add(line, sgn);
+      for (const [line, sgn] of path(l.a)) add(line, -sgn);
+      add(l, -1);
+      rows.push(row); rhs.push(c);
+    }
+  }
+  const x0 = free.map((l) => len(l));
+  let x = x0.slice();
+  if (rows.length) {
+    // The nearest lengths that close the loops: x = x0 + C^T (C C^T)^-1 (d - C x0).
+    const m = rows.length, CCt = rows.map((r) => rows.map((q) => r.reduce((s, v, i) => s + v * q[i], 0) + 0));
+    const r0 = rhs.map((d, i) => d - rows[i].reduce((s, v, j) => s + v * x0[j], 0));
+    const lam = gauss(CCt.map((row, i) => row.map((v, j) => v + (i === j ? 1e-12 : 0))), r0);
+    if (!lam) return false;
+    x = x0.map((v, j) => v + rows.reduce((s, row, i) => s + row[j] * lam[i], 0));
+    const off = rows.reduce((w, row, i) => Math.max(w, Math.abs(row.reduce((s, v, j) => s + v * x[j], 0) - rhs[i])), 0);
+    if (off > 1e-7 * Math.max(1, ...x0)) return false;
+  }
+  if (x.some((v) => !(v > 1e-6))) return false;
+  const lengthOf = (l) => (index.has(l) ? x[index.get(l)] : known(l));
+  // Out from each held point, line by line.
+  for (const p of seen) {
+    if (held.has(p)) continue;
+    let px = 0, py = 0, root = p;
+    for (const [line, sgn] of path(p)) { px += sgn * line.dir.x * lengthOf(line); py += sgn * line.dir.y * lengthOf(line); }
+    while (parent.get(root)) root = parent.get(root).from;
+    p.nx = root.x + px; p.ny = root.y + py;
+  }
+  for (const p of seen) if (!held.has(p)) { p.x = p.nx; p.y = p.ny; delete p.nx; delete p.ny; }
+  return true;
+}
+
+/** Solves a small linear system by Gaussian elimination; null when it has no single answer. */
+function gauss(A, b) {
+  const n = b.length, M = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let best = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[best][c])) best = r;
+    if (Math.abs(M[best][c]) < 1e-14) return null;
+    [M[c], M[best]] = [M[best], M[c]];
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((row, i) => row[n] / row[i]);
+}
+
+/** The worst a dimension is off by after solving, as a share of its value. */
+function misfit() {
+  let worst = 0;
+  for (const d of dims) worst = Math.max(worst, Math.abs(len(d.line) * scale - d.value) / d.value);
+  return worst;
+}
+
+// ---- dimensions ----------------------------------------------------------------------------
+
+/** A number typed for a line: the first one sets the scale and moves nothing; later ones drive their line. */
+function setDimension(l, value) {
+  let d = dimOf(l);
+  if (!d) {
+    d = { line: l, value };
+    dims.push(d);
+    if (scale === null) scale = value / len(l);
+  } else {
+    d.value = value;
+    // The only dimension there is: it can only say what a drawn unit is worth.
+    if (dims.length === 1) scale = value / len(l);
+  }
+  // With one dimension there is nothing for it to be relative to: nothing moves.
+  if (dims.length > 1) solve();
+  selected = d;
+  render();
+}
+
+/** Takes a dimension away. The scale stays while others are left, so they still mean the same; with none left the next one sets it anew. */
+function deleteDimension(d) {
+  if (!d) return;
+  if (editing) { editing = null; editor.style.display = "none"; editorDel.style.display = "none"; }
+  dims = dims.filter((x) => x !== d);
+  if (!dims.length) scale = null;
+  selected = null;
+  render();
+}
+
+// ---- drawing ------------------------------------------------------------------------------
+
+/**
+ * Where a dimension's line runs: off the side of its line away from the middle of the part it belongs to,
+ * `off` from it. `P` puts a point of the drawing where it is drawn: on screen, or on paper in mm.
+ */
+function dimFrame(d, P = S, off = 28) {
+  const l = d.line;
+  const A = P(l.a), B = P(l.b);
+  const dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy) || 1;
+  let nx = dy / L, ny = -dx / L;
+  const part = partOf(l.a);
+  const cx = part.reduce((s, p) => s + P(p)[0], 0) / part.length, cy = part.reduce((s, p) => s + P(p)[1], 0) / part.length;
+  const mx = (A[0] + B[0]) / 2, my = (A[1] + B[1]) / 2;
+  if (part.length > 2 && (mx - cx) * nx + (my - cy) * ny < 0) { nx = -nx; ny = -ny; }
+  return { A, B, nx, ny, a: [A[0] + nx * off, A[1] + ny * off], b: [B[0] + nx * off, B[1] + ny * off], t: [mx + nx * off, my + ny * off] };
+}
+
+// ---- the figure as it is exported -----------------------------------------------------------
+
+/** Sizes on paper, in mm: as in print, whatever the size of the drawing. Text is 10 pt. */
+const PAPER = { member: 0.28, dim: 0.105, arrowLen: 1.8, arrowWidth: 1.1, offset: 7, extGap: 1, extOver: 1.5, em: 3.515 };
+/** How wide a dimension's number is on paper: a rough measure of its digits, enough to fit the figure by. */
+const textWidth = (text) => text.length * PAPER.em * 0.52;
+
+/**
+ * Everything that is exported, drawn with `mm` paper millimetres for each drawn unit: the lines, and each
+ * dimension with its extension lines, its arrows and its number. Text and arrowheads keep their size on
+ * paper; only the drawing is scaled.
+ */
+function figureParts(mm) {
+  const P = (p) => [p.x * mm, p.y * mm];
+  const parts = { lines: lines.map((l) => [P(l.a), P(l.b)]), dims: [] };
+  for (const d of dims) {
+    const f = dimFrame(d, P, PAPER.offset);
+    const ext = (from, to) => [[from[0] + f.nx * PAPER.extGap, from[1] + f.ny * PAPER.extGap], [to[0] + f.nx * PAPER.extOver, to[1] + f.ny * PAPER.extOver]];
+    const text = fmt(d.value);
+    parts.dims.push({ f, ext: [ext(f.A, f.a), ext(f.B, f.b)], text, w: textWidth(text) + 1.2, h: PAPER.em * 0.9 });
+  }
+  return parts;
+}
+
+/** The box around everything exported, in mm. */
+function figureBox(parts) {
+  const box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  const grow = ([x, y], r = 0) => { box.x0 = Math.min(box.x0, x - r); box.y0 = Math.min(box.y0, y - r); box.x1 = Math.max(box.x1, x + r); box.y1 = Math.max(box.y1, y + r); };
+  for (const [a, b] of parts.lines) { grow(a, PAPER.member / 2); grow(b, PAPER.member / 2); }
+  for (const d of parts.dims) {
+    for (const [a, b] of d.ext) { grow(a); grow(b); }
+    grow(d.f.a); grow(d.f.b);
+    grow([d.f.t[0] - d.w / 2, d.f.t[1] - d.h / 2]); grow([d.f.t[0] + d.w / 2, d.f.t[1] + d.h / 2]);
+  }
+  return box;
+}
+
+/**
+ * The figure fitted to the set width: everything, dimensions included, is 90 % of it, with 5 % of the
+ * width as a margin on every side. The drawing is scaled until it fits; text and arrowheads keep their
+ * size, so the fit is found in a few rounds rather than in one.
+ */
+function fitFigure(widthMm) {
+  const margin = widthMm * 0.05, inner = widthMm - 2 * margin;
+  const xs = pts.map((p) => p.x), extent = Math.max(...xs) - Math.min(...xs) || 1;
+  let mm = inner / extent;
+  for (let i = 0; i < 40; i++) {
+    const b = figureBox(figureParts(mm));
+    const w = b.x1 - b.x0;
+    // What does not scale is what sticks out past the drawing; the drawing gets the rest of the width.
+    const fixed = w - extent * mm;
+    const next = Math.max(1e-6, (inner - fixed) / extent);
+    if (Math.abs(next - mm) < 1e-9 * mm) break;
+    mm = next;
+  }
+  const parts = figureParts(mm), box = figureBox(parts);
+  return { mm, parts, box, margin, width: widthMm, height: box.y1 - box.y0 + 2 * margin };
+}
+
+/** The fitted figure as an SVG file, sized in mm on paper. */
+function figureSvg(fig) {
+  const { parts, box, margin } = fig;
+  const X = (q) => [q[0] - box.x0 + margin, q[1] - box.y0 + margin];
+  const n = (v) => Number(v.toFixed(3));
+  const seg = (a, b, width) => { const [x1, y1] = X(a), [x2, y2] = X(b); return `<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" stroke-width="${width}"/>`; };
+  let body = "";
+  for (const [a, b] of parts.lines) body += seg(a, b, PAPER.member);
+  for (const d of parts.dims) {
+    for (const [a, b] of d.ext) body += seg(a, b, PAPER.dim);
+    const { f } = d;
+    const ux = (f.b[0] - f.a[0]) / (Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]) || 1), uy = (f.b[1] - f.a[1]) / (Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]) || 1);
+    body += seg(f.a, f.b, PAPER.dim);
+    for (const [tip, sx] of [[f.a, -1], [f.b, 1]]) {
+      const [tx, ty] = X(tip), dx = ux * sx, dy = uy * sx;
+      const bx = tx - dx * PAPER.arrowLen, by = ty - dy * PAPER.arrowLen, hw = PAPER.arrowWidth / 2;
+      body += `<path d="M${n(tx)} ${n(ty)}L${n(bx + dy * hw)} ${n(by - dx * hw)}L${n(tx - dx * PAPER.arrowLen * 0.72)} ${n(ty - dy * PAPER.arrowLen * 0.72)}L${n(bx - dy * hw)} ${n(by + dx * hw)}Z" fill="#000" stroke="none"/>`;
+    }
+    const [cx, cy] = X(f.t);
+    body += `<rect x="${n(cx - d.w / 2)}" y="${n(cy - d.h / 2)}" width="${n(d.w)}" height="${n(d.h)}" fill="#fff" stroke="none"/>`;
+    body += `<text x="${n(cx)}" y="${n(cy)}" font-size="${PAPER.em}" text-anchor="middle" dominant-baseline="central" fill="#000" stroke="none" font-family="'Latin Modern Roman', 'Times New Roman', serif">${d.text}</text>`;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${n(fig.width)}mm" height="${n(fig.height)}mm" viewBox="0 0 ${n(fig.width)} ${n(fig.height)}">` +
+    `<g stroke="#000" stroke-linecap="round" fill="none">${body}</g></svg>`;
+}
+
+/** What the set width of the figure is, in mm; null while what is typed is not a width. */
+function figureWidth() {
+  const cm = Number(document.getElementById("width").value.trim().replace(",", "."));
+  return cm >= 1 && cm <= 100 ? cm * 10 : null;
+}
+
+function partOf(start) {
+  const seen = new Set([start]), stack = [start];
+  while (stack.length) {
+    const q = stack.pop();
+    for (const l of lines) for (const [x, y] of [[l.a, l.b], [l.b, l.a]]) if (x === q && !seen.has(y)) { seen.add(y); stack.push(y); }
+  }
+  return [...seen];
+}
+
+const n2 = (v) => v.toFixed(1);
+function arrow(tip, ux, uy, cls) {
+  const L = 9, W = 3.2;
+  return `<path class="arrow ${cls}" d="M${n2(tip[0])} ${n2(tip[1])}L${n2(tip[0] - ux * L + uy * W)} ${n2(tip[1] - uy * L - ux * W)}L${n2(tip[0] - ux * L - uy * W)} ${n2(tip[1] - uy * L + ux * W)}Z"/>`;
+}
+
+let preview = false;
+
+/** The export preview: the page as it is exported, at its size on paper, scaled to fit the screen. */
+function renderPreview() {
+  const r = svg.getBoundingClientRect();
+  const width = figureWidth();
+  document.getElementById("stage").className = "paper";
+  if (!width || !lines.length) {
+    svg.innerHTML = `<text class="pagesize" x="${r.width / 2}" y="${r.height / 2}">${lines.length ? "Type a figure width between 1 and 100 cm." : "Nothing drawn yet."}</text>`;
+    return;
+  }
+  const fig = fitFigure(width);
+  const k = Math.min((r.width - 80) / fig.width, (r.height - 90) / fig.height);
+  const x0 = (r.width - fig.width * k) / 2, y0 = (r.height - fig.height * k) / 2 - 10;
+  const inner = figureSvg(fig).replace(/^<svg [^>]*>/, "").replace(/<\/svg>$/, "");
+  svg.innerHTML = `<rect class="page" x="${x0}" y="${y0}" width="${fig.width * k}" height="${fig.height * k}"/>` +
+    `<g transform="translate(${x0} ${y0}) scale(${k})">${inner}</g>` +
+    `<rect class="margin" x="${x0 + fig.margin * k}" y="${y0 + fig.margin * k}" width="${(fig.width - 2 * fig.margin) * k}" height="${(fig.height - 2 * fig.margin) * k}"/>` +
+    `<text class="pagesize" x="${r.width / 2}" y="${y0 + fig.height * k + 26}">${fmt(fig.width / 10)} × ${fmt(fig.height / 10)} cm, shown at ${(k / (96 / 25.4)).toFixed(1)}× its size on paper; the dashed line is the 5 % margin</text>`;
+  statusEl.className = "";
+  statusEl.textContent = `Export preview: the whole figure, dimensions and all, fitted to ${fmt(fig.width / 10)} cm wide with 5 % margins. Text stays 10 pt; one grid square is ${fmt(fig.mm)} mm on paper. Press P to go back to editing.`;
+}
+
+function render() {
+  document.querySelectorAll("#preview").forEach((b) => b.setAttribute("aria-pressed", String(preview)));
+  if (preview) return renderPreview();
+  document.getElementById("stage").className = "";
+  const r = svg.getBoundingClientRect();
+  let html = "";
+  for (let x = 0; ox + x * ZOOM < r.width; x++) for (let y = 0; oy + y * ZOOM < r.height; y++) html += `<circle class="grid" cx="${ox + x * ZOOM}" cy="${oy + y * ZOOM}" r="1.3"/>`;
+  for (const l of lines) {
+    const [x1, y1] = S(l.a), [x2, y2] = S(l.b);
+    html += `<line class="line${hover === l ? " hover" : ""}" x1="${n2(x1)}" y1="${n2(y1)}" x2="${n2(x2)}" y2="${n2(y2)}"/>`;
+  }
+  const held = anchors();
+  for (const p of pts) { const [x, y] = S(p); html += `<circle class="pt${held.has(p) ? " anchor" : ""}" cx="${n2(x)}" cy="${n2(y)}" r="4"/>`; }
+  for (const d of dims) {
+    const f = dimFrame(d), cls = "";
+    const ux = (f.b[0] - f.a[0]) / (Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]) || 1), uy = (f.b[1] - f.a[1]) / (Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]) || 1);
+    html += `<path class="dimline ${cls}" d="M${n2(f.A[0] + f.nx * 5)} ${n2(f.A[1] + f.ny * 5)}L${n2(f.a[0] + f.nx * 6)} ${n2(f.a[1] + f.ny * 6)}M${n2(f.B[0] + f.nx * 5)} ${n2(f.B[1] + f.ny * 5)}L${n2(f.b[0] + f.nx * 6)} ${n2(f.b[1] + f.ny * 6)}M${n2(f.a[0])} ${n2(f.a[1])}L${n2(f.b[0])} ${n2(f.b[1])}"/>`;
+    html += arrow(f.a, -ux, -uy, cls) + arrow(f.b, ux, uy, cls);
+    const text = fmt(d.value), w = text.length * 8.5 + 10;
+    html += `<rect class="dimbg${selected === d ? " sel" : ""}" data-dim="${dims.indexOf(d)}" x="${n2(f.t[0] - w / 2)}" y="${n2(f.t[1] - 11)}" width="${n2(w)}" height="22" rx="3"/>`;
+    html += `<text class="dimtext ${cls}" data-dim="${dims.indexOf(d)}" x="${n2(f.t[0])}" y="${n2(f.t[1] + 1)}">${text}</text>`;
+  }
+  if (tool === "line" && pending && cursor) {
+    const [x1, y1] = S(pending), end = snapAt(cursor);
+    const [x2, y2] = S(end);
+    html += `<line class="preview" x1="${n2(x1)}" y1="${n2(y1)}" x2="${n2(x2)}" y2="${n2(y2)}"/>`;
+  }
+  if (tool === "line" && cursor) {
+    const near = nearPoint(cursor);
+    if (near) { const [x, y] = S(near); html += `<circle class="snap" cx="${n2(x)}" cy="${n2(y)}" r="8"/>`; }
+  }
+  svg.innerHTML = html;
+  svg.className.baseVal = tool === "line" ? "draw" : tool === "dim" ? "dim" : "";
+  document.querySelectorAll("[data-tool]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.tool === tool)));
+  delButton.disabled = !selected;
+  const off = scale !== null && misfit() > 1e-3;
+  statusEl.className = off ? "warn" : "";
+  statusEl.textContent = off ? "These dimensions cannot all hold at once: one of them asks for something the others do not allow."
+    : scale === null ? "No dimensions yet. The first one you add sets the scale: what you drew stays as it is, and the number says what it is worth."
+    : `Scale: one grid square is worth ${fmt(scale)}. ${dims.length === 1 ? "With one dimension, changing it only changes the scale; nothing moves." : "Every dimension now drives its line, relative to the others."}`;
+}
+
+// ---- the pointer --------------------------------------------------------------------------
+
+function screenPos(ev) { const r = svg.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+function nearPoint(sp) {
+  let best = null, bd = 12;
+  for (const p of pts) { const [x, y] = S(p); const d = Math.hypot(x - sp[0], y - sp[1]); if (d < bd) { bd = d; best = p; } }
+  return best;
+}
+function nearLine(sp) {
+  let best = null, bd = 9;
+  for (const l of lines) {
+    const A = S(l.a), B = S(l.b), dx = B[0] - A[0], dy = B[1] - A[1], L2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((sp[0] - A[0]) * dx + (sp[1] - A[1]) * dy) / L2));
+    const d = Math.hypot(sp[0] - A[0] - t * dx, sp[1] - A[1] - t * dy);
+    if (d < bd) { bd = d; best = l; }
+  }
+  return best;
+}
+/** Where a click lands: on a point near it, or level or upright with the start of the line when it nearly is. */
+function snapAt(sp) {
+  const p = nearPoint(sp);
+  if (p) return p;
+  const q = M(sp[0], sp[1]);
+  if (pending) {
+    const dx = q.x - pending.x, dy = q.y - pending.y;
+    if (Math.abs(dy) < Math.abs(dx) * 0.08) q.y = pending.y;
+    else if (Math.abs(dx) < Math.abs(dy) * 0.08) q.x = pending.x;
+  }
+  return q;
+}
+
+svg.addEventListener("pointerdown", (ev) => {
+  // The click would otherwise take the keyboard away from the box a number is typed into.
+  ev.preventDefault();
+  if (preview) return;
+  if (editing) closeEditor(true);
+  const sp = screenPos(ev);
+  const dimHit = ev.target.dataset?.dim;
+  // A right-click on a dimension's number takes the dimension away.
+  if (dimHit !== undefined && ev.button === 2) return deleteDimension(dims[Number(dimHit)]);
+  if (dimHit !== undefined) {
+    selected = dims[Number(dimHit)];
+    render();
+    return openEditor(selected.line);
+  }
+  if (tool === "line") {
+    const at = snapAt(sp);
+    if (!pending) { pending = at.id ? at : addPoint(at.x, at.y); return render(); }
+    const end = at.id ? at : addPoint(at.x, at.y);
+    if (end === pending) return;
+    addLine(pending, end);
+    pending = null;
+    return render();
+  }
+  if (tool === "dim") {
+    const l = nearLine(sp);
+    selected = null;
+    if (l) openEditor(l);
+    return render();
+  }
+  if (tool === "move") {
+    const p = nearPoint(sp);
+    if (p) { drag = p; svg.setPointerCapture(ev.pointerId); }
+  }
+});
+svg.addEventListener("pointermove", (ev) => {
+  if (preview) return;
+  const sp = screenPos(ev);
+  cursor = sp;
+  if (drag) {
+    const q = M(sp[0], sp[1]);
+    drag.x = q.x; drag.y = q.y;
+    solve(120);
+    return render();
+  }
+  hover = tool === "dim" ? nearLine(sp) : null;
+  render();
+});
+svg.addEventListener("pointerup", () => {
+  if (!drag) return;
+  // The shape as it was dragged to is the shape now: each line keeps the direction it has.
+  drag = null;
+  for (const l of lines) { const L = len(l) || 1; l.dir = { x: (l.b.x - l.a.x) / L, y: (l.b.y - l.a.y) / L }; }
+  solve();
+  render();
+});
+
+// ---- typing a number ----------------------------------------------------------------------
+
+function openEditor(l) {
+  editing = l;
+  const d = dimOf(l);
+  const [x1, y1] = S(l.a), [x2, y2] = S(l.b);
+  const f = d ? dimFrame(d).t : [(x1 + x2) / 2, (y1 + y2) / 2];
+  editor.style.left = `${f[0]}px`;
+  editor.style.top = `${f[1]}px`;
+  editor.style.display = "block";
+  // A line with no dimension yet offers what it is worth now, if there is a scale to say it with.
+  editor.value = d ? fmt(d.value) : scale !== null ? fmt(len(l) * scale) : "";
+  editor.placeholder = scale === null ? "sets the scale" : "";
+  editor.focus();
+  editor.select();
+  // An existing dimension can be taken away from its box.
+  editorDel.style.display = d ? "block" : "none";
+  editorDel.style.left = `${f[0] + 62}px`;
+  editorDel.style.top = `${f[1]}px`;
+}
+function closeEditor(accept) {
+  const l = editing;
+  editing = null;
+  editor.style.display = "none";
+  editorDel.style.display = "none";
+  if (!accept || !l) return render();
+  // An emptied box takes the dimension away.
+  if (!editor.value.trim() && dimOf(l)) return deleteDimension(dimOf(l));
+  const v = Number(editor.value.trim().replace(",", "."));
+  if (!(v > 0)) return render();
+  setDimension(l, v);
+}
+editor.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") closeEditor(true);
+  else if (ev.key === "Escape") closeEditor(false);
+  ev.stopPropagation();
+});
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") { pending = null; selected = null; return render(); }
+  if ((ev.key === "Delete" || ev.key === "Backspace") && selected) return deleteDimension(selected);
+  const k = ev.key.toLowerCase();
+  if (k === "p") { preview = !preview; pending = null; return render(); }
+  if (preview) return;
+  if (k === "l") tool = "line";
+  else if (k === "d") tool = "dim";
+  else if (k === "v") tool = "move";
+  else return;
+  pending = null;
+  render();
+});
+document.querySelectorAll("[data-tool]").forEach((b) => b.addEventListener("click", () => { tool = b.dataset.tool; pending = null; preview = false; render(); }));
+document.getElementById("preview").addEventListener("click", () => { preview = !preview; pending = null; render(); });
+const widthBox = document.getElementById("width");
+widthBox.addEventListener("input", () => { if (preview) render(); });
+widthBox.addEventListener("keydown", (ev) => ev.stopPropagation());
+document.getElementById("download").addEventListener("click", () => {
+  const width = figureWidth();
+  if (!width || !lines.length) return;
+  const url = URL.createObjectURL(new Blob([figureSvg(fitFigure(width))], { type: "image/svg+xml" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: "figure.svg" });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+document.getElementById("example").addEventListener("click", example);
+document.getElementById("clear").addEventListener("click", () => { pts = []; lines = []; dims = []; scale = null; pending = null; selected = null; tool = "line"; render(); });
+delButton.addEventListener("click", () => deleteDimension(selected));
+// Pressed before the box loses the keyboard, so the click is not taken for accepting the number.
+editorDel.addEventListener("pointerdown", (ev) => { ev.preventDefault(); deleteDimension(editing ? dimOf(editing) : selected); });
+svg.addEventListener("contextmenu", (ev) => ev.preventDefault());
+window.addEventListener("resize", render);
+example();
+</script>
+</body>
+</html>
