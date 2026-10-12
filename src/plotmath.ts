@@ -84,18 +84,36 @@ export interface Stretch {
   samples: number;
 }
 
-/** The pieces of a function that can be drawn, each cut down to what the plot shows of it. A curve given by a parameter has none: see paramStretches. */
-export function stretches(plot: Plot, curve: PlotCurve): Stretch[] {
+/**
+ * The pieces of a function that can be drawn, each cut down to what the plot
+ * shows of it. A curve given by a parameter has none: see paramStretches.
+ * With `band`, a straight piece is also cut where it leaves the heights that
+ * runs() keeps at that margin: it is drawn through its two ends only, and an
+ * end beyond them would leave out all of it.
+ */
+export function stretches(plot: Plot, curve: PlotCurve, band?: number): Stretch[] {
   const out: Stretch[] = [];
   if (curve.param) return out;
   const span = plot.x.max - plot.x.min;
   for (const piece of curve.pieces) {
     if (pieceError(piece) !== null || !piece.expr.trim()) continue;
     const expr = readFormula(piece.expr) as Expr;
-    const from = Math.max(piece.from ?? -Infinity, plot.x.min), to = Math.min(piece.to ?? Infinity, plot.x.max);
+    let from = Math.max(piece.from ?? -Infinity, plot.x.min), to = Math.min(piece.to ?? Infinity, plot.x.max);
     if (!(to - from > span * 1e-9)) continue;
+    const straight = degree(expr) <= 1;
+    if (straight && band !== undefined) {
+      const [lo, hi] = restrictY(plot, band), inset = (hi - lo) * 1e-9;
+      const y0 = evaluate(expr, from), y1 = evaluate(expr, to);
+      if (Number.isFinite(y0) && Number.isFinite(y1) && y0 !== y1) {
+        const k = (y1 - y0) / (to - from);
+        const xa = from + (lo + inset - y0) / k, xb = from + (hi - inset - y0) / k;
+        from = Math.max(from, Math.min(xa, xb));
+        to = Math.min(to, Math.max(xa, xb));
+        if (!(to - from > span * 1e-9)) continue;
+      }
+    }
     // A straight line needs its two ends only; a curve gets a point about every half millimetre.
-    const samples = degree(expr) <= 1 ? 2 : Math.max(13, Math.min(401, Math.ceil(((to - from) / span) * plot.width * 2) + 1));
+    const samples = straight ? 2 : Math.max(13, Math.min(401, Math.ceil(((to - from) / span) * plot.width * 2) + 1));
     out.push({ expr, from, to, samples });
   }
   return out;

@@ -117,6 +117,19 @@ function clipArea(plot: Plot, pts: V[]): V[] {
   return out;
 }
 
+/**
+ * What of a curve shows in the range of the plot, in the plot's own
+ * coordinates: the runs it is drawn with, as many as it breaks into, the
+ * upright lines joining its pieces included.
+ */
+export function curveRuns(plot: Plot, c: PlotCurve): V[][] {
+  const out: V[][] = [];
+  for (const s of stretches(plot, c, 1)) for (const run of runs(plot, s)) out.push(...clipRun(plot, run));
+  for (const s of paramStretches(plot, c)) for (const run of paramRuns(plot, s)) out.push(...clipRun(plot, run));
+  for (const up of uprights(plot, c)) out.push(...clipRun(plot, up));
+  return out;
+}
+
 /** Where the name of a curve sits, in the plot's coordinates: where it was put, or else above the curve, two thirds of the way along what shows of it. */
 export function curveLabelAt(plot: Plot, curve: PlotCurve): V | null {
   if (curve.lx !== undefined && curve.ly !== undefined) return [curve.lx, curve.ly];
@@ -128,7 +141,7 @@ export function curveLabelAt(plot: Plot, curve: PlotCurve): V | null {
     const at = seen[Math.round((seen.length - 1) * 0.66)];
     return [at[0], at[1] + rise > plot.y.max ? at[1] - rise : at[1] + rise];
   }
-  const shown = stretches(plot, curve).flatMap((s) => runs(plot, s)).flatMap((r) => clipRun(plot, r)).flat();
+  const shown = stretches(plot, curve, 1).flatMap((s) => runs(plot, s)).flatMap((r) => clipRun(plot, r)).flat();
   if (!shown.length) return null;
   const x0 = shown[0][0], x1 = shown[shown.length - 1][0];
   const want = x0 + (x1 - x0) * 0.66;
@@ -218,7 +231,7 @@ export function plotPrims(plot: Plot): Prim[] {
     };
     // A curve given by a parameter is shaded inside: closed from its end back to its start.
     for (const s of paramStretches(plot, c)) for (const run of paramRuns(plot, s)) shade(run);
-    for (const s of stretches(plot, c)) {
+    for (const s of stretches(plot, c, 1)) {
       for (const run of runs(plot, s)) shade([[run[0][0], 0], ...run, [run[run.length - 1][0], 0]]);
     }
   }
@@ -264,13 +277,7 @@ export function plotPrims(plot: Plot): Prim[] {
   for (const c of plot.curves) {
     const line = { layer: "sym" as const, ref: c.id, stroke: "member" as const, width: (c.weight ?? PLOT.weight) * PT_MM, ink: c.color };
     const dash = c.dash ? PLOT_DASH[c.dash] : undefined;
-    for (const s of stretches(plot, c)) {
-      for (const run of runs(plot, s)) for (const part of clipRun(plot, run)) out.push({ ...line, k: "path", pts: part.map(P), ...(dash ? { dash } : {}) });
-    }
-    for (const s of paramStretches(plot, c)) {
-      for (const run of paramRuns(plot, s)) for (const part of clipRun(plot, run)) out.push({ ...line, k: "path", pts: part.map(P), ...(dash ? { dash } : {}) });
-    }
-    for (const up of uprights(plot, c)) for (const part of clipRun(plot, up)) out.push({ ...line, k: "path", pts: part.map(P), ...(dash ? { dash } : {}) });
+    for (const part of curveRuns(plot, c)) out.push({ ...line, k: "path", pts: part.map(P), ...(dash ? { dash } : {}) });
   }
 
   const xName = labelTex(plot.x.label), yName = labelTex(plot.y.label);
@@ -369,7 +376,8 @@ export function plotTikz(plot: Plot): string {
   opts.push(`restrict y to domain=${n(lo)}:${n(hi)}, unbounded coords=jump`);
   opts.push(`trig format plots=rad, line join=round, line cap=round`);
   const shaded = plot.curves.some((c) => c.fill && drawable(plot, c));
-  if (shaded) opts.push(`set layers`);
+  // Shading goes on the layer under the axis, which is only cut to the axis box when every plot is cut on its own.
+  if (shaded) opts.push(`set layers, clip mode=individual`);
 
   const body: string[] = [];
   /** What is drawn once the axis is closed. */
@@ -386,7 +394,7 @@ export function plotTikz(plot: Plot): string {
     }
   }
   for (const c of plot.curves) {
-    const list = stretches(plot, c), turns = paramStretches(plot, c);
+    const list = stretches(plot, c, 1), turns = paramStretches(plot, c);
     if (!list.length && !turns.length) continue;
     const dash = c.dash ? `, dash pattern=on ${mm(PLOT_DASH[c.dash][0])} off ${mm(PLOT_DASH[c.dash][1])}${c.dash === "dotted" ? ", line cap=round" : ""}` : "";
     const pen = `draw=${tikzColor(c.color)}, line width=${num(c.weight ?? PLOT.weight, 2)}pt${dash}`;

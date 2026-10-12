@@ -480,3 +480,26 @@ describe("notes and balloons on a plot", () => {
     expect(deserialize(JSON.stringify(raw)).plots![0].id).toBe(copy.id);
   });
 });
+
+describe("steep straight lines", () => {
+  it("draws a straight line whose ends are far above and below the plot", () => {
+    // y from -2 to 3 keeps heights from -7 to 8; at x = -1 and x = 5 the line is at 61 and -59.
+    const p = plot([{ pieces: [{ expr: "1 - 20x" }] }]);
+    const drawn = paths(plotPrims(p));
+    expect(drawn.length).toBe(1);
+    const [a, b] = [drawn[0].pts[0], drawn[0].pts[drawn[0].pts.length - 1]].map((q) => toData(p, q));
+    expect(a[1]).toBeCloseTo(3, 6);
+    expect(b[1]).toBeCloseTo(-2, 6);
+    // pgfplots gets the same stretch, cut where the line leaves the heights it keeps.
+    const [s] = stretches(p, p.curves[0], 1);
+    expect(s.from).toBeCloseTo(-0.35, 6);
+    expect(s.to).toBeCloseTo(0.4, 6);
+    expect(plotTikz(p)).toMatch(/domain=-0\.3499999\d*:0\.3999999\d*, samples=2\] \{1 - 20\*x\}/);
+  });
+
+  it("leaves the stretch of a diagram as it was", () => {
+    const p = plot([{ pieces: [{ expr: "1 - 20x" }] }]);
+    const [s] = stretches(p, p.curves[0]);
+    expect([s.from, s.to]).toEqual([-1, 5]);
+  });
+});

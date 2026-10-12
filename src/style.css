@@ -613,6 +613,22 @@ dialog.welcome h2 { font-size: 21px; margin-bottom: 6px; }
 #plot-canvas[data-over="move"] { cursor: move; }
 #plot-canvas[data-over="pointer"] { cursor: pointer; }
 #plot-canvas[data-over="place"] { cursor: crosshair; }
+#plot-canvas[data-over="pan"] { cursor: grab; }
+
+/* The graph, where the plane is moved and zoomed, and the print beside it, the plot as it is exported. */
+.pw-graph { fill: #f5f7f3; }
+.pw-frame-fill { fill: var(--paper); }
+.pw-grid { fill: none; stroke: #dde3db; stroke-width: 1; }
+.pw-axis { fill: none; stroke: #7d8a81; stroke-width: 1.2; }
+.pw-num { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--ink-2); font-variant-numeric: tabular-nums; pointer-events: none; }
+.pw-curve { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.pw-fade { opacity: 0.3; }
+.pw-frame { fill: none; stroke: var(--blue); stroke-width: 1.3; stroke-dasharray: 6 4; }
+.pw-print { fill: var(--board-lo); }
+.pw-page { fill: var(--paper); filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.22)); }
+.pw-divider { stroke: var(--rule); stroke-width: 1; }
+.pw-pane { font: 600 11px system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0.08em; text-transform: uppercase; fill: var(--ink-2); pointer-events: none; }
+.pw-note { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--ink-2); pointer-events: none; }
 .fn-title.plain-title { font-family: inherit; font-size: 14px; }
 .tab.apart { margin-left: 14px; }
 .tab.apart::before { content: ""; position: absolute; left: -8px; top: 9px; bottom: 9px; width: 1px; background: var(--rule); }
