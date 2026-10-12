@@ -18,7 +18,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # The released app is always built from main, whatever set this run off.
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -26,6 +29,28 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+      # The beta: the `next` branch, when there is one, built into /beta/ of the
+      # same site. A beta that does not build never holds the released app back.
+      - id: beta
+        run: |
+          if git ls-remote --exit-code --heads origin next > /dev/null; then echo "there=yes" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.beta.outputs.there == 'yes'
+        uses: actions/checkout@v4
+        with:
+          ref: next
+          path: beta-src
+      - if: steps.beta.outputs.there == 'yes'
+        continue-on-error: true
+        working-directory: beta-src
+        env:
+          VITE_CHANNEL: beta
+        run: |
+          npm ci
+          npm run build
+          mkdir -p ../dist/beta
+          cp -r dist/. ../dist/beta/
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
