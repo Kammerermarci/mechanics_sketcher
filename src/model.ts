@@ -420,13 +420,32 @@ export interface Diagram {
   /** Each curve is closed down to the member at its two ends. Unset: it ends at the value it has there. */
   closed?: boolean;
 }
+/**
+ * The curves of a plot that are given by a parameter, drawn in the sketch with
+ * a point as the origin of the plot's coordinates: a path, an orbit, a circle
+ * about a joint. It stays tied to the plot and to the point.
+ */
+export interface Trace {
+  id: Id;
+  type: "trace";
+  /** The plot whose curves it draws. */
+  plot: Id;
+  /** The point that is the origin of the plot's coordinates. */
+  at: Id;
+  /** How long one unit of the plot is in the drawing, in model units. */
+  scale: number;
+  /** Which way the plot's x axis points, counter-clockwise in radians. Unset: along the drawing's own. */
+  angle?: number;
+  /** Drawn without the shading of the curves that are shaded in the plot. */
+  plain?: boolean;
+}
 export type AnyLoad = Load | LineLoad | Moment;
 /** Which scale a load is drawn at: forces, loads along a line and moments are different quantities. */
 export type LoadKind = "force" | "line" | "moment";
 export const loadKind = (s: AnyLoad): LoadKind => (s.type === "load" ? "force" : s.type === "lineload" ? "line" : "moment");
 export const isLoad = (s: Sym): s is AnyLoad => s.type === "load" || s.type === "lineload" || s.type === "moment";
 
-export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch | Datum | Note | AnyLoad | Diagram;
+export type Sym = Support | Frame | CenterMark | Balloon | Fill | Hatch | Datum | Note | AnyLoad | Diagram | Trace;
 
 /** Everything a symbol needs to exist; it is removed when any of these is. */
 export function symbolRefs(s: Sym): Id[] {
@@ -435,6 +454,7 @@ export function symbolRefs(s: Sym): Id[] {
     case "datum":
     case "load":
     case "moment":
+    case "trace":
       return [s.at];
     case "lineload": return [s.on];
     case "diagram": return s.axis ? [s.on, s.axis.a, s.axis.b, ...(s.axis.o ? [s.axis.o] : [])] : [s.on];
@@ -943,7 +963,7 @@ export function deserialize(text: string): Sketch {
   }
   const plots = Array.isArray(raw.plots) ? raw.plots.filter(isPlot) : [];
   // A diagram is a plot laid along a member: without its plot there is nothing to lay.
-  symbols = symbols.filter((s) => s.type !== "diagram" || plots.some((p) => p.id === s.plot));
+  symbols = symbols.filter((s) => (s.type !== "diagram" && s.type !== "trace") || plots.some((p) => p.id === s.plot));
   return {
     version: 4,
     nextId: raw.nextId ?? 1,

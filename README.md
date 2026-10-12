@@ -34,10 +34,10 @@ added underneath, and opens it in your own mail program to send; *Copy the
 text* is there for mail that is read in a browser. The address is
 `REPORT_EMAIL` in `src/config.ts`.
 
-The tools sit on three tabs. **Sketch** has what shapes the geometry: drawing
-tools, copying tools and constraints. **Annotate** has what is added to the
-figure: dimensions, supports, loads, axes, arrows, notes, centre marks, balloons,
-fills and hatching. **Dynamics** has springs, dampers and the mark of a centre
+The tools sit on three tabs. **Sketch** has what shapes the geometry: the
+Construction switch, drawing tools, copying tools, and dimensions and
+constraints. **Annotate** has what is added to the figure: supports, loads,
+axes, arrows, notes, centre marks, balloons, fills and hatching. **Dynamics** has springs, dampers and the mark of a centre
 of mass.
 
 1. **Draw.** Pick Line (L): one click starts a line, the next one ends it,
@@ -46,9 +46,10 @@ of mass.
    near-vertical lines snap and get that constraint; hold Alt to switch
    snapping off. *Centre line* draws the same way but gives a thin
    dash-dotted line that is exported and does not close shapes for fills.
-   *Construction (G)* is a switch: while it is on, the lines, circles and
-   arcs drawn are construction lines, dashed in the editor and left out of
-   the print and the exported figure; they take constraints and dimensions
+   *Construction (G)*, the first button on the Sketch tab, is a switch:
+   while it is on, the lines, circles and arcs drawn are construction lines,
+   dashed in the editor, pink while they can still move and dark purple once
+   they cannot, and left out of the print and the exported figure; they take constraints and dimensions
    like anything else. A selected line, circle or arc can be switched between
    solid, dashed (a hidden edge, a second position of a part), centre line and
    construction in the side panel. Arrows, springs and dampers are made with
@@ -102,7 +103,7 @@ of mass.
    the next one. (Selecting the geometry first works too.) The small green
    markers of the constraints show only for what is selected, so the drawing
    stays clean; the side panel lists all of them when nothing is selected.
-3. **Dimension.** Press D, click a line (or two points, two lines, a circle),
+3. **Dimension.** Press D (Dimension, first among the constraints), click a line (or two points, two lines, a circle),
    then middle-click where the dimension should go and type the value. For a
    slanted line the position picks the kind: beside it measures its length,
    above or below the horizontal distance, left or right the vertical one.
@@ -192,8 +193,10 @@ of mass.
      the side panel sets its size and turns it round. New ones match the
      first of their kind in the sketch.
    - *Torsion spring:* a spiral. Click the joint it is wound about, then
-     where its outer end goes; drag that end to make the spiral larger. The
-     side panel sets how far apart its windings are and which way it winds.
+     where its outer end goes; drag that end to make the spiral larger. Its
+     inner end is held at the centre, marked with a small ring as a pin is.
+     The side panel sets how far apart its windings are and which way it
+     winds.
    - *Torsion damper:* a damper bent round a joint. Click the joint, where
      the rod starts, sweep round and click where the cylinder ends.
    - *Centre of mass:* a circle in quarters with a name (S), on a joint, on a
@@ -392,6 +395,13 @@ a line, an arc or a side of a beam, on the side positive values should go.
 - The diagram stays tied to its plot: change a function on the Plot tab and it
   follows. *Edit this plot*, or a double-click on the diagram, goes there.
   Deleting the plot deletes its diagrams.
+- **At a point.** Clicking a point instead draws the plot's curves given by a
+  parameter with that point as their origin: a path, an orbit, a circle about
+  a joint. When the plot has nothing but such curves, a click anywhere makes a
+  point there. The side panel sets how long one unit of the plot is in the
+  drawing and how far it is turned; dragging the curves round the point turns
+  them too. Moving the point moves them, and functions of x are left to
+  diagrams along members.
 - Unlike the plot itself, a diagram is not cut off at the plot's vertical
   range. In the SVG and the TikZ it is part of the figure, drawn through
   points like the rest of it: no pgfplots is needed for the sketch.

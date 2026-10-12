@@ -1,10 +1,11 @@
 // Diagrams: a plot laid along a member of the sketch, the way an internal
-// force diagram is drawn. This is the geometry of it, in model units: what
-// the diagram runs along, and where the points of the plot's functions land.
+// force diagram is drawn, or the curves of a plot given by a parameter drawn
+// about a point. This is the geometry of them, in model units: what a diagram
+// runs along, and where the points of the plot's curves land.
 
-import { type Sketch, type Diagram, type Plot, type PlotCurve, type Id, entity, point, curves, arcAngles, arcRadius } from "./model";
+import { type Sketch, type Diagram, type Trace, type Plot, type PlotCurve, type Id, entity, point, curves, arcAngles, arcRadius } from "./model";
 import { type V, add, sub, mul, norm, perp, dist, polar, angleOf, TWO_PI } from "./geom";
-import { type Stretch, stretches, runs, uprights } from "./plotmath";
+import { type Stretch, stretches, runs, uprights, paramStretches, paramRuns } from "./plotmath";
 import { type Expr, evaluate } from "./expr";
 
 /**
@@ -262,4 +263,42 @@ export function diagramShape(sk: Sketch, d: Diagram): DiagramShape | null {
     }
   });
   return { plot, base, parts, ends: [base.at(d.t0), base.at(d.t1)], peak: top };
+}
+
+// ---- a plot at a point --------------------------------------------------------------------
+
+/** How far out of the plot's own range a curve given by a parameter is still drawn at a point: as far as it goes. */
+const ANYWHERE = Infinity;
+
+/** One curve of a plot as it is drawn about a point: its runs of points, in model units. */
+export interface TracePart {
+  curve: PlotCurve;
+  runs: V[][];
+}
+
+/**
+ * The curves given by a parameter of the plot a trace draws, with its point
+ * as their origin, turned by its angle and enlarged by its scale. Null while
+ * the plot or the point is missing. Functions of x are left to diagrams.
+ */
+export function traceShape(sk: Sketch, s: Trace): TracePart[] | null {
+  const plot = plotOf(sk, s);
+  const o = entity(sk, s.at);
+  if (!plot || !o || o.type !== "point") return null;
+  const c = Math.cos(s.angle ?? 0), k = Math.sin(s.angle ?? 0);
+  const place = ([x, y]: V): V => [o.x + s.scale * (x * c - y * k), o.y + s.scale * (x * k + y * c)];
+  return plot.curves.filter((curve) => curve.param).map((curve) => ({
+    curve,
+    runs: paramStretches(plot, curve).flatMap((st) => paramRuns(plot, st, ANYWHERE)).map((run) => run.map(place)),
+  }));
+}
+
+/** How far the curves of a plot given by a parameter reach from its origin, in its own units; 0 when it has none. */
+export function traceReach(plot: Plot): number {
+  let reach = 0;
+  for (const curve of plot.curves) {
+    if (!curve.param) continue;
+    for (const st of paramStretches(plot, curve)) for (const run of paramRuns(plot, st, ANYWHERE)) for (const [x, y] of run) reach = Math.max(reach, Math.hypot(x, y));
+  }
+  return reach;
 }

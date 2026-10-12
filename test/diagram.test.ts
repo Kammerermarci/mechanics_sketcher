@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   emptySketch, addPoint, addLine, addArc, addSymbol, addConstraint, remove, serialize, deserialize,
-  type Sketch, type Plot, type Diagram, type Line,
+  type Sketch, type Plot, type Diagram, type Line, type Trace,
 } from "../src/model";
-import { baseline, beamAxis, diagramShape, plotPeak, plotOf } from "../src/diagram";
+import { baseline, beamAxis, diagramShape, plotPeak, plotOf, traceShape, traceReach } from "../src/diagram";
 import { straightBeam, curvedBeam } from "../src/beam";
 import { buildPrims, valueText, tint, type Prim } from "../src/prims";
 import { PLOT } from "../src/plot";
@@ -274,6 +274,64 @@ describe("a diagram in the figure", () => {
     expect(diagramShape(sk, d)).toBeNull();
     expect(of(sk, d.id)).toEqual([]);
     remove(sk, [l.id]);
+    expect(sk.symbols).toEqual([]);
+  });
+});
+
+describe("a plot's parametric curves about a point", () => {
+  /** A point at (2, 1) and a plot with a circle of radius 2 given by a parameter, and a function beside it. */
+  function setupTrace(): { sk: Sketch; at: string; plot: Plot } {
+    const sk = emptySketch();
+    const at = addPoint(sk, 2, 1).id;
+    const plot: Plot = {
+      id: "g1", name: "Orbit", width: 60, height: 40, x: { min: -3, max: 3, label: "x" }, y: { min: -3, max: 3, label: "y" },
+      curves: [
+        { id: "f1", color: RED, param: true, fill: true, pieces: [{ x: "2cos(t)", expr: "2sin(t)", from: 0, to: 2 * Math.PI }] },
+        { id: "f2", color: "#1565c0", pieces: [{ expr: "x" }] },
+      ],
+    };
+    sk.plots = [plot];
+    return { sk, at, plot };
+  }
+
+  it("draws them with the point as their origin, enlarged and turned as it says, and leaves functions of x out", () => {
+    const { sk, at, plot } = setupTrace();
+    expect(traceReach(plot)).toBeCloseTo(2, 9);
+    const t = addSymbol(sk, { type: "trace", plot: "g1", at, scale: 1.5 }) as Trace;
+    const shape = traceShape(sk, t)!;
+    expect(shape.map((p) => p.curve.id)).toEqual(["f1"]);
+    for (const q of shape[0].runs[0]) expect(Math.hypot(q[0] - 2, q[1] - 1)).toBeCloseTo(3, 9);
+    close([shape[0].runs[0][0]], [[5, 1]]);
+    // A quarter turn puts the start of the circle straight above the point.
+    t.angle = Math.PI / 2;
+    close([traceShape(sk, t)![0].runs[0][0]], [[2, 4]]);
+    // It is not cut off where the plot's own range ends.
+    plot.x = { min: 0, max: 1, label: "" };
+    expect(traceShape(sk, t)![0].runs).toHaveLength(1);
+  });
+
+  it("is drawn in the plot's colours, shaded under everything, and goes into the files as paths", () => {
+    const { sk, at, plot } = setupTrace();
+    plot.curves[0].dash = "dashed";
+    const t = addSymbol(sk, { type: "trace", plot: "g1", at, scale: 1 });
+    const all = buildPrims(sk, 10, { editor: false });
+    expect(all[0]).toMatchObject({ k: "region", ref: t.id, color: tint(RED, PLOT.shade), layer: "fill" });
+    const mine = all.filter((p) => p.ref === t.id);
+    expect(mine.map((p) => p.k)).toEqual(["region", "path"]);
+    expect(mine[1]).toMatchObject({ ink: RED, dash: [2, 1.2] });
+    t.plain = true;
+    expect(buildPrims(sk, 10, { editor: false }).some((p) => p.ref === t.id && p.k === "region")).toBe(false);
+    expect(toTikz(sk)!).toContain("\\draw[member, line width=0.8pt, draw={rgb,255:red,211;green,47;blue,47}, dash pattern=on 2mm off 1.2mm]");
+  });
+
+  it("goes with its point and with its plot", () => {
+    const { sk, at } = setupTrace();
+    addSymbol(sk, { type: "trace", plot: "g1", at, scale: 1, angle: 0.5 });
+    expect(deserialize(serialize(sk)).symbols).toEqual(sk.symbols);
+    const raw = JSON.parse(serialize(sk));
+    delete raw.plots;
+    expect(deserialize(JSON.stringify(raw)).symbols).toEqual([]);
+    remove(sk, [at]);
     expect(sk.symbols).toEqual([]);
   });
 });

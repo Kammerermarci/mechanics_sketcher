@@ -146,7 +146,7 @@ a.icon-btn.support:hover { background: #f6dde2; }
   grid-area: ribbon;
   display: flex;
   align-items: stretch;
-  gap: 2px;
+  gap: 1px;
   padding: 5px 10px;
   background: var(--board-hi);
   border-top: 1px solid var(--rule);
@@ -160,7 +160,7 @@ a.icon-btn.support:hover { background: #f6dde2; }
   background: none;
   border-radius: 6px;
   min-width: 48px;
-  padding: 5px 6px 3px;
+  padding: 5px 4px 3px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -191,6 +191,10 @@ a.icon-btn.support:hover { background: #f6dde2; }
 .prim, .tex { color: var(--ink); }
 /* One class each, so the state colours further down win. */
 .prim.free { color: var(--blue); }
+/* Construction lines in colours of their own: pink while they can still move, dark purple once they cannot.
+   No more weighty than the rule above, so the states further down still win. */
+.prim.construction:where(.free) { color: #e0559b; }
+.prim.construction:where(.defined) { color: #5a2d82; }
 /* Solid shapes with a fill colour of their own, such as a datum's dot. The outline stays in the line colour. */
 /* Drawn in a colour of its own, such as a load. Listed before the states below, so they still win. */
 .prim.inked, .tex.inked { color: var(--ink); }

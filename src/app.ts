@@ -36,7 +36,7 @@ import { type ReportKind, composeReport } from "./report";
 import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
 import { type BeamEnds, straightBeam, curvedBeam } from "./beam";
 import { PlotWorkspace } from "./plotwork";
-import { baseline, beamAxis, diagramShape, plotPeak } from "./diagram";
+import { baseline, beamAxis, diagramShape, plotPeak, traceShape, traceReach } from "./diagram";
 import { defaultLook, lookOf, elementLength, springTurns } from "./element";
 
 type DrawTool =
@@ -149,6 +149,7 @@ interface ToolDef {
 }
 
 const TOOLS: ToolDef[] = [
+  { id: "construction", label: "Construction lines", short: "Construction", key: "G", icon: "construction", tab: "sketch", group: -1 },
   { id: "select", label: "Select", key: "Esc", icon: "select", tab: "both", group: 0 },
 
   { id: "line", label: "Line", key: "L", icon: "line", tab: "sketch", group: 1 },
@@ -158,11 +159,11 @@ const TOOLS: ToolDef[] = [
   { id: "point", label: "Point", key: "P", icon: "point", tab: "sketch", group: 1 },
   { id: "beam", label: "Beam", icon: "beam", tab: "sketch", group: 1 },
   { id: "arcbeam", label: "Curved beam", short: "Curved", icon: "arcbeam", tab: "sketch", group: 1 },
-  { id: "construction", label: "Construction lines", short: "Construction", key: "G", icon: "construction", tab: "sketch", group: 1.5 },
   { id: "trim", label: "Trim", key: "X", icon: "trim", tab: "sketch", group: 2 },
   { id: "mirror", label: "Mirror", icon: "mirror", tab: "sketch", group: 2 },
   { id: "shift", label: "Linear pattern", short: "Linear", icon: "shift", tab: "sketch", group: 2 },
   { id: "turn", label: "Circular pattern", short: "Circular", icon: "turn", tab: "sketch", group: 2 },
+  { id: "dimension", label: "Dimension", key: "D", icon: "dimension", tab: "sketch", group: 3, need: "a line, two points, two lines, or a circle" },
   { id: "horizontal", label: "Horizontal", key: "H", icon: "horizontal", tab: "sketch", group: 3, need: "a line, or two points" },
   { id: "vertical", label: "Vertical", key: "V", icon: "vertical", tab: "sketch", group: 3, need: "a line, or two points" },
   { id: "parallel", label: "Parallel", icon: "parallel", tab: "sketch", group: 3, need: "two lines" },
@@ -173,7 +174,6 @@ const TOOLS: ToolDef[] = [
   { id: "tangent", label: "Tangent", key: "T", icon: "tangent", tab: "sketch", group: 3, need: "a line and a circle or arc, or two circles or arcs" },
   { id: "fixed", label: "Fix point", key: "F", icon: "fixed", tab: "sketch", group: 3, need: "a point" },
 
-  { id: "dimension", label: "Dimension", key: "D", icon: "dimension", tab: "annotate", group: 1, need: "a line, two points, two lines, or a circle" },
   { id: "pin", label: "Pin", icon: "pin", tab: "annotate", group: 2 },
   { id: "roller", label: "Roller", icon: "roller", tab: "annotate", group: 2 },
   { id: "wall", label: "Fixed", icon: "wall", tab: "annotate", group: 2 },
@@ -788,7 +788,12 @@ export class App {
       case "load": return `Click a joint, or a spot on a line, to put a force there. Its magnitude, in the side panel, sets its length. ${done}`;
       case "moment": return `Click a joint, or a spot on a line, to put a moment about it. Its magnitude sets its radius. ${done}`;
       case "lineload": return `Click a line, on the side the distributed load should be drawn. ${done}`;
-      case "diagram": return `Click a line, an arc or a side of a beam to lay the plot along it, on the side positive values should go. ${done}`;
+      case "diagram": {
+        const plot = this.diagramPlot();
+        const param = !!plot?.curves.some((c) => c.param), fn = !!plot && this.hasFunctions(plot);
+        if (param && !fn) return `Click the point that is to be the origin of the plot's curves: a joint, or anywhere. ${done}`;
+        return `Click a line, an arc or a side of a beam to lay the plot along it, on the side positive values should go${param ? ", or a point to draw its parametric curves about" : ""}. ${done}`;
+      }
       case "circle": return p ? "Click to set the radius." : `Click the centre. ${done}`;
       case "arc":
       case "arcarrow":
@@ -1652,6 +1657,21 @@ export class App {
     if (tool === "diagram") {
       const plot = this.diagramPlot();
       if (!plot) return this.toast("There is no plot to lay along a member yet. Make one on the Plot tab first.");
+      // The curves of the plot given by a parameter go about a point, which is their origin: one clicked,
+      // or, when the plot has nothing else to draw, one made where the click was.
+      if (plot.curves.some((c) => c.param)) {
+        const snap = this.snapAt(sp);
+        if (snap.pointId || !this.hasFunctions(plot)) {
+          const autos: ConstraintDraft[] = [];
+          const at = this.materialize(snap, autos, true);
+          // The furthest point of the curves comes out about 70 pixels from the origin; from then on the size is its own.
+          const reach = traceReach(plot);
+          const t = addSymbol(this.sk, { type: "trace", plot: plot.id, at, scale: reach > 0 ? 70 / this.view.scale / reach : 1 });
+          this.finishDrawing(autos);
+          this.selection = new Set([t.id]);
+          return;
+        }
+      }
       // The nearest line or arc, clicked on or beside: the side of it says where positive values go.
       let on: Id | null = null, nearest = 40 / this.view.scale;
       for (const c of curves(this.sk)) {
@@ -1746,6 +1766,8 @@ export class App {
 
   /** Where a drag of a symbol starts from: its position, or for a balloon its offset. */
   private symbolDragOrigin(s: Sym): V {
+    // A plot about a point is turned by dragging it: how it was turned when the drag began.
+    if (s.type === "trace") return [s.angle ?? 0, 0];
     return s.type === "balloon" || s.type === "datum" ? [s.dx, s.dy] : symbolPosition(this.sk, s);
   }
 
@@ -1757,6 +1779,11 @@ export class App {
     if (!f) return null;
     const near = (q: V) => dist(toScreen(this.view, [q[0] / mm, q[1] / mm]), sp) < 10;
     return near(f.e0) ? 0 : near(f.e1) ? 1 : null;
+  }
+
+  /** Whether a plot has a function of x with something typed: what a diagram lays along a member. */
+  private hasFunctions(plot: Plot): boolean {
+    return plot.curves.some((c) => !c.param && c.pieces.some((x) => x.expr.trim()));
   }
 
   /** The plot the Diagram tool is set to lay along a member. */
@@ -1795,7 +1822,7 @@ export class App {
 
   /** Opens the plot of a diagram in the Plot workspace. */
   private editPlotOf(s: Sym | null): void {
-    if (s?.type !== "diagram") return;
+    if (s?.type !== "diagram" && s?.type !== "trace") return;
     this.plots.show(s.plot);
     this.setTab("plot");
   }
@@ -1859,6 +1886,15 @@ export class App {
     } else if (s.type === "lineload") {
       // Pulled across its line, it changes side.
       if (s.angle === undefined) s.side = sideOfCurve(this.sk, s.on, m) >= 0 ? 1 : -1;
+    } else if (s.type === "trace") {
+      // Turned about its point by as much as the pointer has gone round it.
+      const centre = symbolPosition(this.sk, s);
+      if (dist(m, centre) * this.view.scale < 6 || dist(d.startModel, centre) * this.view.scale < 6) return;
+      const turned = angleOf(sub(m, centre)) - angleOf(sub(d.startModel, centre));
+      const a = snapAngle(d.origin[0] + turned);
+      const tidy = Math.abs(wrap(a + 1e-12) - 1e-12) < 1e-9 ? 0 : wrap(a);
+      if (tidy) s.angle = tidy;
+      else delete s.angle;
     } else if (s.type === "support" || s.type === "centermark") {
       const centre = symbolPosition(this.sk, s);
       if (dist(m, centre) * this.view.scale < 6) return;
@@ -2283,7 +2319,8 @@ export class App {
     const hit = this.hitTest(this.screenPos(ev));
     if (!hit) return;
     // On a diagram it opens the plot the diagram draws.
-    if (symbol(this.sk, hit.id)?.type === "diagram") return this.editPlotOf(symbol(this.sk, hit.id) ?? null);
+    const shown = symbol(this.sk, hit.id);
+    if (shown?.type === "diagram" || shown?.type === "trace") return this.editPlotOf(shown);
     // A double-click opens the text of what was hit, also where there is no text yet to click on.
     let target: EditTarget | null = null;
     if (hit.kind === "dim") target = { kind: "dim", id: hit.id };
@@ -3144,6 +3181,7 @@ export class App {
         if (s.type === "note") grow(b, [s.x, s.y]);
         if (isLoad(s)) for (const q of loadReach(this.sk, s)) grow(b, q);
         if (s.type === "diagram") for (const part of diagramShape(this.sk, s)?.parts ?? []) for (const line of part.lines) for (const q of line) grow(b, q);
+        if (s.type === "trace") for (const part of traceShape(this.sk, s) ?? []) for (const run of part.runs) for (const q of run) grow(b, q);
       }
       if (boxIsEmpty(b) || (b.x1 - b.x0 < 1e-9 && b.y1 - b.y0 < 1e-9)) {
         this.view.cx = 0;
@@ -3253,9 +3291,9 @@ export class App {
     }
     const tools = TOOLS.filter((t) => t.tab === this.tab || t.tab === "both");
     let html = "";
-    let group = -1;
+    let group: number | null = null;
     for (const t of tools) {
-      if (t.group !== group && group !== -1) html += `<span class="ribbon-rule"></span>`;
+      if (group !== null && t.group !== group) html += `<span class="ribbon-rule"></span>`;
       group = t.group;
       const attr = t.id === "shift" || t.id === "construction" ? `data-act="${t.id}"` : isCommand(t.id) ? `data-cmd="${t.id}"` : `data-tool="${t.id}"`;
       html += `<button type="button" class="tool" ${attr} aria-label="${t.label}" title="${t.label}${t.key ? ` (${t.key})` : ""}">${icon(t.icon, 22)}<span>${t.short ?? t.label}</span></button>`;
@@ -3489,6 +3527,21 @@ export class App {
         html += `<button type="button" class="plain" data-act="flip">Move to the other side</button>`;
         break;
       }
+      case "trace": {
+        const plots = this.sk.plots ?? [];
+        const plot = plots.find((p) => p.id === s.plot);
+        const plain = (v: number) => formatNumber(Number(v.toPrecision(6)));
+        html += `<h2>Diagram at a point</h2>`;
+        html += `<label class="field"><span>Plot</span><select data-field="sym-plot">${plots.map((p) =>
+          `<option value="${p.id}"${p.id === s.plot ? " selected" : ""}>${esc(p.name || "Plot")}</option>`).join("")}</select>` +
+          `<small>Its curves given by a parameter are drawn with the point as their origin, in the plot's colours and line styles.${plot && !plot.curves.some((c) => c.param) ? " This plot has none." : ""}</small></label>`;
+        html += `<button type="button" class="plain" data-act="edit-plot">Edit this plot</button>`;
+        html += number("One unit of the plot is", "sym-unit", plain(s.scale), "This long in the drawing.");
+        html += number("Rotation (degrees)", "sym-angle", degrees(s.angle ?? 0), "Of the plot's x axis, anticlockwise. Dragging the curves round the point turns them too.");
+        if (plot?.curves.some((c) => c.param && c.fill)) html += `<label class="check"><input data-field="sym-shade" type="checkbox"${s.plain ? "" : " checked"}><span>Shade what the plot shades</span></label>`;
+        html += `<p class="muted note-block">Moving the point moves the curves with it.</p>`;
+        break;
+      }
       case "load":
       case "lineload":
       case "moment": {
@@ -3592,6 +3645,9 @@ export class App {
           `<option value="${p.id}"${p.id === chosen?.id ? " selected" : ""}>${esc(p.name || "Plot")}</option>`).join("")}</select></label>`;
         html += `<ol class="steps"><li>Click a line, an arc or a side of a beam, on the side positive values should go.</li>` +
           `<li>Drag the handle at the peak to set the height, and the handles at the ends to cover only part of the member.</li></ol>`;
+        if (chosen?.curves.some((c) => c.param)) {
+          html += `<p class="muted note-block">${esc(chosen.name || "This plot")} has curves given by a parameter: click a point, and they are drawn with it as their origin.${this.hasFunctions(chosen) ? "" : " A click anywhere else makes a point there."}</p>`;
+        }
         html += `<p class="muted note-block">${plots.length > 1 ? "" : `It draws ${esc(chosen?.name || "the plot")}. `}The plot's range is stretched over the member. On a side of a beam the diagram runs along the middle of the beam.</p>`;
       }
     } else if (isCopyTool(this.tool)) {
@@ -3723,7 +3779,8 @@ export class App {
       } else {
         html += `<ol class="steps"><li><b>Draw.</b> On the Sketch tab, place joints with the Line tool; exact positions do not matter yet.</li>` +
           `<li><b>Constrain.</b> Press a constraint, then click the geometry it applies to. Curves turn black once nothing about them can move.</li>` +
-          `<li><b>Annotate.</b> On the Annotate tab, press Dimension, click a line, middle-click where the dimension goes and type its length. Supports, balloons, fills and hatching are there too.</li></ol>`;
+          `<li><b>Dimension.</b> Press Dimension, the first of the constraints, click a line, middle-click where the dimension goes and type its length.</li>` +
+          `<li><b>Annotate.</b> Supports, loads, balloons, fills and hatching are on the Annotate tab.</li></ol>`;
       }
     }
     this.panel.innerHTML = html;
@@ -4227,7 +4284,7 @@ export class App {
       if (!s) return;
       const v = parseNumber(input.value);
       const label = input.value.trim().replace(/^\$+|\$+$/g, "");
-      if (field === "sym-angle" && (s.type === "support" || s.type === "frame" || s.type === "centermark" || s.type === "load" || s.type === "moment")) {
+      if (field === "sym-angle" && (s.type === "support" || s.type === "frame" || s.type === "centermark" || s.type === "load" || s.type === "moment" || s.type === "trace")) {
         if (!Number.isFinite(v)) { this.toast("Type the rotation as a number of degrees."); return this.touch(); }
         s.angle = v * DEG;
       } else if (s.type === "centermark" && field === "sym-scale") {
@@ -4268,6 +4325,18 @@ export class App {
         if (!Number.isFinite(v) || v < 0) { this.toast("A magnitude must be a number, zero or more."); return this.touch(); }
         if (field === "sym-q1") s.q1 = v;
         else s.q2 = v;
+      } else if (s.type === "trace" && field === "sym-plot") {
+        // Another plot, as large as the one before it.
+        const reachOf = (id: Id) => { const p = this.sk.plots?.find((x) => x.id === id); return p ? traceReach(p) : 0; };
+        const before = reachOf(s.plot), after = reachOf(input.value);
+        s.plot = input.value;
+        if (before > 0 && after > 0) s.scale *= before / after;
+      } else if (s.type === "trace" && field === "sym-unit") {
+        if (!(v > 0)) { this.toast("The size is a number above zero: how long one unit of the plot is in the drawing."); return this.touch(); }
+        s.scale = v;
+      } else if (s.type === "trace" && field === "sym-shade") {
+        if (input.checked) delete s.plain;
+        else s.plain = true;
       } else if (s.type === "diagram" && field === "sym-plot") {
         // Another plot, drawn as high as the one before it.
         const peakOf = (id: Id) => { const p = this.sk.plots?.find((x) => x.id === id); return p ? plotPeak(p) : 0; };

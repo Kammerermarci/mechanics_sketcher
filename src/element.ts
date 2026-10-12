@@ -89,7 +89,11 @@ export function spiralTurns(radius: number, look: ElementLook): number {
 /** Where a spiral starts: half a pitch from its centre, or closer when it is small. */
 const spiralInner = (radius: number, look: ElementLook): number => Math.min(look.pitch / 2, radius * 0.3);
 
-/** A spiral spring about `centre` whose outer end is at `end`: counter-clockwise on its way out unless flipped. */
+/**
+ * A spiral spring about `centre` whose outer end is at `end`: counter-clockwise
+ * on its way out unless flipped. Its inner end is tied to the centre by a short
+ * straight piece, so that it is held there, as on a shaft.
+ */
 function spiral(centre: V, end: V, look: ElementLook): V[][] {
   const radius = dist(centre, end);
   if (radius < 1e-12) return [];
@@ -97,12 +101,12 @@ function spiral(centre: V, end: V, look: ElementLook): V[][] {
   const turns = spiralTurns(radius, look);
   const last = angleOf(sub(end, centre)), way = look.flip ? -1 : 1;
   const n = Math.max(24, Math.ceil(turns * WINDING_POINTS));
-  const run: V[] = [];
+  const run: V[] = [centre];
   for (let i = 0; i <= n; i++) {
     const u = i / n;
     run.push(polar(centre, inner + (radius - inner) * u, last - way * 2 * Math.PI * turns * (1 - u)));
   }
-  run[n] = end;
+  run[n + 1] = end;
   return [run];
 }
 

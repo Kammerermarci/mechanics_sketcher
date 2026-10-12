@@ -881,7 +881,7 @@ export class PlotWorkspace {
         sk.plots = this.plots().filter((x) => x !== p);
         if (!sk.plots.length) delete sk.plots;
         // The diagrams that laid it along a member have nothing to draw any more.
-        sk.symbols = sk.symbols.filter((x) => x.type !== "diagram" || x.plot !== p.id);
+        sk.symbols = sk.symbols.filter((x) => (x.type !== "diagram" && x.type !== "trace") || x.plot !== p.id);
         this.current = null;
         this.sync();
         this.host.commit();

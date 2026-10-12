@@ -5,7 +5,7 @@
 import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
   type Arc, type Line, type Curve, type Sym, type Support, type Frame, type CenterMark, type Balloon,
-  type Fill as FillSym, type Hatch, type Datum, type Note, type Load, type LineLoad, type Moment, type AnyLoad, type LoadKind, type Diagram,
+  type Fill as FillSym, type Hatch, type Datum, type Note, type Load, type LineLoad, type Moment, type AnyLoad, type LoadKind, type Diagram, type Trace,
   entity, point, arcRadius, arcAngles, isDimension, isNamed, geometryBox, geometryExtent,
 } from "./model";
 import { elementPaths, elementReach } from "./element";
@@ -14,7 +14,7 @@ import {
   distToSegment, intersectLines, TWO_PI,
 } from "./geom";
 import { texEngine } from "./tex";
-import { baseline, diagramShape } from "./diagram";
+import { baseline, diagramShape, traceShape } from "./diagram";
 import { PLOT, PLOT_DASH } from "./plotmath";
 
 /** Sizes of annotations in annotation mm: what they measure on paper at a dimension size of 100%. 1 pt = 0.3515 mm. */
@@ -473,7 +473,8 @@ export function balloonAnchor(sk: Sketch, b: Balloon): V {
 export function symbolPosition(sk: Sketch, s: Sym): V {
   switch (s.type) {
     case "support":
-    case "datum": {
+    case "datum":
+    case "trace": {
       const p = point(sk, s.at);
       return [p.x, p.y];
     }
@@ -855,6 +856,30 @@ function diagramPrims(sk: Sketch, s: Diagram, mm: number): Prim[] {
   return out;
 }
 
+/** The inside of each shaded curve of a plot drawn about a point: under everything, as a diagram's shading is. */
+function traceShade(sk: Sketch, s: Trace, mm: number): Prim[] {
+  if (s.plain) return [];
+  const out: Prim[] = [];
+  for (const part of traceShape(sk, s) ?? []) {
+    if (!part.curve.fill) continue;
+    for (const run of part.runs) {
+      const [start, ...rest] = run.map((q) => mul(q, mm));
+      out.push({ k: "region", layer: "fill", ref: s.id, color: tint(part.curve.color, PLOT.shade), outlines: [{ kind: "path", start, segs: [...rest, start].map((to) => ({ k: "L" as const, to })) }] });
+    }
+  }
+  return out;
+}
+
+/** The curves of a plot given by a parameter, about a point: in the colours and line styles of the plot. */
+function tracePrims(sk: Sketch, s: Trace, mm: number): Prim[] {
+  const out: Prim[] = [];
+  for (const { curve: c, runs } of traceShape(sk, s) ?? []) {
+    const line = { ref: s.id, layer: "sym" as const, k: "path" as const, stroke: "member" as const, width: (c.weight ?? PLOT.weight) * PT_MM, ink: c.color, ...(c.dash ? { dash: PLOT_DASH[c.dash] } : {}) };
+    for (const run of runs) out.push({ ...line, pts: run.map((q) => mul(q, mm)) });
+  }
+  return out;
+}
+
 function loadPrims(sk: Sketch, s: AnyLoad, mm: number): Prim[] {
   const base = { ref: s.id, layer: "sym" as const, ink: s.color };
   const out: Prim[] = [];
@@ -1009,6 +1034,7 @@ export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
     case "moment":
       return loadPrims(sk, s, mm);
     case "diagram": return diagramPrims(sk, s, mm);
+    case "trace": return tracePrims(sk, s, mm);
   }
 }
 
@@ -1069,6 +1095,7 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
     if (sym.type === "fill") out.push(...symbolPrims(sk, sym, mm));
     else if (sym.type === "lineload") out.push(...loadShade(sk, sym, mm));
     else if (sym.type === "diagram") out.push(...diagramShade(sk, sym, mm));
+    else if (sym.type === "trace") out.push(...traceShade(sk, sym, mm));
   }
   for (const e of sk.entities) {
     if (e.type === "point") continue;
@@ -1084,6 +1111,10 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
     if (e.type !== "circle" && e.element && !e.construction) {
       // A spring or a damper: drawn in its place, from one end to the other.
       for (const run of elementPaths(sk, e)) out.push({ ...base, k: "path", pts: run.map((q): V => [q[0] * mm, q[1] * mm]) });
+      // A spiral spring is held at its centre: a small ring there, as on a pin, is where it is attached.
+      if (e.type === "line" && e.element === "spiral") {
+        out.push({ ...base, k: "circle", c: P(sk, e.p1, mm), r: PAPER.hingeRadius, fill: "paper", part: "hub" });
+      }
       name();
       continue;
     }

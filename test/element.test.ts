@@ -99,18 +99,21 @@ describe("a spiral spring", () => {
   it("is wound about the start of its line and ends at the other end", () => {
     const { sk, l } = between(6, "spiral", { across: 1, pitch: 2 });
     const [run] = elementPaths(sk, l);
-    // It starts a pitch's half from the centre, and its windings are a pitch apart: (6 - 1) / 2 of them.
+    // It is tied to the centre, starts a pitch's half from it, and its windings are a pitch apart: (6 - 1) / 2 of them.
     expect(spiralTurns(6, l.look!)).toBeCloseTo(2.5);
-    expect(Math.hypot(...run[0])).toBeCloseTo(1);
+    expect(run[0]).toEqual([0, 0]);
+    expect(Math.hypot(...run[1])).toBeCloseTo(1);
     expect(run[run.length - 1]).toEqual([6, 0]);
     // Further out all the way, and counter-clockwise.
-    for (let i = 1; i < run.length; i++) {
+    for (let i = 2; i < run.length; i++) {
       expect(Math.hypot(...run[i])).toBeGreaterThan(Math.hypot(...run[i - 1]));
       expect(run[i - 1][0] * run[i][1] - run[i - 1][1] * run[i][0]).toBeGreaterThan(0);
     }
     l.look!.flip = true;
     const [back] = elementPaths(sk, l);
-    expect(back[0][0] * back[1][1] - back[0][1] * back[1][0]).toBeLessThan(0);
+    expect(back[1][0] * back[2][1] - back[1][1] * back[2][0]).toBeLessThan(0);
+    // In the figure it is held at its centre by a small ring, as a pin is.
+    expect(of(sk, l.id).find((p) => p.part === "hub")).toMatchObject({ k: "circle", c: [0, 0], r: PAPER.hingeRadius, fill: "paper" });
     // Its name is measured from its centre, and it has no width to clear.
     expect(elementReach(sk, l)).toBe(0);
   });
@@ -123,7 +126,7 @@ describe("a spiral spring", () => {
     const [run] = elementPaths(sk, l);
     expect(run.length).toBeGreaterThanOrEqual(7.5 * 120);
     // No two points of it are further apart than a few degrees of its outermost winding.
-    for (let i = 1; i < run.length; i++) expect(Math.hypot(run[i][0] - run[i - 1][0], run[i][1] - run[i - 1][1])).toBeLessThan(8 * (Math.PI / 60) * 1.01);
+    for (let i = 2; i < run.length; i++) expect(Math.hypot(run[i][0] - run[i - 1][0], run[i][1] - run[i - 1][1])).toBeLessThan(8 * (Math.PI / 60) * 1.01);
   });
 });
 

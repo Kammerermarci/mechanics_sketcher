@@ -183,8 +183,8 @@ export function paramStretches(plot: Plot, curve: PlotCurve): ParamStretch[] {
  * of the parameter where either formula has no value, or where the curve is
  * more than the size of the plot outside it, ends a run.
  */
-export function paramRuns(plot: Plot, s: ParamStretch): V[][] {
-  const [xlo, xhi] = restrictX(plot), [ylo, yhi] = restrictY(plot);
+export function paramRuns(plot: Plot, s: ParamStretch, margin = 1): V[][] {
+  const [xlo, xhi] = restrictX(plot, margin), [ylo, yhi] = restrictY(plot, margin);
   const out: V[][] = [];
   let run: V[] = [];
   for (let i = 0; i < s.samples; i++) {
