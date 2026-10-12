@@ -35,8 +35,14 @@ function planegcsWasm(): Plugin {
 function betaPage(): Plugin {
   return {
     name: "beta-page",
-    transformIndexHtml: (html) =>
-      process.env.VITE_CHANNEL === "beta" ? html.replace("<head>", `<head>\n<meta name="robots" content="noindex">`) : html,
+    // Its icon has a little b in the corner, so its tab is told apart from the released app's.
+    transformIndexHtml: {
+      order: "post",
+      handler: (html) =>
+        process.env.VITE_CHANNEL === "beta"
+          ? html.replace("<head>", `<head>\n<meta name="robots" content="noindex">`).replace(/(<link rel="icon" href="[^"]*?)icon\.svg"/, `$1icon-beta.svg"`)
+          : html,
+    },
   };
 }
 
