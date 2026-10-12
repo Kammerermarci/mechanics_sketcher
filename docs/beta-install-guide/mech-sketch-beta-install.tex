@@ -56,8 +56,8 @@
   \small
   \begin{itemize}[leftmargin=12pt, itemsep=1pt, topsep=0pt, label={\color{accent}\textbullet}]
     \item An app called \textbf{Mech Sketch beta}, with the orange \textbf{b} on its icon, in its own window, on the desktop and in the Start menu.
-    \item It runs beside the released app: both can be open at the same time, and installing the beta changes nothing about the released one.
-    \item The beta keeps its own sketch. The first time it opens it starts from the released app's sketch; after that, work in one never shows up in the other.
+    \item It runs beside the released app; installing it changes nothing about the released one.
+    \item It keeps its own sketch: work in one never shows up in the other.
   \end{itemize}
 \end{panel}
 
@@ -72,13 +72,14 @@
   \step{2} & \textbf{Load the newest version:} press \key{Ctrl}\,+\,\key{Shift}\,+\,\key{R} \;{\color{ink2}\small(\key{Cmd}\,+\,\key{Shift}\,+\,\key{R} on a Mac).}\\[5pt]
   \step{3} & \textbf{Check that it is the beta:} the orange \textbf{beta} tag is beside the name, top left.\par\vspace{4pt}
             \includegraphics[height=7.2mm]{header-beta.png}\\[5pt]
-  \step{4} & \textbf{Install it.} Click the \textbf{install icon} at the right end of the address bar, then \menu{Install}.\par\vspace{3pt}
-            {\small If there is no install icon, for example because the address bar offers \emph{Open in Mech Sketch} for the released app instead, use the browser's menu:}\par\vspace{3pt}
+  \step{4} & \textbf{Install it.} Click the \textbf{install icon} at the right end of the address bar, then \menu{Install}. Or use the browser's menu:\par\vspace{3pt}
             \begin{tabular}{@{}ll@{}}
               \small Chrome & \small \vdotsbtn\enspace›\, \menu{Cast, save, and share} \,›\, \menu{Install page as app…}\\
               \small Edge & \small \hdotsbtn\enspace›\, \menu{Apps} \,›\, \menu{Install this site as an app}\\
-            \end{tabular}\par\vspace{3pt}
-            {\small The name is filled in as \emph{Mech Sketch beta}. Keep it and confirm.}\\[5pt]
+            \end{tabular}\par\vspace{4pt}
+            \begin{tcolorbox}[enhanced, colback=white, colframe=accent!55, boxrule=0.6pt, arc=3pt, left=6pt, right=6pt, top=4pt, bottom=4pt, boxsep=0pt, before upper={\raggedright\small}]
+              \textbf{Released app already installed?} Then Chrome offers only \emph{Open in Mech Sketch} instead of installing. Use\enspace\vdotsbtn\enspace›\, \menu{Cast, save, and share} \,›\, \menu{Create shortcut…}, name it \textbf{Mech Sketch beta}, tick \menu{Open as window} and choose \menu{Create}.
+            \end{tcolorbox}\\[5pt]
   \step{5} & \textbf{Done.} The beta opens in its own window. Next time, start it from its icon on the desktop or in the Start menu.\par
             {\color{ink2}\small No desktop icon? In Chrome, open \texttt{chrome://apps}, right-click \emph{Mech Sketch beta} and choose \menu{Create shortcuts…}}\\
 \end{tabularx}
@@ -92,7 +93,7 @@
     \head{Keeping it up to date}
     The beta updates itself: each time it starts online, it loads the newest version that has been published. If something looks out of date, press \key{Ctrl}\,+\,\key{Shift}\,+\,\key{R} in its window.\par\vspace{4pt}
     To see which version you have, open \textbf{View settings} (the sliders, top right). The last line says when it was built.\par\vspace{5pt}
-    \centering\includegraphics[width=0.55\linewidth]{view-settings.png}
+    \centering\includegraphics[width=0.5\linewidth]{view-settings.png}
   \end{tcolorbox}
   \begin{tcolorbox}
     \head{Sketches and files}
