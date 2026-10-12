@@ -676,3 +676,13 @@ dialog.welcome h2 { font-size: 21px; margin-bottom: 6px; }
 }
 #plot-empty .primary:hover { background: #2a3630; }
 .beta { margin-left: 4px; padding: 1px 6px; border-radius: 9px; background: var(--sel); color: #fff; font-size: 11px; font-weight: 600; letter-spacing: 0.03em; vertical-align: 2px; }
+
+/* A field that takes TeX shows it typeset while it is not being typed in: what was typed is hidden over it. */
+input.tex-shown:not(:focus) {
+  color: transparent;
+  background-image: var(--tex);
+  background-repeat: no-repeat;
+  background-position: 8px center;
+}
+.fn-title.typeset { font-family: inherit; }
+.tex-inline { overflow: visible; }

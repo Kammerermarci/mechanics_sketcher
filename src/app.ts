@@ -31,6 +31,7 @@ import { type TrimPlan, planTrim, applyTrim, strokeHits } from "./trim";
 import { type CopyResult, PATTERN_MAX, mirrorCopy, linearCopy, circularCopy, nextDatumName } from "./pattern";
 import { toSvg, toTikz } from "./export";
 import { icon } from "./icons";
+import { showTexFields } from "./texfield";
 import { BETA, EXPORT_WAIT_SECONDS, REPORT_EMAIL, SUPPORT_URL } from "./config";
 import { type ReportKind, composeReport } from "./report";
 import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
@@ -3432,8 +3433,9 @@ export class App {
   /** `extra` goes in above the Delete button. */
   private symbolPanel(s: Sym, extra = ""): string {
     const degrees = (angle: number) => formatNumber(Number((angle / DEG).toFixed(2)));
-    const text = (label: string, field: string, value: string, note = "") =>
-      `<label class="field"><span>${label}</span><input data-field="${field}" type="text" spellcheck="false" value="${esc(value)}">${note ? `<small>${note}</small>` : ""}</label>`;
+    /** A field of text; `tex` says it takes TeX math, which shows typeset while it is not being typed in. */
+    const text = (label: string, field: string, value: string, note = "", tex = false) =>
+      `<label class="field"><span>${label}</span><input data-field="${field}" type="text" spellcheck="false" value="${esc(value)}"${tex ? ` data-tex="math"` : ""}>${note ? `<small>${note}</small>` : ""}</label>`;
     const number = (label: string, field: string, value: string, note = "") =>
       `<label class="field"><span>${label}</span><input data-field="${field}" type="text" inputmode="decimal" value="${value}">${note ? `<small>${note}</small>` : ""}</label>`;
     const slider = (label: string, field: string, min: number, max: number, step: number, value: number, shown: string, note = "", off = false) =>
@@ -3455,8 +3457,8 @@ export class App {
       }
       case "frame":
         html += `<h2>Coordinate axes</h2>`;
-        html += text("First axis label", "sym-xlabel", s.xLabel);
-        html += text("Second axis label", "sym-ylabel", s.yLabel, "Written as TeX math. Leave empty for no label. Clicking a label on the drawing edits it there.");
+        html += text("First axis label", "sym-xlabel", s.xLabel, "", true);
+        html += text("Second axis label", "sym-ylabel", s.yLabel, "Written as TeX math. Leave empty for no label. Clicking a label on the drawing edits it there.", true);
         html += number("First axis length (in the drawing's units)", "sym-xsize", formatNumber(Number(s.xSize.toPrecision(4))));
         html += number("Second axis length (in the drawing's units)", "sym-ysize", formatNumber(Number(s.ySize.toPrecision(4))), "Set a length to 0 to leave that axis out. The lengths belong to the drawing: neither size slider changes them.");
         html += number("Rotation (degrees)", "sym-angle", degrees(s.angle));
@@ -3475,7 +3477,7 @@ export class App {
       case "balloon": {
         const ends: [LeaderEnd, string][] = [["arrow", "Arrow"], ["dot", "Dot"], ["none", "Plain"]];
         html += `<h2>Balloon</h2>`;
-        html += text("Text", "sym-text", s.text, "A part number, or any TeX math. Clicking it on the drawing edits it there.");
+        html += text("Text", "sym-text", s.text, "A part number, or any TeX math. Clicking it on the drawing edits it there.", true);
         html += `<div class="field"><span id="end-label">Leader ends in</span><div class="segmented" role="group" aria-labelledby="end-label">${ends.map(([e, name]) =>
           `<button type="button" data-end="${e}" aria-pressed="${s.end === e}">${name}</button>`).join("")}</div></div>`;
         const frames: [BalloonFrame, string][] = [["circle", "Circle"], ["box", "Box"], ["underline", "Underline"], ["none", "None"]];
@@ -3560,7 +3562,7 @@ export class App {
           `<div class="field"><span id="${id}-label">${label}</span><div class="segmented wrap" role="group" aria-labelledby="${id}-label">${options.map(([attr, name, on]) =>
             `<button type="button" ${attr} aria-pressed="${on}">${name}</button>`).join("")}</div></div>`;
         html += `<h2>${LOAD_TITLE[s.type]}</h2>`;
-        html += text("Name", "sym-label", s.label, "Written as TeX math, such as F_1 or 10\\,\\mathrm{kN}. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.");
+        html += text("Name", "sym-label", s.label, "Written as TeX math, such as F_1 or 10\\,\\mathrm{kN}. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.", true);
         if (s.type === "lineload") {
           html += number("Magnitude at the start", "sym-q1", plain(s.q1));
           html += number("Magnitude at the end", "sym-q2", plain(s.q2), "The start is the end of the line that was drawn first. Two different values give a trapezium; 0 at one end brings the load to a point.");
@@ -3596,7 +3598,7 @@ export class App {
         html += `<h2>${s.mass ? "Centre of mass" : "Datum point"}</h2>`;
         html += `<div class="field"><span id="mark-label">Marked with</span><div class="segmented" role="group" aria-labelledby="mark-label">` +
           `<button type="button" data-mass="0" aria-pressed="${!s.mass}">A dot</button><button type="button" data-mass="1" aria-pressed="${!!s.mass}">Centre of mass</button></div></div>`;
-        html += text("Name", "sym-label", s.label, "Written as TeX math. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.");
+        html += text("Name", "sym-label", s.label, "Written as TeX math. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.", true);
         html += `<div class="field"><span id="colour-label">Colour</span><div class="swatches" role="group" aria-labelledby="colour-label">${DATUM_COLORS.map((c) =>
           `<button type="button" class="swatch" data-color="${c}" aria-pressed="${s.color === c}" aria-label="Colour ${c}" title="${c}" style="background:${c}"></button>`).join("")}` +
           `<label class="swatch custom" title="Another colour"><input data-field="sym-color" type="color" value="${esc(s.color)}" aria-label="Another colour"></label></div></div>`;
@@ -3672,7 +3674,7 @@ export class App {
       const d = cons[0];
       html += `<h2>${RELATION_NAMES[d.type]}</h2>`;
       html += `<label class="field"><span>Value${d.type === "angle" ? " (degrees)" : ""}</span><input data-field="value" type="text" inputmode="decimal" value="${this.shownValue(d)}"></label>`;
-      html += `<label class="field"><span>Label</span><input data-field="label" type="text" spellcheck="false" placeholder="2a, F_1, \\alpha" value="${esc(d.label ?? "")}"><small>Shown in the figure instead of the number. Written as TeX math; spaces you type are kept. Clicking the number on the drawing edits it in place.</small></label>`;
+      html += `<label class="field"><span>Label</span><input data-field="label" type="text" spellcheck="false" placeholder="2a, F_1, \\alpha" value="${esc(d.label ?? "")}" data-tex="math"><small>Shown in the figure instead of the number. Written as TeX math; spaces you type are kept. Clicking the number on the drawing edits it in place.</small></label>`;
       if (d.type === "distance") {
         const modes: [DistanceMode, string][] = [["aligned", "Aligned"], ["horizontal", "Horizontal"], ["vertical", "Vertical"]];
         html += `<div class="field"><span id="mode-label">Measured</span><div class="segmented" role="group" aria-labelledby="mode-label">${modes.map(([m, name]) =>
@@ -3756,14 +3758,14 @@ export class App {
         const only = cs.length === 1 ? cs[0] : undefined;
         const named = isNamed(only) ? only : null;
         if (named?.element) {
-          html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="${ELEMENT_HINT[named.element]}" value="${esc(named.label ?? "")}"><small>Written as TeX math. On the drawing, click the name to type it there and drag it to move it; double-click the ${ELEMENT_TITLE[named.element]} to give it one.</small></label>`;
+          html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="${ELEMENT_HINT[named.element]}" value="${esc(named.label ?? "")}" data-tex="math"><small>Written as TeX math. On the drawing, click the name to type it there and drag it to move it; double-click the ${ELEMENT_TITLE[named.element]} to give it one.</small></label>`;
         }
         const arrow = named?.arrow ? named : null;
         if (arrow) {
           const heads: [ArrowEnds, string][] = arrow.type === "line"
             ? [["end", "End"], ["start", "Start"], ["both", "Both"]]
             : [["end", "Anticlockwise"], ["start", "Clockwise"], ["both", "Both"]];
-          html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="${arrow.type === "line" ? "F, \\vec{v}_0" : "M, \\omega"}" value="${esc(arrow.label ?? "")}"><small>Written as TeX math. On the drawing, click the name to type it there and drag it to move it; double-click the arrow to give it one.</small></label>`;
+          html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="${arrow.type === "line" ? "F, \\vec{v}_0" : "M, \\omega"}" value="${esc(arrow.label ?? "")}" data-tex="math"><small>Written as TeX math. On the drawing, click the name to type it there and drag it to move it; double-click the arrow to give it one.</small></label>`;
           html += `<div class="field"><span id="head-label">${arrow.type === "line" ? "Arrowhead at the" : "Points"}</span><div class="segmented wrap" role="group" aria-labelledby="head-label">${heads.map(([h, name]) =>
             `<button type="button" data-head="${h}" aria-pressed="${arrow.arrow === h}">${name}</button>`).join("")}</div></div>`;
         }
@@ -3791,6 +3793,7 @@ export class App {
       }
     }
     this.panel.innerHTML = html;
+    showTexFields(this.panel);
     if (focusField) this.panel.querySelector<HTMLElement>(`[data-field="${focusField}"]`)?.focus();
   }
 

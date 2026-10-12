@@ -17,6 +17,7 @@ import {
 } from "./plot";
 import { evaluate, degree } from "./expr";
 import { icon } from "./icons";
+import { showTexFields, texInline } from "./texfield";
 
 /** What the workspace needs from the app around it. */
 export interface PlotHost {
@@ -875,6 +876,7 @@ export class PlotWorkspace {
     const had = this.panel.contains(active) ? key(active) : null;
     const caret = had && active && active.type === "text" ? [active.selectionStart, active.selectionEnd] : null;
     this.panel.innerHTML = this.panelHtml();
+    showTexFields(this.panel);
     const want = this.focusNext ?? had;
     this.focusNext = null;
     if (!want) return;
@@ -891,14 +893,14 @@ export class PlotWorkspace {
       return `<h2>Plot</h2><p class="muted">A plot draws functions over a pair of axes: an internal force diagram, a path over time. It is a figure of its own, exported on its own.</p>` +
         `<button type="button" class="plain" data-pact="new-plot">New plot</button>`;
     }
-    const text = (label: string, pf: string, value: string, note = "", placeholder = "") =>
-      `<label class="field"><span>${label}</span><input data-pf="${pf}" type="text" spellcheck="false" autocomplete="off" value="${esc(value)}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ""}>${note ? `<small>${note}</small>` : ""}</label>`;
+    const text = (label: string, pf: string, value: string, note = "", placeholder = "", tex = "") =>
+      `<label class="field"><span>${label}</span><input data-pf="${pf}" type="text" spellcheck="false" autocomplete="off" value="${esc(value)}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ""}${tex ? ` data-tex="${tex}"` : ""}>${note ? `<small>${note}</small>` : ""}</label>`;
     const choice = (label: string, act: string, options: [string, string, boolean][]) =>
       `<div class="field"><span id="pl-${act}">${label}</span><div class="segmented" role="group" aria-labelledby="pl-${act}">${options.map(([v, name, on]) =>
         `<button type="button" data-pact="${act}" data-v="${v}" aria-pressed="${on}">${name}</button>`).join("")}</div></div>`;
     /** Two fields side by side. Plain number fields get the keyboard of numbers; the others take formulas and LaTeX too. */
     const pair = (label: string, a: string, b: string, va: string, vb: string, mid = "to", numbers = false) => {
-      const mode = numbers ? ` inputmode="decimal"` : ` spellcheck="false"`;
+      const mode = numbers ? ` inputmode="decimal"` : ` spellcheck="false" data-tex="formula"`;
       return `<div class="field"><span>${label}</span><span class="pair"><input data-pf="${a}" type="text"${mode} autocomplete="off" value="${esc(va)}" aria-label="${label}: from">` +
         `<span>${mid}</span><input data-pf="${b}" type="text"${mode} autocomplete="off" value="${esc(vb)}" aria-label="${label}: to"></span></div>`;
     };
@@ -918,8 +920,12 @@ export class PlotWorkspace {
       const title = c.param
         ? (c.pieces[0]?.x?.trim() || first ? `(${c.pieces[0]?.x?.trim() || "…"}; ${first ?? "…"})` : `Curve ${i + 1}`)
         : first ? `${first}${c.pieces.length > 1 ? " …" : ""}` : `Function ${i + 1}`;
+      // A formula typed in LaTeX is shown typeset, as its field shows it.
+      const tex = c.param ? `\\left(${c.pieces[0]?.x?.trim() || "\\ldots"};\\ ${first ?? "\\ldots"}\\right)` : first;
+      const typeset = tex && /\\/.test(c.param ? `${c.pieces[0]?.x ?? ""}${first ?? ""}` : tex) ? texInline(tex) : "";
       html += `<section class="fn${open ? " open" : ""}">` +
-        `<button type="button" class="fn-head" data-pact="select-curve" data-id="${c.id}" aria-expanded="${open}"><span class="fn-dot" style="background:${esc(c.color)}"></span><span class="fn-title">${esc(title)}</span></button>`;
+        `<button type="button" class="fn-head" data-pact="select-curve" data-id="${c.id}" aria-expanded="${open}" aria-label="${esc(title)}"><span class="fn-dot" style="background:${esc(c.color)}"></span>` +
+        `<span class="fn-title${typeset ? " typeset" : ""}">${typeset ? `${typeset}${c.pieces.length > 1 && !c.param ? " …" : ""}` : esc(title)}</span></button>`;
       if (open) html += this.curveHtml(p, c);
       html += `</section>`;
     });
@@ -943,10 +949,10 @@ export class PlotWorkspace {
     html += choice("The variable x runs", "flip", [["across", "Across", !p.flip], ["up", "Up", !!p.flip]]);
     // The axis drawn across first, then the one drawn up: x and y swap places in a flipped plot.
     const [across, up] = p.flip ? (["y", "x"] as const) : (["x", "y"] as const);
-    html += text("Name of the horizontal axis", `${across}.label`, p[across].label, "", across);
+    html += text("Name of the horizontal axis", `${across}.label`, p[across].label, "", across, "math");
     html += pair("It runs from", `${across}.min`, `${across}.max`, shownConstant(p[across].min), shownConstant(p[across].max)) +
       `<small class="under">A number, or a formula in LaTeX or plain, such as \\pi, 2\\pi or \\frac{\\pi}{2}. The dashed frame on the graph is this range: drag its handles to pull it out or in, or its edge to move it.</small>`;
-    html += text("Name of the vertical axis", `${up}.label`, p[up].label, "Names are written as TeX math, such as M_h or v\\,[\\mathrm{m/s}]. Leave one empty for none.", up);
+    html += text("Name of the vertical axis", `${up}.label`, p[up].label, "Names are written as TeX math, such as M_h or v\\,[\\mathrm{m/s}]. Leave one empty for none.", up, "math");
     html += pair("It runs from", `${up}.min`, `${up}.max`, shownConstant(p[up].min), shownConstant(p[up].max));
     html += `<div class="btn-row"><button type="button" class="plain" data-pact="fit-y">Fit it to the functions</button>` +
       `<button type="button" class="plain" data-pact="equal" title="The same length on paper for one unit on either axis, so that a circle is round">Same scale on both</button></div>`;
@@ -967,7 +973,7 @@ export class PlotWorkspace {
   /** The fields of a note or a balloon. */
   private markHtml(m: PlotNote | PlotBalloon): string {
     const field = (note: string) =>
-      `<label class="field"><span>Text</span><input data-pf="atext" type="text" spellcheck="false" autocomplete="off" value="${esc(m.text)}"><small>${note}</small></label>`;
+      `<label class="field"><span>Text</span><input data-pf="atext" type="text" spellcheck="false" autocomplete="off" value="${esc(m.text)}"${"end" in m ? ` data-tex="math"` : ""}><small>${note}</small></label>`;
     const choice = (label: string, act: string, options: [string, string, boolean][]) =>
       `<div class="field"><span id="pl-${act}">${label}</span><div class="segmented wrap" role="group" aria-labelledby="pl-${act}">${options.map(([v, name, on]) =>
         `<button type="button" data-pact="${act}" data-v="${v}" aria-pressed="${on}">${name}</button>`).join("")}</div></div>`;
@@ -988,14 +994,14 @@ export class PlotWorkspace {
     const bad = { x: formulaError(piece.x ?? ""), y: formulaError(piece.expr) };
     const err = pieceError(piece, true);
     const formula = (name: string, pf: string, value: string, wrong: string | null, hint: string) =>
-      `<label class="pair formula"><span>${name}</span><input data-pf="${pf}" data-i="0" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" class="${wrong ? "bad" : ""}" value="${esc(value)}" placeholder="${hint}" aria-label="${name.replace(" =", "")}"></label>`;
+      `<label class="pair formula"><span>${name}</span><input data-pf="${pf}" data-i="0" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" data-tex="formula" class="${wrong ? "bad" : ""}" value="${esc(value)}" placeholder="${hint}" aria-label="${name.replace(" =", "")}"></label>`;
     return `<div class="piece">` +
       formula("x(t) =", "xexpr", piece.x ?? "", bad.x, "3cos(t)") +
       formula("y(t) =", "expr", piece.expr, bad.y, "3sin(t)") +
-      `<span class="pair small"><span>t from</span><input data-pf="from" data-i="0" type="text" autocomplete="off" value="${shownConstant(piece.from ?? PARAM_RANGE[0])}" aria-label="The parameter starts at">` +
-      `<span>to</span><input data-pf="to" data-i="0" type="text" autocomplete="off" value="${shownConstant(piece.to ?? PARAM_RANGE[1])}" aria-label="The parameter ends at"></span>` +
+      `<span class="pair small"><span>t from</span><input data-pf="from" data-i="0" type="text" spellcheck="false" autocomplete="off" data-tex="formula" value="${shownConstant(piece.from ?? PARAM_RANGE[0])}" aria-label="The parameter starts at">` +
+      `<span>to</span><input data-pf="to" data-i="0" type="text" spellcheck="false" autocomplete="off" data-tex="formula" value="${shownConstant(piece.to ?? PARAM_RANGE[1])}" aria-label="The parameter ends at"></span>` +
       `<small class="piece-msg${err ? " bad" : ""}">${esc(err ?? "")}</small></div>` +
-      `<p class="muted note-block">The parameter is t. Where it starts and ends can be typed with pi, as 2pi or pi/2. Use + - * / ^ and brackets; sin, cos, tan, exp, ln, lg, sqrt, abs and pi are known. For a circle to come out round, press Same scale on both under Axes.</p>`;
+      `<p class="muted note-block">The parameter is t. Where it starts and ends can be typed with \\pi, as 2\\pi or \\pi/2. Use + - * / ^ and brackets; sin, cos, tan, exp, ln, lg, sqrt, abs and pi are known. For a circle to come out round, press Same scale on both under Axes.</p>`;
   }
 
   private curveHtml(p: Plot, c: PlotCurve): string {
@@ -1005,9 +1011,9 @@ export class PlotWorkspace {
       const err = pieceError(piece);
       const range = c.pieces.length > 1 || piece.from !== undefined || piece.to !== undefined;
       html += `<div class="piece">` +
-        `<input data-pf="expr" data-i="${i}" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" class="${err ? "bad" : ""}" value="${esc(piece.expr)}" placeholder="2x + 1, sin(x), -5x^2/2" aria-label="Formula${c.pieces.length > 1 ? ` of piece ${i + 1}` : ""}">` +
-        (range ? `<span class="pair small"><span>from</span><input data-pf="from" data-i="${i}" type="text" spellcheck="false" autocomplete="off" value="${piece.from === undefined ? "" : shownConstant(piece.from)}" placeholder="${shownConstant(p.x.min)}" aria-label="Piece ${i + 1} starts at">` +
-          `<span>to</span><input data-pf="to" data-i="${i}" type="text" spellcheck="false" autocomplete="off" value="${piece.to === undefined ? "" : shownConstant(piece.to)}" placeholder="${shownConstant(p.x.max)}" aria-label="Piece ${i + 1} ends at">` +
+        `<input data-pf="expr" data-i="${i}" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" data-tex="formula" class="${err ? "bad" : ""}" value="${esc(piece.expr)}" placeholder="2x + 1, sin(x), -5x^2/2" aria-label="Formula${c.pieces.length > 1 ? ` of piece ${i + 1}` : ""}">` +
+        (range ? `<span class="pair small"><span>from</span><input data-pf="from" data-i="${i}" type="text" spellcheck="false" autocomplete="off" data-tex="formula" value="${piece.from === undefined ? "" : shownConstant(piece.from)}" placeholder="${shownConstant(p.x.min)}" aria-label="Piece ${i + 1} starts at">` +
+          `<span>to</span><input data-pf="to" data-i="${i}" type="text" spellcheck="false" autocomplete="off" data-tex="formula" value="${piece.to === undefined ? "" : shownConstant(piece.to)}" placeholder="${shownConstant(p.x.max)}" aria-label="Piece ${i + 1} ends at">` +
           (c.pieces.length > 1 ? `<button type="button" class="icon-btn" data-pact="del-piece" data-i="${i}" aria-label="Remove piece ${i + 1}" title="Remove this piece">${icon("close", 16)}</button>` : "") + `</span>` : "") +
         `<small class="piece-msg${err ? " bad" : ""}">${esc(err ?? "")}</small></div>`;
     });
@@ -1015,7 +1021,7 @@ export class PlotWorkspace {
       html += `<button type="button" class="plain" data-pact="add-piece">${c.pieces.length > 1 ? "Add a piece" : "Split into pieces"}</button>`;
       html += `<p class="muted note-block">The variable is x (or t). Use + - * / ^ and brackets; sin, cos, tan, exp, ln, lg, sqrt, abs and pi are known. A function in pieces has one formula for each stretch of the axis, as an internal force diagram does.</p>`;
     }
-    html += `<label class="field"><span>Name</span><input data-pf="label" type="text" spellcheck="false" autocomplete="off" value="${esc(c.label ?? "")}" placeholder="M(x), v_1">` +
+    html += `<label class="field"><span>Name</span><input data-pf="label" type="text" spellcheck="false" autocomplete="off" value="${esc(c.label ?? "")}" placeholder="M(x), v_1" data-tex="math">` +
       `<small>Written as TeX math and set beside the curve; drag it on the plot to move it.${c.lx !== undefined ? ` <button type="button" class="linkish" data-pact="name-back">Put it back beside the curve</button>` : ""}</small></label>`;
     html += `<div class="field"><span id="pl-colour">Colour</span><div class="swatches" role="group" aria-labelledby="pl-colour">${PLOT_COLORS.map((col) =>
       `<button type="button" class="swatch" data-pact="color" data-v="${col}" aria-pressed="${c.color === col}" aria-label="Colour ${col}" title="${col}" style="background:${col}"></button>`).join("")}` +
