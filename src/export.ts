@@ -196,6 +196,25 @@ export function toTikz(sk: Sketch): string | null {
 /** The same for any list of primitives in annotation mm, enlarged `k` times on paper. */
 export function primsToTikz(prims: Prim[], k = 1): string | null {
   if (!prims.length) return null;
+  const { styles, lines, needArrows, bentTip } = tikzParts(prims, k);
+  // At another dimension size the whole picture is enlarged: the unit, the
+  // widths and tips above, and the text, which TikZ scales node by node.
+  const unit = `${num(k, 3)}mm`;
+  if (k !== 1) styles.unshift(`every node/.style={scale=${num(k, 3)}}`);
+  return (
+    `% Made with Mech Sketch. Needs \\usepackage{tikz}${needArrows ? ` and \\usetikzlibrary{arrows.meta${bentTip ? ", bending" : ""}}` : ""}.\n` +
+    `\\begin{tikzpicture}[x=${unit}, y=${unit}, line cap=round, line join=round,\n  ${styles.join(",\n  ")}]\n` +
+    lines.join("\n") +
+    `\n\\end{tikzpicture}\n`
+  );
+}
+
+/**
+ * Primitives as TikZ: the styles they use, and a line of the picture for
+ * each. The units are left to whoever puts them in a picture: one is a
+ * millimetre at a dimension size of 100%.
+ */
+export function tikzParts(prims: Prim[], k = 1): { styles: string[]; lines: string[]; needArrows: boolean; bentTip: boolean } {
   const used = new Set<StrokeStyle>();
   let needTip = false, needBigTip = false, needSmallTip = false, needArrows = false, needLabel = false;
   /** A tip sits on an arc: the bending library turns it to follow the curve. */
@@ -279,14 +298,5 @@ export function primsToTikz(prims: Prim[], k = 1): string | null {
   if (needTip) tip("tip", k);
   if (needBigTip) tip("bigtip", PAPER.arrowScale * k);
   if (needSmallTip) tip("smalltip", PAPER.loadHead * k);
-  // At another dimension size the whole picture is enlarged: the unit, the
-  // widths and tips above, and the text, which TikZ scales node by node.
-  const unit = `${num(k, 3)}mm`;
-  if (k !== 1) styles.unshift(`every node/.style={scale=${num(k, 3)}}`);
-  return (
-    `% Made with Mech Sketch. Needs \\usepackage{tikz}${needArrows ? ` and \\usetikzlibrary{arrows.meta${bentTip ? ", bending" : ""}}` : ""}.\n` +
-    `\\begin{tikzpicture}[x=${unit}, y=${unit}, line cap=round, line join=round,\n  ${styles.join(",\n  ")}]\n` +
-    lines.join("\n") +
-    `\n\\end{tikzpicture}\n`
-  );
+  return { styles, lines, needArrows, bentTip };
 }

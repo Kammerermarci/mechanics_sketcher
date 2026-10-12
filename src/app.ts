@@ -5,7 +5,7 @@ import {
   type Sketch, type Id, type Point, type Line, type Circle, type Arc, type Curve, type Constraint,
   type ConstraintDraft, type Dimension, type DistanceMode, type Sym, type SupportKind, type LeaderEnd,
   type ArrowEnds, type Datum, type BalloonFrame, type AnyLoad, type LoadKind, type Diagram, type Plot, isLoad, loadKind, geometryExtent,
-  type LineElement, type ArcElement, type ElementLook, isNamed,
+  type LineElement, type ElementLook, isNamed,
   ORIGIN, emptySketch, entity, point, constraint, symbol, symbolRefs, points, curves, curvePoints,
   constraintRefs, isDimension, isLink, isFixed, arcRadius, addPoint, addLine, addCircle, addArc, addConstraint,
   addSupport, addFrame, addSymbol, remove, serialize, deserialize, clone,
@@ -41,10 +41,10 @@ import { defaultLook, lookOf, elementLength, springTurns } from "./element";
 
 type DrawTool =
   | "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam" | "arcbeam"
-  /** A line or an arc drawn as something else: a spring, a damper, a spiral spring, a damper bent round a joint, a coordinate. */
-  | "spring" | "damper" | "spiral" | "arcdamper" | "coordinate";
+  /** A line or an arc drawn as something else: a spring, a damper, a spiral spring, a damper bent round a joint. */
+  | "spring" | "damper" | "spiral" | "arcdamper";
 /** Tools that take two clicks and make a line between them. */
-const LINE_TOOLS = ["line", "centerline", "arrow", "spring", "damper", "spiral", "coordinate"] as const;
+const LINE_TOOLS = ["line", "centerline", "arrow", "spring", "damper", "spiral"] as const;
 type LineTool = (typeof LINE_TOOLS)[number];
 const isLineTool = (t: Tool): t is LineTool => (LINE_TOOLS as readonly Tool[]).includes(t);
 /** Tools that take a centre, a start and a sweep, and make an arc. */
@@ -63,11 +63,13 @@ type Tab = "sketch" | "annotate" | "dynamics" | "plot";
 const TABS: Tab[] = ["sketch", "annotate", "dynamics", "plot"];
 const TAB_NAMES: Record<Tab, string> = { sketch: "Sketch", annotate: "Annotate", dynamics: "Dynamics", plot: "Plot" };
 
-/** How a curve is drawn: a solid or dashed edge, a centre line, an arrow, a spring or a damper, or a helper that is not exported. */
-type LineStyle = "solid" | "dashed" | "centre" | "arrow" | LineElement | "construction";
-const STYLE_NAMES: Record<LineStyle, string> = {
-  solid: "Solid", dashed: "Dashed", centre: "Centre line", arrow: "Arrow", spring: "Spring", damper: "Damper", spiral: "Torsion spring", construction: "Helper",
-};
+/**
+ * How a plain curve is drawn: a solid or dashed edge, a centre line, or a
+ * construction line that is not exported. Arrows, springs and dampers are
+ * made with their own tools and stay what they are.
+ */
+type LineStyle = "solid" | "dashed" | "centre" | "construction";
+const STYLE_NAMES: Record<LineStyle, string> = { solid: "Solid", dashed: "Dashed", centre: "Centre line", construction: "Construction" };
 
 /** Where a click lands once snapping has had its say. */
 interface Snap {
@@ -129,8 +131,11 @@ type EditTarget =
 interface Hit { id: Id; kind: "point" | "glyph" | "dim" | "curve" | "sym" | "fill"; part?: string; text?: boolean }
 
 interface ToolDef {
-  /** "shift" is not a tool to hold: its button repeats the selection in a row there and then. */
-  id: Tool | "shift";
+  /**
+   * "shift" is not a tool to hold: its button repeats the selection in a row there and then.
+   * "construction" is a switch: while it is on, what the drawing tools make is construction lines.
+   */
+  id: Tool | "shift" | "construction";
   label: string;
   /** What the button says, where the full name is too long for it. */
   short?: string;
@@ -153,6 +158,7 @@ const TOOLS: ToolDef[] = [
   { id: "point", label: "Point", key: "P", icon: "point", tab: "sketch", group: 1 },
   { id: "beam", label: "Beam", icon: "beam", tab: "sketch", group: 1 },
   { id: "arcbeam", label: "Curved beam", short: "Curved", icon: "arcbeam", tab: "sketch", group: 1 },
+  { id: "construction", label: "Construction lines", short: "Construction", key: "G", icon: "construction", tab: "sketch", group: 1.5 },
   { id: "trim", label: "Trim", key: "X", icon: "trim", tab: "sketch", group: 2 },
   { id: "mirror", label: "Mirror", icon: "mirror", tab: "sketch", group: 2 },
   { id: "shift", label: "Linear pattern", short: "Linear", icon: "shift", tab: "sketch", group: 2 },
@@ -190,7 +196,6 @@ const TOOLS: ToolDef[] = [
   { id: "spiral", label: "Torsion spring", icon: "spiral", tab: "dynamics", group: 2 },
   { id: "arcdamper", label: "Torsion damper", icon: "arcdamper", tab: "dynamics", group: 2 },
   { id: "mass", label: "Centre of mass", icon: "mass", tab: "dynamics", group: 3 },
-  { id: "coordinate", label: "Coordinate", icon: "coordinate", tab: "dynamics", group: 3 },
 ];
 
 const COMMAND_IDS: Command[] = [
@@ -200,7 +205,7 @@ const isCommand = (t: Tool): t is Command => (COMMAND_IDS as Tool[]).includes(t)
 const isSymbolTool = (t: Tool): t is SymbolTool =>
   ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum", "mass", "note", "load", "lineload", "moment", "diagram"].includes(t);
 const isCopyTool = (t: Tool): t is CopyTool => t === "mirror" || t === "turn";
-const toolDef = (t: Tool | "shift"): ToolDef => TOOLS.find((d) => d.id === t)!;
+const toolDef = (t: Tool | "shift" | "construction"): ToolDef => TOOLS.find((d) => d.id === t)!;
 
 const RELATION_NAMES: Record<string, string> = {
   coincident: "Coincident", pointOn: "Point on curve", midpoint: "Midpoint", horizontal: "Horizontal",
@@ -315,6 +320,8 @@ export class App {
   private freedomStale = true;
   private fillColor = FILL_COLORS[0];
   private beamEnds: BeamEnds = "round";
+  /** Construction is switched on: the lines, circles and arcs drawn are construction lines, left out of the figure. */
+  private constructing = false;
   private tips = new TipBook();
   /** The tip on show, and whether it goes away when its tool is put down. */
   private tip: { id: string; withTool: boolean } | null = null;
@@ -737,6 +744,13 @@ export class App {
   }
 
   private toolHint(): string {
+    const hint = this.toolHintFor();
+    // While Construction is on, the drawing tools say so: what they make is left out of the figure.
+    const drawing = this.tool === "line" || this.tool === "centerline" || this.tool === "circle" || this.tool === "arc";
+    return this.constructing && drawing ? `Construction lines: ${hint}` : hint;
+  }
+
+  private toolHintFor(): string {
     const p = this.pending;
     const done = "Middle-click or Esc when done.";
     switch (this.tool) {
@@ -750,8 +764,6 @@ export class App {
       case "spiral":
         return p ? "Click where the outer end of the spring goes: on the part it holds, or anywhere."
           : `Click the joint the spring is wound about. ${done}`;
-      case "coordinate":
-        return p ? "Click where the coordinate points." : `Click where the coordinate is measured from: it starts there with a short bar. ${done}`;
       case "mass": return `Click where the centre of mass is: a joint, a spot on a curve, or anywhere. ${done}`;
       case "line":
       case "centerline":
@@ -1100,9 +1112,13 @@ export class App {
       const b = this.materialize(snap, autos);
       const line = addLine(this.sk, a, b);
       if (this.tool === "centerline") line.centre = true;
-      if (this.tool === "arrow" || this.tool === "coordinate") {
+      // While Construction is on, what is drawn is a construction line, a centre line included.
+      if (this.constructing && (this.tool === "line" || this.tool === "centerline")) {
+        delete line.centre;
+        line.construction = true;
+      }
+      if (this.tool === "arrow") {
         line.arrow = "end";
-        if (this.tool === "coordinate") line.tail = true;
         this.selection = new Set([line.id]);
       }
       if (this.tool === "spring" || this.tool === "damper" || this.tool === "spiral") {
@@ -1174,6 +1190,7 @@ export class App {
       if (r * this.view.scale < 3) return;
       const c = this.materialize(p.center, autos);
       const circle = addCircle(this.sk, c, r);
+      if (this.constructing) circle.construction = true;
       if (snap.pointId && snap.pointId !== c) autos.push({ type: "pointOn", p: snap.pointId, on: circle.id });
       this.pending = null;
       this.finishDrawing(autos);
@@ -1204,6 +1221,7 @@ export class App {
       }
       // Arcs are kept counter-clockwise, so one swept clockwise has its ends swapped.
       const arc = p.sweep >= 0 ? addArc(this.sk, c, s, e) : addArc(this.sk, c, e, s);
+      if (this.constructing && this.tool === "arc") arc.construction = true;
       if (this.tool === "arcarrow") {
         // The head goes on the end that was clicked last.
         arc.arrow = p.sweep >= 0 ? "end" : "start";
@@ -3239,7 +3257,7 @@ export class App {
     for (const t of tools) {
       if (t.group !== group && group !== -1) html += `<span class="ribbon-rule"></span>`;
       group = t.group;
-      const attr = t.id === "shift" ? `data-act="shift"` : isCommand(t.id) ? `data-cmd="${t.id}"` : `data-tool="${t.id}"`;
+      const attr = t.id === "shift" || t.id === "construction" ? `data-act="${t.id}"` : isCommand(t.id) ? `data-cmd="${t.id}"` : `data-tool="${t.id}"`;
       html += `<button type="button" class="tool" ${attr} aria-label="${t.label}" title="${t.label}${t.key ? ` (${t.key})` : ""}">${icon(t.icon, 22)}<span>${t.short ?? t.label}</span></button>`;
     }
     const ribbon = $("#ribbon");
@@ -3291,6 +3309,7 @@ export class App {
     $<HTMLButtonElement>('[data-act="redo"]').disabled = !this.history.canRedo;
     $<HTMLButtonElement>('[data-act="origin"]').setAttribute("aria-pressed", String(this.sk.showOrigin));
     $<HTMLButtonElement>('[data-act="preview"]').setAttribute("aria-pressed", String(this.preview));
+    document.querySelector('#ribbon [data-act="construction"]')?.setAttribute("aria-pressed", String(this.constructing));
   }
 
   private drawTitleblock(): void {
@@ -3655,18 +3674,16 @@ export class App {
       }
       const cs: Curve[] = [...lines, ...rounds];
       if (cs.length) {
-        const styleOf = (c: Curve): LineStyle =>
-          c.construction ? "construction" : c.type !== "circle" && c.arrow ? "arrow" : c.type !== "circle" && c.element ? c.element : c.centre ? "centre" : c.dashed ? "dashed" : "solid";
-        const shared = cs.every((c) => styleOf(c) === styleOf(cs[0])) ? styleOf(cs[0]) : null;
-        const styles: LineStyle[] = ["solid", "dashed", "centre"];
-        // Lines and arcs can be arrows, springs and dampers; a full circle has no ends to put them between.
-        if (cs.every((c) => c.type !== "circle")) styles.push("arrow", "spring", "damper");
-        // A spiral is wound about the start of a line.
-        if (cs.every((c) => c.type === "line")) styles.push("spiral");
-        styles.push("construction");
-        html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented wrap" role="group" aria-labelledby="style-label">${styles.map((st) =>
-          `<button type="button" data-style="${st}" aria-pressed="${shared === st}">${STYLE_NAMES[st]}</button>`).join("")}</div>` +
-          `<small>A centre line is thin and dash-dotted. A helper is dashed here and left out of the exported figure.</small></div>`;
+        // Arrows, springs and dampers are made with their own tools and keep what they are; the rest can be drawn one way or another.
+        const plain = cs.filter((c) => !isNamed(c));
+        if (plain.length) {
+          const styleOf = (c: Curve): LineStyle => (c.construction ? "construction" : c.centre ? "centre" : c.dashed ? "dashed" : "solid");
+          const shared = plain.every((c) => styleOf(c) === styleOf(plain[0])) ? styleOf(plain[0]) : null;
+          const styles: LineStyle[] = ["solid", "dashed", "centre", "construction"];
+          html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented wrap" role="group" aria-labelledby="style-label">${styles.map((st) =>
+            `<button type="button" data-style="${st}" aria-pressed="${shared === st}">${STYLE_NAMES[st]}</button>`).join("")}</div>` +
+            `<small>A centre line is thin and dash-dotted. A construction line is dashed here and left out of the exported figure.</small></div>`;
+        }
         html += this.elementPanel();
         // One slider for all of them; it shows the thickness of the first.
         const weight = cs[0].weight ?? standardWeight(cs[0]);
@@ -3686,10 +3703,6 @@ export class App {
           html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="${arrow.type === "line" ? "F, \\vec{v}_0" : "M, \\omega"}" value="${esc(arrow.label ?? "")}"><small>Written as TeX math. On the drawing, click the name to type it there and drag it to move it; double-click the arrow to give it one.</small></label>`;
           html += `<div class="field"><span id="head-label">${arrow.type === "line" ? "Arrowhead at the" : "Points"}</span><div class="segmented wrap" role="group" aria-labelledby="head-label">${heads.map(([h, name]) =>
             `<button type="button" data-head="${h}" aria-pressed="${arrow.arrow === h}">${name}</button>`).join("")}</div></div>`;
-          if (arrow.arrow !== "both") {
-            html += `<label class="check"><input data-field="arrow-tail" type="checkbox"${arrow.tail ? " checked" : ""}> Starts from a short bar</label>` +
-              `<p class="muted note-block">For a coordinate: the bar marks where it is measured from.</p>`;
-          }
         }
       }
       if (entities > 0) {
@@ -3966,6 +3979,10 @@ export class App {
         return this.editSymbol((x) => { if (x.type === "hatch") x.lean = (x.lean ?? 1) === 1 ? -1 : 1; });
       case "el-flip":
         return this.editElements((look) => { if (look.flip) delete look.flip; else look.flip = true; });
+      case "construction":
+        this.constructing = !this.constructing;
+        if (this.constructing) this.showTip("construction");
+        return this.touch();
       case "undatum": {
         // The mark goes; the point it was on stays.
         const d = this.selectedSymbol();
@@ -3997,32 +4014,17 @@ export class App {
     return symbol(this.sk, id) ?? this.datumOn(id) ?? null;
   }
 
-  /** Sets how the selected curves are drawn. */
+  /** Sets how the selected curves are drawn. Arrows, springs and dampers are left as they are. */
   private setLineStyle(style: LineStyle): void {
     const { lines, rounds } = this.picked();
-    const element = style === "spring" || style === "damper" || style === "spiral" ? style : null;
     for (const c of [...lines, ...rounds]) {
+      if (isNamed(c)) continue;
       delete c.construction;
       delete c.centre;
       delete c.dashed;
-      if (c.type !== "circle") {
-        if (style !== "arrow") { delete c.arrow; delete c.tail; }
-        // A spiral is wound about the start of a line; an arc has no such end.
-        const as = element && (c.type === "line" || element !== "spiral") ? element : null;
-        if (as) {
-          const was = c.element;
-          c.element = as as ArcElement;
-          // A spring made into a damper keeps its width; anything else starts out like the others of its kind.
-          if (!c.look || was === "spiral" || as === "spiral") c.look = this.newLook(c);
-        } else {
-          delete c.element;
-          delete c.look;
-        }
-      }
       if (style === "construction") c.construction = true;
       if (style === "centre") c.centre = true;
       if (style === "dashed") c.dashed = true;
-      if (style === "arrow" && c.type !== "circle") c.arrow ??= "end";
     }
     this.commit();
   }
@@ -4363,13 +4365,6 @@ export class App {
       this.editElements((look) => { if (field === "el-across") look.across = size; else look.pitch = size; }, false);
       return slide(this.elementSizeLabel(els[0], field === "el-across" ? "across" : "pitch"));
     }
-    if (field === "arrow-tail") {
-      const e = this.selectedNamed();
-      if (!e?.arrow) return;
-      if (input.checked) e.tail = true;
-      else delete e.tail;
-      return this.commit();
-    }
 
     if (field === "arrow-label") {
       const e = this.selectedNamed();
@@ -4521,6 +4516,7 @@ export class App {
     if (!tool || tool.id === "shift") return;
     // Without this the letter would be typed into the dimension box a command opens.
     e.preventDefault();
+    if (tool.id === "construction") return this.action("construction");
     if (isCommand(tool.id)) this.activate(tool.id);
     else this.setTool(tool.id);
   }

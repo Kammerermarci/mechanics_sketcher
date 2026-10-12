@@ -3,6 +3,7 @@ import { emptySketch, serialize, deserialize, type Plot, type PlotCurve } from "
 import {
   PLOT, niceStep, tickValues, tickText, stretches, runs, uprights, plotPrims, plotSvg, plotTikz, fitY, newPlot, newCurve, copyPlot,
   pieceError, toPaper, toData, curveLabelAt, axisCross, paramStretches, paramRuns, drawable, formulaError, fitX, equalScales, PARAM_RANGE,
+  balloonPlace, nextBalloonText, plotIds,
 } from "../src/plot";
 import { PAPER, PT_MM, type Prim } from "../src/prims";
 import { primsToTikz } from "../src/export";
@@ -420,5 +421,62 @@ describe("a curve given by a parameter", () => {
     const raw = JSON.parse(serialize(sk));
     raw.plots[0].curves[1].pieces[0].x = 5;
     expect(deserialize(JSON.stringify(raw)).plots).toBeUndefined();
+  });
+});
+
+describe("notes and balloons on a plot", () => {
+  const marked = () => plot([{ pieces: [{ expr: "x" }] }], {
+    notes: [{ id: "n1", x: 1, y: 2, text: "peak: $M_1$" }],
+    balloons: [{ id: "n2", x: 2, y: 2, dx: 8, dy: 6, text: "1", end: "arrow" }, { id: "n3", x: 4, y: -1, dx: 0, dy: 0, text: "7", end: "dot", frame: "box" }],
+  });
+
+  it("stand where they were put in the plot's own coordinates, over everything else", () => {
+    const p = marked();
+    const prims = plotPrims(p);
+    const mine = prims.filter((q) => ["n1", "n2", "n3"].includes(q.ref ?? ""));
+    // Last of all, so nothing is drawn over them.
+    expect(prims.slice(-mine.length)).toEqual(mine);
+    const note = mine.find((q) => q.ref === "n1")!;
+    // x 1 and y 2 are 20 mm along and 32 mm up from the corner of the axes.
+    expect(note).toMatchObject({ k: "text", at: [20, 32], anchor: "w", part: "note", latex: "peak: $M_1$" });
+    // A balloon 8 mm right and 6 mm up of what it points at, with an arrow on its leader.
+    expect(balloonPlace(p, p.balloons![0])).toEqual({ anchor: [30, 32], centre: [38, 38] });
+    expect(mine.filter((q) => q.ref === "n2").map((q) => q.k)).toEqual(["line", "circle", "text"]);
+    expect(mine.find((q) => q.ref === "n2" && q.k === "line")).toMatchObject({ a: [30, 32], arrowA: true, part: "balloon" });
+    // One on the spot it points at has no leader; its frame is the one it was given.
+    expect(mine.filter((q) => q.ref === "n3").map((q) => q.k)).toEqual(["poly", "text"]);
+    // The numbers count on from the highest one.
+    expect(nextBalloonText(p)).toBe("8");
+    expect(nextBalloonText(plot())).toBe("1");
+  });
+
+  it("go into the pgfplots picture after the axis, in millimetres from its corner", () => {
+    const tikz = plotTikz(marked());
+    const after = tikz.slice(tikz.indexOf("\\end{axis}"));
+    expect(after).toContain("\\begin{scope}[x=1mm, y=1mm, line cap=round, line join=round,");
+    expect(after).toContain("\\node[label, anchor=west] at (20,32) {peak: $M_1$};");
+    expect(after).toContain("\\draw[symbol, tip-] (30,32) --");
+    expect(after).toMatch(/\\node\[inner sep=0pt\] at \(38,38\) \{\$1\$\};/);
+    expect(after).toContain("\\end{scope}\n\\end{tikzpicture}");
+    // A plot without them has no scope.
+    expect(plotTikz(plot())).not.toContain("scope");
+  });
+
+  it("are kept through a file and copied under ids of their own", () => {
+    const sk = emptySketch();
+    const p = newPlot(sk);
+    p.notes = [{ id: "n90", x: 1, y: 1, text: "a" }];
+    p.balloons = [{ id: "n91", x: 1, y: 1, dx: 5, dy: 5, text: "1", end: "none", frame: "underline" }];
+    expect(deserialize(serialize(sk)).plots).toEqual(sk.plots);
+    const copy = copyPlot(sk, p);
+    expect(copy.notes![0].id).not.toBe("n90");
+    expect(copy.balloons![0]).toMatchObject({ text: "1", frame: "underline" });
+    expect(copy.balloons![0].id).not.toBe("n91");
+    expect(new Set(plotIds(copy)).size).toBe(plotIds(copy).length);
+    // A damaged one makes the plot unreadable, like any other damage to it.
+    const raw = JSON.parse(serialize(sk));
+    raw.plots[0].balloons[0].dx = "far";
+    expect(deserialize(JSON.stringify(raw)).plots).toHaveLength(1);
+    expect(deserialize(JSON.stringify(raw)).plots![0].id).toBe(copy.id);
   });
 });

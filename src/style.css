@@ -159,8 +159,8 @@ a.icon-btn.support:hover { background: #f6dde2; }
   border: 0;
   background: none;
   border-radius: 6px;
-  min-width: 52px;
-  padding: 5px 8px 3px;
+  min-width: 48px;
+  padding: 5px 6px 3px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -603,6 +603,8 @@ dialog.welcome h2 { font-size: 21px; margin-bottom: 6px; }
 #plot-canvas[data-over="grab"] { cursor: grabbing; }
 #plot-canvas[data-over="move"] { cursor: move; }
 #plot-canvas[data-over="pointer"] { cursor: pointer; }
+#plot-canvas[data-over="place"] { cursor: crosshair; }
+.fn-title.plain-title { font-family: inherit; font-size: 14px; }
 .tab.apart { margin-left: 14px; }
 .tab.apart::before { content: ""; position: absolute; left: -8px; top: 9px; bottom: 9px; width: 1px; background: var(--rule); }
 

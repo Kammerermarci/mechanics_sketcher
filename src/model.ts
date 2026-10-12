@@ -28,8 +28,6 @@ export interface Line {
   dashed?: boolean;
   /** An arrow annotation: which end carries the head. p1 is the start, p2 the end. */
   arrow?: ArrowEnds;
-  /** An arrow that starts from a short bar across it: a coordinate, measured from there. */
-  tail?: boolean;
   /**
    * Drawn as a machine element between its two points instead of as a line:
    * a spring, a damper, or a spiral spring wound about p1 whose outer end is p2.
@@ -92,8 +90,6 @@ export interface Arc {
   dashed?: boolean;
   /** A curved arrow: which end carries the head. p1 is the start, p2 the end, counter-clockwise. */
   arrow?: ArrowEnds;
-  /** An arrow that starts from a short bar across it: an angle, measured from there. */
-  tail?: boolean;
   /** Drawn as a spring or a damper bent round its centre, as one that resists turning is. */
   element?: ArcElement;
   look?: ElementLook;
@@ -521,6 +517,28 @@ export interface PlotAxis {
   /** Distance between ticks. Unset: chosen to suit the size of the plot. */
   step?: number;
 }
+/** Text placed on a plot. It starts at x, y in the plot's own coordinates: the middle of its left edge. */
+export interface PlotNote {
+  id: Id;
+  x: number;
+  y: number;
+  /** As typed: plain text, with $...$ for math and \\ between lines, as a note in the sketch. */
+  text: string;
+}
+/** A balloon on a plot: its text in a frame, with a leader to the spot x, y it points at, in the plot's own coordinates. */
+export interface PlotBalloon {
+  id: Id;
+  x: number;
+  y: number;
+  /** Where the middle of the balloon is, in mm on paper from the spot it points at. */
+  dx: number;
+  dy: number;
+  /** Written as TeX math. */
+  text: string;
+  end: LeaderEnd;
+  /** Unset: a circle. */
+  frame?: BalloonFrame;
+}
 /** A plot of functions: a figure of its own beside the sketch, with its size on paper in mm. */
 export interface Plot {
   id: Id;
@@ -535,6 +553,8 @@ export interface Plot {
   grid?: "lines" | "dots";
   /** Unset: tick marks with their numbers. */
   ticks?: "marks" | "none";
+  notes?: PlotNote[];
+  balloons?: PlotBalloon[];
 }
 
 /**
@@ -561,7 +581,7 @@ export function isLink(c: Constraint): c is Link {
   return c.type === "mirror" || c.type === "shift" || c.type === "turn";
 }
 
-const PREFIX: Record<string, string> = { point: "p", line: "l", circle: "c", arc: "a", symbol: "s", plot: "g", curve: "f" };
+const PREFIX: Record<string, string> = { point: "p", line: "l", circle: "c", arc: "a", symbol: "s", plot: "g", curve: "f", mark: "n" };
 
 export function newId(sk: Sketch, kind: string): Id {
   return `${PREFIX[kind] ?? "k"}${sk.nextId++}`;
@@ -896,7 +916,10 @@ function upgradeV1(raw: SketchV1, entities: Entity[]): Pick<Sketch, "constraints
 /** True for something that has the shape of a plot, so a damaged file cannot bring in one that will not draw. */
 function isPlot(p: Plot): boolean {
   const axis = (a: PlotAxis) => !!a && Number.isFinite(a.min) && Number.isFinite(a.max) && a.max > a.min && typeof a.label === "string";
+  const placed = (q: { id: unknown; x: unknown; y: unknown; text: unknown }) => !!q && typeof q.id === "string" && Number.isFinite(q.x) && Number.isFinite(q.y) && typeof q.text === "string";
+  const list = <T>(v: T[] | undefined, ok: (q: T) => boolean) => v === undefined || (Array.isArray(v) && v.every(ok));
   return !!p && typeof p.id === "string" && Array.isArray(p.curves) && axis(p.x) && axis(p.y) && p.width > 0 && p.height > 0 &&
+    list(p.notes, placed) && list(p.balloons, (b) => placed(b) && Number.isFinite(b.dx) && Number.isFinite(b.dy)) &&
     p.curves.every((c) => !!c && typeof c.id === "string" && Array.isArray(c.pieces) && c.pieces.every((x) => !!x && typeof x.expr === "string" && (x.x === undefined || typeof x.x === "string")));
 }
 

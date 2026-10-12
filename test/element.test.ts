@@ -115,10 +115,15 @@ describe("a spiral spring", () => {
     expect(elementReach(sk, l)).toBe(0);
   });
 
-  it("has more windings when it is larger", () => {
+  it("has more windings when it is larger, each drawn through a point every three degrees", () => {
     const look = { across: 1, pitch: 1 };
     expect(spiralTurns(4, look)).toBeCloseTo(3.5);
     expect(spiralTurns(8, look)).toBeCloseTo(7.5);
+    const { sk, l } = between(8, "spiral", look);
+    const [run] = elementPaths(sk, l);
+    expect(run.length).toBeGreaterThanOrEqual(7.5 * 120);
+    // No two points of it are further apart than a few degrees of its outermost winding.
+    for (let i = 1; i < run.length; i++) expect(Math.hypot(run[i][0] - run[i - 1][0], run[i][1] - run[i - 1][1])).toBeLessThan(8 * (Math.PI / 60) * 1.01);
   });
 });
 
@@ -240,37 +245,6 @@ describe("dashed curves", () => {
     // A helper has its own look in the editor, and is not exported at all.
     l.construction = true;
     expect(buildPrims(sk, 10, { editor: true }).find((p) => p.ref === l.id)).not.toHaveProperty("dash");
-  });
-});
-
-describe("a coordinate", () => {
-  it("is an arrow that starts from a short bar across it", () => {
-    const sk = emptySketch();
-    const l = addLine(sk, addPoint(sk, 0, 0).id, addPoint(sk, 10, 0).id);
-    l.arrow = "end";
-    l.tail = true;
-    l.label = "x";
-    const [bar, shaft, name] = of(sk, l.id);
-    expect(bar).toMatchObject({ k: "line", a: [0, -PAPER.tailBar], b: [0, PAPER.tailBar], stroke: "arrow", part: "tail" });
-    expect(shaft).toMatchObject({ k: "line", arrowB: true });
-    expect(shaft).not.toHaveProperty("arrowA");
-    expect(name).toMatchObject({ k: "text", tex: "x" });
-    // The bar is at the end without the head, and an arrow with two heads has nowhere to start from.
-    l.arrow = "start";
-    expect(of(sk, l.id)[0]).toMatchObject({ a: [100, -PAPER.tailBar], b: [100, PAPER.tailBar] });
-    l.arrow = "both";
-    expect(of(sk, l.id).filter((p) => p.part === "tail")).toEqual([]);
-    expect(toTikz(sk)!).not.toContain("tail");
-  });
-
-  it("starts an angle from a bar along the radius", () => {
-    const sk = emptySketch();
-    const arc = addArc(sk, addPoint(sk, 0, 0).id, addPoint(sk, 2, 0).id, addPoint(sk, 0, 2).id);
-    arc.arrow = "end";
-    arc.tail = true;
-    const [bar] = of(sk, arc.id);
-    expect(bar).toMatchObject({ k: "line", part: "tail" });
-    expect(bar.k === "line" && [bar.a, bar.b]).toEqual([[20 - PAPER.tailBar, 0], [20 + PAPER.tailBar, 0]]);
   });
 });
 

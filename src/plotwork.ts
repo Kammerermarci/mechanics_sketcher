@@ -2,14 +2,14 @@
 // are plotted. It draws one plot of the sketch's plots at a time, with handles
 // to drag its size on paper, and a side panel for its functions and axes.
 
-import { type Sketch, type Plot, type PlotCurve, type PlotAxis, type PlotDash, type Id } from "./model";
+import { type Sketch, type Plot, type PlotCurve, type PlotAxis, type PlotDash, type PlotNote, type PlotBalloon, type LeaderEnd, type BalloonFrame, type Id, newId } from "./model";
 import { type V, dist } from "./geom";
-import { type Prim, primDistance } from "./prims";
+import { type Prim, PAPER, primDistance } from "./prims";
 import { type View, toScreen, toModel, drawPrims } from "./render";
 import { figureBounds } from "./export";
 import {
   PLOT, PLOT_COLORS, PARAM_RANGE, plotPrims, plotSvg, plotTikz, newPlot, newCurve, copyPlot, fitX, fitY, equalScales, pieceError, formulaError, readFormula,
-  toData, toPaper, curveLabelAt, drawable, tickStep,
+  toData, toPaper, curveLabelAt, drawable, tickStep, balloonPlace, nextBalloonText,
 } from "./plot";
 import { evaluate, degree } from "./expr";
 import { icon } from "./icons";
@@ -37,6 +37,9 @@ type Hit =
   | { kind: "name"; id: Id }
   | { kind: "curve"; id: Id }
   | { kind: "axis-label"; axis: "x" | "y" }
+  /** A note, or a balloon: by its body, or by the tip of its leader. */
+  | { kind: "note"; id: Id }
+  | { kind: "balloon"; id: Id; tip: boolean }
   | { kind: "inside" }
   | { kind: "none" };
 
@@ -49,6 +52,8 @@ type Drag =
   /** Moving what the plot shows. `click` is what a press that does not move selects. */
   | { kind: "range"; start: V; x: [number, number]; y: [number, number]; moved: boolean; click: Id | null }
   | { kind: "name"; id: Id; offset: V; moved: boolean }
+  /** Moving a note or a balloon, or the tip of a balloon's leader; `offset` is from the pointer to what moves, `centre` where the balloon was. */
+  | { kind: "mark"; id: Id; tip: boolean; offset: V; centre: V; moved: boolean }
   | { kind: "press"; start: V; field: string | null; moved: boolean };
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -104,6 +109,10 @@ export class PlotWorkspace {
   private wheelTimer = 0;
   /** A field to put the cursor in once the panel has been drawn: its name, a bar, and the number of its piece if it has one. */
   private focusNext: string | null = null;
+  /** What a click on the plot puts down, if anything: a note, or a balloon. */
+  private tool: "note" | "balloon" | null = null;
+  /** The spot a balloon being placed points at, in the plot's own coordinates, until its second click says where the balloon goes. */
+  private pending: V | null = null;
 
   constructor(private host: PlotHost, private svg: SVGSVGElement, private panel: HTMLElement, private empty: HTMLElement) {
     svg.addEventListener("pointerdown", (e) => this.onDown(e));
@@ -135,12 +144,33 @@ export class PlotWorkspace {
     return this.plot()?.curves.find((c) => c.id === this.selected) ?? null;
   }
 
+  /** The selected note or balloon. */
+  private mark(): { note: PlotNote } | { balloon: PlotBalloon } | null {
+    const p = this.plot();
+    const note = p?.notes?.find((n) => n.id === this.selected);
+    if (note) return { note };
+    const balloon = p?.balloons?.find((b) => b.id === this.selected);
+    return balloon ? { balloon } : null;
+  }
+
+  /** Takes the selected note or balloon out of its plot. */
+  private removeMark(): void {
+    const p = this.plot();
+    if (!p) return;
+    p.notes = p.notes?.filter((n) => n.id !== this.selected);
+    p.balloons = p.balloons?.filter((b) => b.id !== this.selected);
+    if (!p.notes?.length) delete p.notes;
+    if (!p.balloons?.length) delete p.balloons;
+    this.selected = null;
+  }
+
   /** After the sketch was swapped for another (undo, a file opened): what was on show may be gone. */
   sync(): void {
     const p = this.plot();
-    if (!p?.curves.some((c) => c.id === this.selected)) this.selected = p?.curves[0]?.id ?? null;
+    if (!p?.curves.some((c) => c.id === this.selected) && !this.mark()) this.selected = p?.curves[0]?.id ?? null;
     this.drag = null;
     this.hover = { kind: "none" };
+    this.pending = null;
   }
 
   /** Puts a plot on show, for when the workspace is next on screen. */
@@ -189,8 +219,10 @@ export class PlotWorkspace {
     this.prims = plotPrims(p);
     const none = new Set<Id>();
     const S = (q: V) => toScreen(this.view, q);
-    const lit = this.hover.kind === "curve" || this.hover.kind === "name" ? this.hover.id : null;
-    let html = drawPrims({ view: this.view, mm: 1, prims: this.prims, selection: none, related: none, hover: lit, conflicting: none, redundant: none, freeIds: none });
+    const lit = this.hover.kind === "curve" || this.hover.kind === "name" || this.hover.kind === "note" || this.hover.kind === "balloon" ? this.hover.id : null;
+    // A selected note or balloon is lit up; a selected function is not: it shows in the side panel.
+    const chosen = this.mark() && this.selected ? new Set<Id>([this.selected]) : none;
+    let html = drawPrims({ view: this.view, mm: 1, prims: this.prims, selection: chosen, related: none, hover: lit, conflicting: none, redundant: none, freeIds: none });
     // The axis box and its handles: what is dragged to pull the ends of the axes out or in, or with Shift to set the size on paper.
     const a = S([0, 0]), b = S([p.width, p.height]);
     html += `<rect class="plot-box" x="${n2(a[0])}" y="${n2(b[1])}" width="${n2(b[0] - a[0])}" height="${n2(a[1] - b[1])}"/>`;
@@ -207,11 +239,18 @@ export class PlotWorkspace {
       const at = S([p.width / 2, p.height]);
       html += `<text class="plot-size" x="${n2(at[0])}" y="${n2(at[1] - 12)}" text-anchor="middle">${said}</text>`;
     }
+    if (this.tool === "balloon" && this.pending) {
+      // The balloon about to be placed: its leader from the spot it points at, and the balloon under the pointer.
+      const from = S(toPaper(p, this.pending)), to = this.cursor;
+      html += `<line class="preview" x1="${n2(from[0])}" y1="${n2(from[1])}" x2="${n2(to[0])}" y2="${n2(to[1])}"/>` +
+        `<circle class="preview" cx="${n2(to[0])}" cy="${n2(to[1])}" r="${n2(PAPER.balloonRadius * this.view.scale)}"/>`;
+    }
     this.svg.innerHTML = html;
-    const h = this.drag?.kind === "size" || this.drag?.kind === "ends" ? this.drag.h : this.hover.kind === "handle" ? this.hover.h : null;
-    this.svg.dataset.over = h ? (h.x && h.y ? (h.x === h.y ? "nesw" : "nwse") : h.x ? "ew" : "ns")
+    const h = this.drag?.kind === "size" || this.drag?.kind === "ends" ? this.drag.h : this.hover.kind === "handle" && !this.tool ? this.hover.h : null;
+    this.svg.dataset.over = this.tool ? "place" : h ? (h.x && h.y ? (h.x === h.y ? "nesw" : "nwse") : h.x ? "ew" : "ns")
       : this.drag?.kind === "view" || this.drag?.kind === "range" ? "grab"
-        : this.hover.kind === "name" ? "move" : this.hover.kind === "curve" || this.hover.kind === "axis-label" ? "pointer" : "";
+        : this.hover.kind === "name" || this.hover.kind === "note" || this.hover.kind === "balloon" || this.drag?.kind === "mark" ? "move"
+          : this.hover.kind === "curve" || this.hover.kind === "axis-label" ? "pointer" : "";
   }
 
   /** Where a handle is on screen. */
@@ -222,7 +261,12 @@ export class PlotWorkspace {
   /** What the status bar says about what the pointer is over. */
   hint(): string {
     if (!this.plot()) return "No plot yet. New plot makes one.";
+    if (this.tool === "note") return "Click where the note should start, then type it in the side panel. Esc puts the tool down.";
+    if (this.tool === "balloon") return this.pending ? "Click where the balloon should sit. Clicking the same spot again leaves out the leader." : "Click what the balloon points at. Esc puts the tool down.";
     switch (this.drag?.kind ?? this.hover.kind) {
+      case "note": return "Drag the note to move it; click it to change its text in the side panel.";
+      case "balloon": return this.hover.kind === "balloon" && this.hover.tip ? "Drag the tip of the leader to what the balloon points at." : "Drag the balloon to move it; click it to change its text in the side panel.";
+      case "mark": return "Let go where it should stay.";
       case "handle": case "ends": return "Drag to pull the axis out on this side, or push it in: the plot shows more, or less. Hold Shift while dragging to change the size on paper instead.";
       case "size": return "Sets the size of the plot on paper, in whole millimetres. Hold Alt for any size.";
       case "name": return "Drag the name of the function to where it should stand.";
@@ -257,6 +301,16 @@ export class PlotWorkspace {
     for (const h of HANDLES) if (dist(this.handleAt(p, h), sp) < 9) return { kind: "handle", h };
     const q = toModel(this.view, sp);
     const px = (prim: Prim) => primDistance(prim, q) * this.view.scale;
+    // Notes and balloons lie over everything else. The tip of a balloon's leader is a handle of its own.
+    for (const b of [...(p.balloons ?? [])].reverse()) {
+      const { anchor } = balloonPlace(p, b);
+      if (Math.hypot(b.dx, b.dy) > PAPER.balloonRadius && dist(toScreen(this.view, anchor), sp) < 7) return { kind: "balloon", id: b.id, tip: true };
+    }
+    for (let i = this.prims.length - 1; i >= 0; i--) {
+      const prim = this.prims[i];
+      if ((prim.part !== "note" && prim.part !== "balloon") || !prim.ref || px(prim) > 4) continue;
+      return prim.part === "note" ? { kind: "note", id: prim.ref } : { kind: "balloon", id: prim.ref, tip: false };
+    }
     for (const prim of this.prims) {
       if (prim.k !== "text" || px(prim) > 4) continue;
       if (prim.part === "label" && prim.ref) return { kind: "name", id: prim.ref };
@@ -284,8 +338,16 @@ export class PlotWorkspace {
       this.drag = { kind: "view", last: sp };
       return this.host.render();
     }
-    const hit = this.hit(sp);
     const q = toModel(this.view, sp);
+    if (this.tool) return this.place(p, q, sp);
+    const hit = this.hit(sp);
+    if (hit.kind === "note" || hit.kind === "balloon") {
+      const note = p.notes?.find((n) => n.id === hit.id), balloon = p.balloons?.find((b) => b.id === hit.id);
+      const at = note ? toPaper(p, [note.x, note.y]) : balloon ? balloonPlace(p, balloon)[hit.kind === "balloon" && hit.tip ? "anchor" : "centre"] : q;
+      const centre = balloon ? balloonPlace(p, balloon).centre : q;
+      this.drag = { kind: "mark", id: hit.id, tip: hit.kind === "balloon" && hit.tip, offset: [at[0] - q[0], at[1] - q[1]], centre, moved: false };
+      return this.host.render();
+    }
     if (hit.kind === "handle" && ev.shiftKey) {
       this.drag = { kind: "size", h: hit.h, start: sp, width: p.width, height: p.height, cx: this.view.cx, cy: this.view.cy, moved: false };
     } else if (hit.kind === "handle") {
@@ -368,10 +430,60 @@ export class PlotWorkspace {
       c.lx = Number(x.toPrecision(6));
       c.ly = Number(y.toPrecision(6));
       d.moved = true;
+    } else if (d.kind === "mark") {
+      const to: V = [q[0] + d.offset[0], q[1] + d.offset[1]];
+      const note = p.notes?.find((n) => n.id === d.id), balloon = p.balloons?.find((b) => b.id === d.id);
+      const at = (v: V): V => { const [x, y] = toData(p, v); return [Number(x.toPrecision(6)), Number(y.toPrecision(6))]; };
+      const mm = (v: number) => Number(v.toFixed(3));
+      if (note) [note.x, note.y] = at(to);
+      else if (balloon && d.tip) {
+        // The tip moves; the balloon stays where it is on paper.
+        [balloon.x, balloon.y] = at(to);
+        const anchor = toPaper(p, [balloon.x, balloon.y]);
+        balloon.dx = mm(d.centre[0] - anchor[0]);
+        balloon.dy = mm(d.centre[1] - anchor[1]);
+      } else if (balloon) {
+        const { anchor } = balloonPlace(p, balloon);
+        balloon.dx = mm(to[0] - anchor[0]);
+        balloon.dy = mm(to[1] - anchor[1]);
+      }
+      d.moved = true;
     } else if (d.kind === "press" && dist(sp, d.start) > 3) {
       d.moved = true;
     }
+    if (this.tool) this.hover = { kind: "none" };
     this.host.render();
+  }
+
+  /** A click while the Note or the Balloon tool is held: puts one down, or for a balloon first the spot it points at. */
+  private place(p: Plot, q: V, sp: V): void {
+    const sk = this.host.sketch();
+    const [x, y] = toData(p, q).map((v) => Number(v.toPrecision(6)));
+    if (this.tool === "note") {
+      const note: PlotNote = { id: newId(sk, "mark"), x, y, text: "Text" };
+      (p.notes ??= []).push(note);
+      this.selected = note.id;
+    } else {
+      if (!this.pending) {
+        this.pending = [x, y];
+        return this.host.render();
+      }
+      const anchor = toPaper(p, this.pending);
+      // Clicked again on the spot it points at: the balloon sits there, with no leader.
+      const same = dist(toScreen(this.view, anchor), sp) < 4;
+      const balloon: PlotBalloon = {
+        id: newId(sk, "mark"), x: this.pending[0], y: this.pending[1],
+        dx: same ? 0 : Number((q[0] - anchor[0]).toFixed(3)), dy: same ? 0 : Number((q[1] - anchor[1]).toFixed(3)),
+        text: nextBalloonText(p), end: "arrow",
+      };
+      (p.balloons ??= []).push(balloon);
+      this.selected = balloon.id;
+    }
+    // One at a time: the tool is put down, and the text is ready to be typed over in the side panel.
+    this.tool = null;
+    this.pending = null;
+    this.focusNext = "atext|";
+    this.host.commit();
   }
 
   private onUp(ev: PointerEvent): void {
@@ -391,6 +503,14 @@ export class PlotWorkspace {
     if (d.kind === "range" && !d.moved) {
       this.selected = d.click;
       return this.host.touch();
+    }
+    if (d.kind === "mark") {
+      this.selected = d.id;
+      if (!d.moved) {
+        // A click on a note or a balloon goes to its text.
+        this.focusNext = "atext|";
+        return this.host.touch();
+      }
     }
     if (d.moved) return this.host.commit();
     this.host.touch();
@@ -431,7 +551,9 @@ export class PlotWorkspace {
   /** A key pressed while no field has the keyboard. True when it was taken. */
   key(e: KeyboardEvent): boolean {
     if (e.key === "Escape") {
-      this.selected = null;
+      // A tool in hand is put down first, then what is selected let go of.
+      if (this.tool) { this.tool = null; this.pending = null; }
+      else this.selected = null;
       this.host.touch();
       return true;
     }
@@ -441,6 +563,10 @@ export class PlotWorkspace {
     }
     if ((e.key === "Delete" || e.key === "Backspace") && this.curve()) {
       this.act("del-curve", {});
+      return true;
+    }
+    if ((e.key === "Delete" || e.key === "Backspace") && this.mark()) {
+      this.act("del-mark", {});
       return true;
     }
     return false;
@@ -462,6 +588,9 @@ export class PlotWorkspace {
     return tool("new-plot", "plotnew", "New plot", "Start a new plot") +
       tool("add-curve", "curve", "Function", "Add a function of x to this plot", off) +
       tool("add-param", "param", "Parametric", "Add a curve given by x(t) and y(t): a circle, a path, a phase portrait", off) +
+      `<span class="ribbon-rule"></span>` +
+      tool("tool-note", "note", "Note", "Put text on the plot: click where it should start", `${off} aria-pressed="${this.tool === "note"}"`) +
+      tool("tool-balloon", "balloon", "Balloon", "Put a balloon on the plot: click what it points at, then where it sits", `${off} aria-pressed="${this.tool === "balloon"}"`) +
       `<span class="ribbon-rule"></span>` +
       tool("fit-y", "fity", "Fit range", "Set the vertical range so all of every function shows", off) +
       tool("fit-view", "fit", "Zoom to fit", "Bring the whole plot into view (0)", off) +
@@ -524,6 +653,19 @@ export class PlotWorkspace {
     html += `<div class="btn-row"><button type="button" class="plain" data-pact="add-curve">Add a function</button>` +
       `<button type="button" class="plain" data-pact="add-param" title="A curve given by x(t) and y(t)">Add a parametric curve</button></div>`;
 
+    const marks: (PlotNote | PlotBalloon)[] = [...(p.notes ?? []), ...(p.balloons ?? [])];
+    if (marks.length) {
+      html += `<h3>Notes and balloons</h3>`;
+      for (const m of marks) {
+        const open = m.id === this.selected, balloon = "end" in m;
+        const title = `${balloon ? "Balloon" : "Note"}${m.text.trim() ? `: ${m.text.trim()}` : ""}`;
+        html += `<section class="fn${open ? " open" : ""}">` +
+          `<button type="button" class="fn-head" data-pact="select-mark" data-id="${m.id}" aria-expanded="${open}"><span class="fn-title plain-title">${esc(title)}</span></button>`;
+        if (open) html += this.markHtml(m);
+        html += `</section>`;
+      }
+    }
+
     html += `<h3>Axes</h3>`;
     html += text("Name of the horizontal axis", "x.label", p.x.label, "", "x");
     html += pair("It runs from", "x.min", "x.max", shown(p.x.min), shown(p.x.max)) +
@@ -543,6 +685,24 @@ export class PlotWorkspace {
       `<small class="under">Of the axes, without their labels. Dragging a handle on the plot with Shift held sets it too. Text is 10 pt at any size.</small>`;
     html += `<button type="button" class="danger" data-pact="del-plot">Delete this plot</button>`;
     return html;
+  }
+
+  /** The fields of a note or a balloon. */
+  private markHtml(m: PlotNote | PlotBalloon): string {
+    const field = (note: string) =>
+      `<label class="field"><span>Text</span><input data-pf="atext" type="text" spellcheck="false" autocomplete="off" value="${esc(m.text)}"><small>${note}</small></label>`;
+    const choice = (label: string, act: string, options: [string, string, boolean][]) =>
+      `<div class="field"><span id="pl-${act}">${label}</span><div class="segmented wrap" role="group" aria-labelledby="pl-${act}">${options.map(([v, name, on]) =>
+        `<button type="button" data-pact="${act}" data-v="${v}" aria-pressed="${on}">${name}</button>`).join("")}</div></div>`;
+    if (!("end" in m)) {
+      return field("Plain text, set in the document's font. Put math between dollar signs, as in $M_{max}$, and \\\\ where a new line starts. Drag the note on the plot to move it.") +
+        `<button type="button" class="danger" data-pact="del-mark">Delete this note</button>`;
+    }
+    const frame = m.frame ?? "circle";
+    return field("Written as TeX math. Drag the balloon to move it, and the tip of its leader to what it points at.") +
+      choice("Frame", "aframe", [["circle", "Circle", frame === "circle"], ["box", "Box", frame === "box"], ["underline", "Underline", frame === "underline"], ["none", "None", frame === "none"]]) +
+      choice("Leader ends with", "aend", [["arrow", "Arrow", m.end === "arrow"], ["dot", "Dot", m.end === "dot"], ["none", "Nothing", m.end === "none"]]) +
+      `<button type="button" class="danger" data-pact="del-mark">Delete this balloon</button>`;
   }
 
   /** The fields of a curve given by a parameter: its two formulas and what the parameter runs over. */
@@ -609,7 +769,31 @@ export class PlotWorkspace {
     const p = this.plot();
     if (!p) return;
     const c = this.curve();
+    const m = this.mark();
     switch (act) {
+      case "tool-note":
+      case "tool-balloon": {
+        const want = act === "tool-note" ? "note" : "balloon";
+        this.tool = this.tool === want ? null : want;
+        this.pending = null;
+        return this.host.touch();
+      }
+      case "select-mark":
+        this.selected = this.selected === ds.id ? null : ds.id ?? null;
+        return this.host.touch();
+      case "del-mark":
+        if (!m) return;
+        this.removeMark();
+        return this.host.commit();
+      case "aend":
+        if (!m || !("balloon" in m) || !ds.v) return;
+        m.balloon.end = ds.v as LeaderEnd;
+        return this.host.commit();
+      case "aframe":
+        if (!m || !("balloon" in m) || !ds.v) return;
+        if (ds.v === "circle") delete m.balloon.frame;
+        else m.balloon.frame = ds.v as BalloonFrame;
+        return this.host.commit();
       case "select-curve":
         this.selected = this.selected === ds.id ? null : ds.id ?? null;
         return this.host.touch();
@@ -755,6 +939,14 @@ export class PlotWorkspace {
       p[pf] = Number(mm.toFixed(2));
       this.host.commit();
       return this.fit();
+    }
+
+    if (pf === "atext") {
+      const m = this.mark();
+      if (!m) return;
+      if ("note" in m) m.note.text = input.value;
+      else m.balloon.text = input.value.trim().replace(/^\$+|\$+$/g, "");
+      return done();
     }
 
     const c = this.curve();

@@ -37,18 +37,22 @@ text* is there for mail that is read in a browser. The address is
 The tools sit on three tabs. **Sketch** has what shapes the geometry: drawing
 tools, copying tools and constraints. **Annotate** has what is added to the
 figure: dimensions, supports, loads, axes, arrows, notes, centre marks, balloons,
-fills and hatching. **Dynamics** has springs, dampers, the mark of a centre of
-mass and coordinates.
+fills and hatching. **Dynamics** has springs, dampers and the mark of a centre
+of mass.
 
 1. **Draw.** Pick Line (L): one click starts a line, the next one ends it,
    and the click after that starts a new line, so four clicks give two
    lines. Clicking an existing joint reuses it. Near-horizontal and
    near-vertical lines snap and get that constraint; hold Alt to switch
    snapping off. *Centre line* draws the same way but gives a thin
-   dash-dotted line that is exported and does not close shapes for fills. A
-   selected line, circle or arc can be switched between solid, dashed (a
-   hidden edge, a second position of a part), centre line and helper (editor
-   only, never exported) in the side panel. A slider
+   dash-dotted line that is exported and does not close shapes for fills.
+   *Construction (G)* is a switch: while it is on, the lines, circles and
+   arcs drawn are construction lines, dashed in the editor and left out of
+   the print and the exported figure; they take constraints and dimensions
+   like anything else. A selected line, circle or arc can be switched between
+   solid, dashed (a hidden edge, a second position of a part), centre line and
+   construction in the side panel. Arrows, springs and dampers are made with
+   their own tools and keep what they are. A slider
    there sets its *line thickness* in points, from 0.1 to 3; double-click it
    to go back to the standard (0.8 pt for a solid line, 0.6 pt for an arrow,
    0.4 pt for a centre line). The head of a thicker arrow grows with it.
@@ -195,13 +199,8 @@ mass and coordinates.
    - *Centre of mass:* a circle in quarters with a name (S), on a joint, on a
      curve or anywhere. It is a datum point drawn another way: the side panel
      switches between the two.
-   - *Coordinate:* an arrow that starts from a short bar, which marks where
-     it is measured from. For an angle, draw a curved arrow and tick *Starts
-     from a short bar* in the side panel.
 
-   Any selected line can also be made a spring, a damper or a torsion spring
-   under *Drawn as* in the side panel, and any arc a spring or a damper bent
-   round its centre. In the TikZ they are plain paths: no library is needed.
+   In the TikZ springs and dampers are plain paths: no library is needed.
 
 **Text is typed where it stands.** Click a dimension's number, the name of
 an arrow, a spring, a damper or a datum point, a note, a balloon's text or an
@@ -329,6 +328,13 @@ sketch and any number of plots; undo, Save and Open take them along.
   range* sets both axes when the plot holds nothing but such curves, and
   *Same scale on both* makes one unit as long on either axis, so a circle
   comes out round. Shaded, the area the curve goes round is filled.
+- **Notes and balloons.** *Note* puts text on the plot, plain text with math
+  between dollar signs as in the sketch; *Balloon* takes two clicks, what it
+  points at and where it sits, and numbers itself. Both stay with the plot's
+  own coordinates, so they follow the curves when the range changes. Drag a
+  note or a balloon to move it, and the tip of a balloon's leader to what it
+  points at; click one to change its text in the side panel. In the pgfplots
+  file they are drawn after the axis, as in a sketch.
 - **Pieces.** *Split into pieces* gives a function one formula for each
   stretch of the axis, as a shear force diagram has. Where two pieces meet at
   different values the jump is drawn as an upright line, unless that is

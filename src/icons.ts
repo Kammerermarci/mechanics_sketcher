@@ -7,6 +7,8 @@ export const ICONS: Record<string, string> = {
   select: `<path d="M5 3l10.5 7.2-4.6.9 2.6 5.2-2 1-2.6-5.2L5 15.6z" fill="currentColor" stroke="none"/>`,
   point: `<path d="M10 2.5v4M10 13.5v4M2.5 10h4M13.5 10h4"/>${dot(10, 10, 2)}`,
   line: `<path d="M4.5 15.5l11-11"/>${dot(4.5, 15.5)}${dot(15.5, 4.5)}`,
+  // The construction toggle: a dashed line between two points.
+  construction: `<path d="M6 14l8-8" stroke-dasharray="2.200 2.700"/>${dot(4.5, 15.5)}${dot(15.5, 4.5)}`,
   circle: `<circle cx="10" cy="10" r="6.8"/>${dot(10, 10, 1.3)}`,
   arc: `<path d="M4 15.5A11.5 11.5 0 0 1 15.5 4"/>${dot(4, 15.5)}${dot(15.5, 4)}${dot(15.5, 15.5, 1.3)}`,
 
@@ -76,13 +78,12 @@ export const ICONS: Record<string, string> = {
   copy: `<rect x="7" y="7" width="9.500" height="9.500" rx="1.500"/><path d="M4.500 13V5a1.500 1.500 0 0 1 1.500-1.500h7"/>`,
 
   // The Dynamics tab: a zigzag spring, a piston in its cylinder, a spiral, a damper bent round a joint,
-  // the quartered circle of a centre of mass, and an arrow starting from a bar.
+  // and the quartered circle of a centre of mass.
   spring: `<path d="M2 10h2.500l1.300-4 2.600 8 2.600-8 2.600 8 1.300-4H18" stroke-width="1.4"/>`,
   damper: `<path d="M2 10h7.500M9.500 6.500v7M6.500 5h8v10h-8M14.500 10H18" stroke-width="1.4"/>`,
   spiral: `<path d="M9.3 11.2L9.6 11.4L10 11.5L10.4 11.4L10.9 11.1L11.2 10.6L11.3 10L11.2 9.4L10.9 8.7L10.3 8.2L9.5 8L8.6 8L7.7 8.4L7 9.1L6.5 10.1L6.5 11.2L6.8 12.3L7.5 13.3L8.6 14L9.9 14.3L11.3 14.1L12.6 13.4L13.6 12.2L14.1 10.7L14.1 9.1L13.5 7.5L12.4 6.2L10.8 5.4L8.9 5.1L7.1 5.5L5.4 6.6L4.2 8.2L3.6 10.2L3.7 12.3L4.7 14.3L6.2 15.9L8.3 16.9L10.7 17.1L13 16.5L15 15L16.5 12.9" stroke-width="1.3"/>`,
   arcdamper: `<path d="M15.2 17.2L15 15.6L14.7 14.1L14.2 12.6L13.4 11.2L12.6 9.9L11.5 8.7M13.1 7.1L9.9 10.3M11.1 13.6L10.5 12.5L9.7 11.4L8.8 10.5L7.7 9.7L6.6 9.1L9.4 3.3L11.3 4.4L13 5.7L14.5 7.2L15.8 8.9L16.9 10.8M8 6.2L6.4 5.6L4.7 5.2L3 5" stroke-width="1.3"/>${dot(3.2, 17, 1.4)}`,
   mass: `<circle cx="10" cy="10" r="6.500" stroke-width="1.3"/><path d="M10 10V3.500A6.500 6.500 0 0 1 16.500 10zM10 10v6.500A6.500 6.500 0 0 1 3.500 10z" fill="currentColor" stroke="none"/>`,
-  coordinate: `<path d="M4 6.500v7M4 10h9.500"/><path d="M17.500 10l-5.500 2.800v-5.600z" fill="currentColor" stroke="none"/>`,
 };
 
 export function icon(name: string, size = 20): string {

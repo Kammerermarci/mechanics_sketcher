@@ -13,8 +13,10 @@ type S = [along: number, left: number];
 export const TURNS_MAX = 300;
 /** How far a spring's straight ends run before its turns start, against its width. */
 const LEAD = 0.6;
-/** Points a coil's loop, and a spiral's winding, are drawn through. */
+/** Points a coil's loop is drawn through. */
 const LOOP_POINTS = 24;
+/** Points one winding of a spiral is drawn through: one every three degrees, so that a large one is still round. */
+const WINDING_POINTS = 120;
 
 /** How many turns a spring of this length has: as many as fit at its pitch, so a longer spring has more of them. */
 export function springTurns(length: number, look: ElementLook): number {
@@ -94,7 +96,7 @@ function spiral(centre: V, end: V, look: ElementLook): V[][] {
   const inner = spiralInner(radius, look);
   const turns = spiralTurns(radius, look);
   const last = angleOf(sub(end, centre)), way = look.flip ? -1 : 1;
-  const n = Math.max(8, Math.ceil(turns * LOOP_POINTS));
+  const n = Math.max(24, Math.ceil(turns * WINDING_POINTS));
   const run: V[] = [];
   for (let i = 0; i <= n; i++) {
     const u = i / n;

@@ -138,7 +138,6 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
     if (e.type === "line") {
       const line = addLine(sk, image(e.p1), image(e.p2));
       if (e.arrow) line.arrow = e.arrow;
-      if (e.tail) line.tail = true;
       if (e.element) {
         line.element = e.element;
         if (e.look) line.look = { ...e.look };
@@ -159,7 +158,6 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
         const swap: Record<ArrowEnds, ArrowEnds> = { end: "start", start: "end", both: "both" };
         arc.arrow = move.flips ? swap[e.arrow] : e.arrow;
       }
-      if (e.tail) arc.tail = true;
       if (e.element) {
         arc.element = e.element;
         if (e.look) arc.look = { ...e.look };

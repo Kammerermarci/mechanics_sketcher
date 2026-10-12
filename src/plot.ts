@@ -5,13 +5,13 @@
 // pinned down in it, so that it comes out as the screen shows it while the
 // formulas stay formulas in the LaTeX.
 
-import { type Sketch, type Plot, type PlotAxis, type PlotCurve, type Id, newId } from "./model";
-import { type Prim, type TextPrim, PAPER, PT_MM, labelTex, tint } from "./prims";
+import { type Sketch, type Plot, type PlotAxis, type PlotCurve, type PlotBalloon, type Id, newId } from "./model";
+import { type Prim, type TextPrim, PAPER, PT_MM, labelTex, tint, noteShape, balloonShape } from "./prims";
 import { type Expr, evaluate, toPgf, pgfNumber } from "./expr";
 import { type V } from "./geom";
 import { texEngine } from "./tex";
 import { latexAccents } from "./accents";
-import { num, tikzColor, primsToSvg } from "./export";
+import { num, tikzColor, primsToSvg, tikzParts } from "./export";
 import {
   type Stretch, type ParamStretch, PLOT, PLOT_DASH, PLOT_COLORS, PARAM_RANGE, readFormula, pieceError, formulaError, stretches, runs,
   restrictX, restrictY, uprights, paramStretches, paramRuns, drawable,
@@ -286,7 +286,35 @@ export function plotPrims(plot: Plot): Prim[] {
     const at = tex ? curveLabelAt(plot, c) : null;
     if (at) out.push({ layer: "sym", ref: c.id, k: "text", at: P(at), tex, anchor: "c", ink: c.color, part: "label" });
   }
+  out.push(...annotationPrims(plot));
   return out;
+}
+
+/** Where the spot a balloon points at is on paper, and where its middle is. */
+export function balloonPlace(plot: Plot, b: PlotBalloon): { anchor: V; centre: V } {
+  const anchor = toPaper(plot, [b.x, b.y]);
+  return { anchor, centre: [anchor[0] + b.dx, anchor[1] + b.dy] };
+}
+
+/**
+ * The notes and balloons of a plot, over everything else. They are not cut
+ * off at the edge of the plot: a note can stand beside it.
+ */
+export function annotationPrims(plot: Plot): Prim[] {
+  const out: Prim[] = [];
+  for (const n of plot.notes ?? []) out.push(...noteShape(n.id, toPaper(plot, [n.x, n.y]), n.text).map((p) => ({ ...p, part: "note" })));
+  for (const b of plot.balloons ?? []) {
+    const { anchor, centre } = balloonPlace(plot, b);
+    out.push(...balloonShape(b.id, anchor, centre, b).map((p) => ({ ...p, part: p.part ?? "balloon" })));
+  }
+  return out;
+}
+
+/** The text a new balloon starts with: one more than the highest number on the balloons there are. */
+export function nextBalloonText(plot: Plot): string {
+  let top = 0;
+  for (const b of plot.balloons ?? []) if (/^\d+$/.test(b.text.trim())) top = Math.max(top, Number(b.text.trim()));
+  return String(top + 1);
 }
 
 /** The plot as a standalone SVG file, or null when it has no size to draw at. */
@@ -389,6 +417,12 @@ export function plotTikz(plot: Plot): string {
     const [X, Y] = toPaper(plot, at);
     names.push(`\\node[inner sep=0pt, text=${tikzColor(c.color)}] at (${mm(X)},${mm(Y)}) {${math(c.label!)}};`);
   }
+  // Notes and balloons as well, drawn as they are in a sketch: in a scope whose unit is a millimetre from the corner of the axes.
+  const marks = annotationPrims(plot);
+  if (marks.length) {
+    const { styles, lines } = tikzParts(marks);
+    names.push(`\\begin{scope}[x=1mm, y=1mm, line cap=round, line join=round,\n  ${styles.join(",\n  ")}]`, ...lines, `\\end{scope}`);
+  }
   return (
     `% Made with Mech Sketch. Needs \\usepackage{pgfplots} and \\usetikzlibrary{arrows.meta}.\n` +
     `\\begin{tikzpicture}\n\\begin{axis}[\n  ${opts.join(",\n  ")},\n]\n` +
@@ -434,6 +468,7 @@ export function copyPlot(sk: Sketch, plot: Plot): Plot {
   copy.id = newId(sk, "plot");
   copy.name = `${plot.name} copy`;
   for (const c of copy.curves) c.id = newId(sk, "curve");
+  for (const n of [...(copy.notes ?? []), ...(copy.balloons ?? [])]) n.id = newId(sk, "mark");
   sk.plots!.push(copy);
   return copy;
 }
@@ -529,5 +564,5 @@ export function fitY(plot: Plot): [number, number] | null {
 
 /** Ids of everything a plot holds, itself included: what a selection in it can be. */
 export function plotIds(plot: Plot): Id[] {
-  return [plot.id, ...plot.curves.map((c) => c.id)];
+  return [plot.id, ...plot.curves.map((c) => c.id), ...(plot.notes ?? []).map((n) => n.id), ...(plot.balloons ?? []).map((b) => b.id)];
 }

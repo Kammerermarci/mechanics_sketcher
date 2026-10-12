@@ -53,7 +53,6 @@ export const PAPER = {
   datumRadius: 0.7,
   massRadius: 1.5,      // the mark of a centre of mass
   element: 0.21,        // 0.6 pt springs and dampers
-  tailBar: 1.5,         // half the bar a coordinate's arrow starts from
   radiusLeader: 8,      // default length of a radius leader drawn outside the circle
   loadHead: 0.62,       // the heads of a spread load's arrows, against a dimension's
   loadShade: 0.16,      // how much of a spread load's colour is in the shading under its arrows
@@ -630,7 +629,7 @@ export function centerMarkEnds(sk: Sketch, s: CenterMark, mm: number): V[] {
  * leader coming in along `dir` (a unit vector from the centre): on the
  * circle, on the side of the box, or just clear of bare text.
  */
-function balloonFrame(s: Balloon, dir: V): { hw: number; hh: number; r: number; reach: number } {
+function balloonFrame(s: Pick<Balloon, "text" | "frame">, dir: V): { hw: number; hh: number; r: number; reach: number } {
   const m = texEngine().measure(labelTex(s.text) || "0");
   const hw = (m.w * PAPER.em) / 2, hh = ((m.asc + m.desc) * PAPER.em) / 2;
   const half = Math.hypot(hw, hh);
@@ -646,9 +645,13 @@ function balloonFrame(s: Balloon, dir: V): { hw: number; hh: number; r: number; 
 }
 
 function balloonPrims(sk: Sketch, s: Balloon, mm: number): Prim[] {
-  const base = { ref: s.id, layer: "sym" as const };
   const anchor = mul(balloonAnchor(sk, s), mm);
-  const centre: V = [anchor[0] + s.dx * mm, anchor[1] + s.dy * mm];
+  return balloonShape(s.id, anchor, [anchor[0] + s.dx * mm, anchor[1] + s.dy * mm], s);
+}
+
+/** A balloon whose text is centred at `centre`, with its leader to `anchor`, both in paper mm. */
+export function balloonShape(ref: Id, anchor: V, centre: V, s: Pick<Balloon, "text" | "end" | "frame">): Prim[] {
+  const base = { ref, layer: "sym" as const };
   const frame = s.frame ?? "circle";
   const out: Prim[] = [];
   const far = dist(anchor, centre);
@@ -697,9 +700,14 @@ function datumPrims(sk: Sketch, s: Datum, mm: number): Prim[] {
 }
 
 function notePrims(s: Note, mm: number): Prim[] {
-  if (!s.text.trim()) return [];
-  const { latex, lines } = noteLatex(s.text);
-  const text: TextPrim = { ref: s.id, layer: "sym", k: "text", at: [s.x * mm, s.y * mm], tex: noteTex(s.text), anchor: "w", latex };
+  return noteShape(s.id, [s.x * mm, s.y * mm], s.text);
+}
+
+/** A note whose text starts at `at`, the middle of its left edge, in paper mm. */
+export function noteShape(ref: Id, at: V, typed: string): Prim[] {
+  if (!typed.trim()) return [];
+  const { latex, lines } = noteLatex(typed);
+  const text: TextPrim = { ref, layer: "sym", k: "text", at, tex: noteTex(typed), anchor: "w", latex };
   if (lines > 1) text.lines = lines;
   return [text];
 }
@@ -1081,20 +1089,13 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
     }
     const arrow = e.type !== "circle" && !e.construction ? e.arrow : undefined;
     // The head of a thicker arrow grows with it, though not as fast, so it still reads as a head.
-    const grown = Math.sqrt(Math.max(1, (e.weight ?? 0) / standardWeight(e)));
-    const head = PAPER.arrowScale * grown;
+    const head = PAPER.arrowScale * Math.sqrt(Math.max(1, (e.weight ?? 0) / standardWeight(e)));
     if (e.type === "line") {
-      const a = P(sk, e.p1, mm), b = P(sk, e.p2, mm);
-      const line: LinePrim = { ...base, k: "line", a, b };
+      const line: LinePrim = { ...base, k: "line", a: P(sk, e.p1, mm), b: P(sk, e.p2, mm) };
       if (arrow) {
         line.head = head;
         if (arrow !== "end") line.arrowA = true;
         if (arrow !== "start") line.arrowB = true;
-        // A coordinate starts from a short bar across it: where it is measured from.
-        if (e.tail && arrow !== "both" && len(sub(b, a)) > 1e-9) {
-          const from = arrow === "end" ? a : b, across = mul(perp(norm(sub(b, a))), PAPER.tailBar * grown);
-          out.push({ ...base, k: "line", a: sub(from, across), b: add(from, across), part: "tail" });
-        }
       }
       out.push(line);
       name();
@@ -1102,17 +1103,11 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
       out.push({ ...base, k: "circle", c: P(sk, e.c, mm), r: e.r * mm });
     } else {
       const { a0, a1 } = arcAngles(sk, e);
-      const c = P(sk, e.c, mm), r = arcRadius(sk, e) * mm;
-      const arc: ArcPrim = { ...base, k: "arc", c, r, a0, a1 };
+      const arc: ArcPrim = { ...base, k: "arc", c: P(sk, e.c, mm), r: arcRadius(sk, e) * mm, a0, a1 };
       if (arrow) {
         arc.head = head;
         if (arrow !== "end") arc.arrowA = true;
         if (arrow !== "start") arc.arrowB = true;
-        // An angle starts from a short bar across the arc, along the radius there.
-        if (e.tail && arrow !== "both") {
-          const from = arrow === "end" ? a0 : a1, half = PAPER.tailBar * grown;
-          out.push({ ...base, k: "line", a: polar(c, Math.max(0, r - half), from), b: polar(c, r + half, from), part: "tail" });
-        }
       }
       out.push(arc);
       name();
