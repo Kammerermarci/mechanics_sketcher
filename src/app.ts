@@ -64,12 +64,13 @@ const TABS: Tab[] = ["sketch", "annotate", "dynamics", "plot"];
 const TAB_NAMES: Record<Tab, string> = { sketch: "Sketch", annotate: "Annotate", dynamics: "Dynamics", plot: "Plot" };
 
 /**
- * How a plain curve is drawn: a solid or dashed edge, a centre line, or a
- * construction line that is not exported. Arrows, springs and dampers are
- * made with their own tools and stay what they are.
+ * How a plain curve is drawn in the figure: a solid or dashed edge, or a
+ * centre line. Whether it is a construction line, left out of the figure, is
+ * a switch of its own. Arrows, springs and dampers are made with their own
+ * tools and stay what they are.
  */
-type LineStyle = "solid" | "dashed" | "centre" | "construction";
-const STYLE_NAMES: Record<LineStyle, string> = { solid: "Solid", dashed: "Dashed", centre: "Centre line", construction: "Construction" };
+type LineStyle = "solid" | "dashed" | "centre";
+const STYLE_NAMES: Record<LineStyle, string> = { solid: "Solid", dashed: "Dashed", centre: "Centre line" };
 
 /** Where a click lands once snapping has had its say. */
 interface Snap {
@@ -3733,12 +3734,18 @@ export class App {
         // Arrows, springs and dampers are made with their own tools and keep what they are; the rest can be drawn one way or another.
         const plain = cs.filter((c) => !isNamed(c));
         if (plain.length) {
-          const styleOf = (c: Curve): LineStyle => (c.construction ? "construction" : c.centre ? "centre" : c.dashed ? "dashed" : "solid");
-          const shared = plain.every((c) => styleOf(c) === styleOf(plain[0])) ? styleOf(plain[0]) : null;
-          const styles: LineStyle[] = ["solid", "dashed", "centre", "construction"];
+          const styleOf = (c: Curve): LineStyle => (c.centre ? "centre" : c.dashed ? "dashed" : "solid");
+          // Construction lines are not drawn in the figure at all, so no way of drawing them is shown as picked.
+          const building = plain.every((c) => c.construction);
+          const shared = !plain.some((c) => c.construction) && plain.every((c) => styleOf(c) === styleOf(plain[0])) ? styleOf(plain[0]) : null;
+          const styles: LineStyle[] = ["solid", "dashed", "centre"];
           html += `<div class="field"><span id="style-label">Drawn as</span><div class="segmented wrap" role="group" aria-labelledby="style-label">${styles.map((st) =>
             `<button type="button" data-style="${st}" aria-pressed="${shared === st}">${STYLE_NAMES[st]}</button>`).join("")}</div>` +
-            `<small>A centre line is thin and dash-dotted. A construction line is dashed here and left out of the exported figure.</small></div>`;
+            `<small>A centre line is thin and dash-dotted.</small></div>`;
+          html += `<div class="field"><button type="button" class="plain switch" data-act="set-construction" aria-pressed="${building}">${icon("construction", 18)}<span>Construction line</span></button>` +
+            `<small>${building
+              ? "Left out of the print and the exported figure. Press it again, or pick how it is drawn above, to put it back in."
+              : "Turns the selection into construction lines: dashed here, and left out of the print and the exported figure."}</small></div>`;
         }
         html += this.elementPanel();
         // One slider for all of them; it shows the thickness of the first.
@@ -4036,6 +4043,7 @@ export class App {
         return this.editSymbol((x) => { if (x.type === "hatch") x.lean = (x.lean ?? 1) === 1 ? -1 : 1; });
       case "el-flip":
         return this.editElements((look) => { if (look.flip) delete look.flip; else look.flip = true; });
+      case "set-construction": return this.toggleConstruction();
       case "construction":
         this.constructing = !this.constructing;
         if (this.constructing) this.showTip("construction");
@@ -4071,7 +4079,11 @@ export class App {
     return symbol(this.sk, id) ?? this.datumOn(id) ?? null;
   }
 
-  /** Sets how the selected curves are drawn. Arrows, springs and dampers are left as they are. */
+  /**
+   * Sets how the selected curves are drawn in the figure. A construction line
+   * given a way to be drawn is put back in the figure. Arrows, springs and
+   * dampers are left as they are.
+   */
   private setLineStyle(style: LineStyle): void {
     const { lines, rounds } = this.picked();
     for (const c of [...lines, ...rounds]) {
@@ -4079,9 +4091,24 @@ export class App {
       delete c.construction;
       delete c.centre;
       delete c.dashed;
-      if (style === "construction") c.construction = true;
       if (style === "centre") c.centre = true;
       if (style === "dashed") c.dashed = true;
+    }
+    this.commit();
+  }
+
+  /**
+   * Makes the selected curves construction lines, or, when they all are
+   * already, puts them back in the figure drawn as they were before.
+   */
+  private toggleConstruction(): void {
+    const { lines, rounds } = this.picked();
+    const plain = [...lines, ...rounds].filter((c) => !isNamed(c));
+    if (!plain.length) return;
+    const on = !plain.every((c) => c.construction);
+    for (const c of plain) {
+      if (on) c.construction = true;
+      else delete c.construction;
     }
     this.commit();
   }

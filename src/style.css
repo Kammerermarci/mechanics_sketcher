@@ -407,6 +407,11 @@ text.tex { fill: currentColor; font-family: var(--math); }
 }
 .plain:hover { background: var(--board-hi); }
 .plain + .plain { margin-top: 6px; }
+/* A switch in the side panel, such as Construction line: pressed, it takes the colour of construction lines. */
+.plain.switch { width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px; }
+.plain.switch svg { flex: none; }
+.plain.switch[aria-pressed="true"] { background: #fbe8f2; border-color: #e0559b; color: #5a2d82; }
+.plain.switch[aria-pressed="true"]:hover { background: #f8dbea; }
 
 /* ---- the file name dialog ---- */
 dialog {
