@@ -31,16 +31,24 @@ function planegcsWasm(): Plugin {
   };
 }
 
-/** The beta is for trying things out: search engines are asked to leave it alone. */
+/**
+ * The beta is for trying things out: search engines are asked to leave it
+ * alone. Its icon has a little b in the corner, so its tab is told apart from
+ * the released app's, and it has a manifest of its own, so it installs as an
+ * app of its own with its own desktop icon.
+ */
 function betaPage(): Plugin {
   return {
     name: "beta-page",
-    // Its icon has a little b in the corner, so its tab is told apart from the released app's.
     transformIndexHtml: {
       order: "post",
       handler: (html) =>
         process.env.VITE_CHANNEL === "beta"
-          ? html.replace("<head>", `<head>\n<meta name="robots" content="noindex">`).replace(/(<link rel="icon" href="[^"]*?)icon\.svg"/, `$1icon-beta.svg"`)
+          ? html
+            .replace("<head>", `<head>\n<meta name="robots" content="noindex">`)
+            .replace(/(<link rel="icon" href="[^"]*?)icon\.svg"/, `$1icon-beta.svg"`)
+            .replace(/(<link rel="manifest" href="[^"]*?)manifest\.webmanifest"/, `$1manifest-beta.webmanifest"`)
+            .replace(/(<link rel="apple-touch-icon" href="[^"]*?)icon-192\.png"/, `$1icon-beta-192.png"`)
           : html,
     },
   };

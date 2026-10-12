@@ -1,0 +1,16 @@
+{
+  "id": "/beta/",
+  "name": "Mech Sketch beta",
+  "short_name": "Mech Sketch beta",
+  "description": "The beta of Mech Sketch: new features being tried out",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#e7ebe5",
+  "theme_color": "#e7ebe5",
+  "icons": [
+    { "src": "icon-beta-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-beta-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-beta-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
