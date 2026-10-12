@@ -48,12 +48,85 @@ type Token =
   | { t: "name"; v: string }
   | { t: "op"; v: "+" | "-" | "*" | "/" | "^" | "(" | ")" | "," };
 
+/** Spacing and sizing commands of LaTeX, which change nothing about the value. */
+const TEX_SPACES = new Set([",", ";", ":", "!", " ", "quad", "qquad", "left", "right", "big", "Big", "bigl", "bigr", "Bigl", "Bigr", "displaystyle"]);
+
+/**
+ * A formula typed in LaTeX, as \frac{\pi}{2} or 2\sin(\pi t), put in
+ * the plain notation read here: \frac{a}{b} becomes ((a)/(b)), \sqrt{a}
+ * sqrt(a), \pi pi, \cdot a times, and braces brackets. The names of the
+ * functions are read without their backslash. A formula with no backslash
+ * and no brace is left as it is.
+ */
+export function fromTex(src: string): string {
+  // Dollar signs round the whole of it are math mode's, and say nothing about the value.
+  const s = src.trim().replace(/^\$+|\$+$/g, "");
+  if (!/[\\{}]/.test(s)) return s;
+  let i = 0;
+  /** What is inside the braces that start at i, as typed; i moves past them. */
+  const braced = (): string => {
+    while (s[i] === " ") i++;
+    if (s[i] !== "{") {
+      // Without braces a command takes the one character, or the one command, that follows it.
+      const m = /^\\[A-Za-z]+|^./.exec(s.slice(i));
+      if (!m) throw new ExprError("Something is missing at the end.");
+      i += m[0].length;
+      return m[0];
+    }
+    let depth = 0;
+    for (let j = i; j < s.length; j++) {
+      if (s[j] === "{") depth++;
+      else if (s[j] === "}" && --depth === 0) {
+        const inner = s.slice(i + 1, j);
+        i = j + 1;
+        return inner;
+      }
+    }
+    throw new ExprError("A closing brace is missing.");
+  };
+  let out = "";
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === "{") { out += "("; i++; continue; }
+    if (ch === "}") { out += ")"; i++; continue; }
+    if (ch !== "\\") { out += ch; i++; continue; }
+    const m = /^\\([A-Za-z]+|.?)/.exec(s.slice(i))!;
+    i += m[0].length;
+    const name = m[1];
+    if (name === "frac" || name === "dfrac" || name === "tfrac") {
+      const a = fromTex(braced()), b = fromTex(braced());
+      out += `((${a})/(${b}))`;
+    } else if (name === "sqrt") {
+      let root = "";
+      if (s[i] === "[") {
+        const end = s.indexOf("]", i);
+        if (end < 0) throw new ExprError("A closing ] is missing after \\sqrt[.");
+        root = fromTex(s.slice(i + 1, end));
+        i = end + 1;
+      }
+      const a = fromTex(braced());
+      out += root ? `((${a})^(1/(${root})))` : `sqrt(${a})`;
+    } else if (name === "mathrm" || name === "operatorname" || name === "text" || name === "mathit") {
+      out += ` ${braced()} `;
+    } else if (name === "pi") out += " pi ";
+    else if (name === "cdot" || name === "times" || name === "ast") out += "*";
+    else if (name === "div") out += "/";
+    else if (TEX_SPACES.has(name)) {
+      // \left. and \right. stand for no bracket at all.
+      if ((name === "left" || name === "right") && s[i] === ".") i++;
+      out += " ";
+    } else if (name.toLowerCase() in FUNCTIONS || name.toLowerCase() in ALIASES || name === "e") out += ` ${name} `;
+    else throw new ExprError(`"\\${name}" is not something this knows.`);
+  }
+  return out;
+}
+
 function tokens(src: string): Token[] {
   const out: Token[] = [];
   /** For each open bracket, whether it holds the arguments of a function that takes several. */
   const lists: boolean[] = [];
-  // Signs a keyboard or a pasted formula may bring in place of the plain ones.
-  const s = src.replace(/[−–]/g, "-").replace(/[·×∙⋅]/g, "*").replace(/[÷:]/g, "/").replace(/π/g, " pi ").replace(/²/g, "^2").replace(/³/g, "^3");
+  // Signs a keyboard or a pasted formula may bring in place of the plain ones, and LaTeX.
+  const s = fromTex(src).replace(/[−–]/g, "-").replace(/[·×∙⋅]/g, "*").replace(/[÷:]/g, "/").replace(/π/g, " pi ").replace(/²/g, "^2").replace(/³/g, "^3");
   for (let i = 0; i < s.length;) {
     const ch = s[i];
     if (/\s/.test(ch)) { i++; continue; }

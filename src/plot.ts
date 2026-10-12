@@ -61,6 +61,31 @@ export function tickText(v: number, step: number): string {
   return String(Number(v.toFixed(d)));
 }
 
+/** A value as a whole number of twelfths of pi, or null when it is not one. */
+function twelfthsOfPi(v: number): number | null {
+  const k = (v / Math.PI) * 12;
+  return Math.abs(k - Math.round(k)) < 1e-6 && Math.abs(k) < 12 * 1e4 ? Math.round(k) : null;
+}
+
+/** A value that is a round share of pi written with pi, as TeX: \pi, 2\pi, \frac{\pi}{2}, -\frac{3\pi}{4}. */
+export function piTex(twelfths: number): string {
+  if (twelfths === 0) return "0";
+  const g = gcd(Math.abs(twelfths), 12), top = Math.abs(twelfths / g), bottom = 12 / g;
+  const sign = twelfths < 0 ? "-" : "";
+  const times = top === 1 ? "\\pi" : `${top}\\pi`;
+  return bottom === 1 ? `${sign}${times}` : `${sign}\\frac{${times}}{${bottom}}`;
+}
+const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+
+/** The number at a tick as TeX: written with pi where the ticks are a round share of pi apart, as at \pi/2, \pi, 3\pi/2. */
+export function tickTex(v: number, step: number): string {
+  if (twelfthsOfPi(step) !== null) {
+    const k = twelfthsOfPi(v);
+    if (k !== null) return piTex(k);
+  }
+  return tickText(v, step);
+}
+
 /** Where the two axes of a plot drawn with arrows run, in the plot's coordinates: through the origin, or along the nearest edge when it is out of range. */
 export function axisCross(plot: Plot): V {
   const clamp = (a: PlotAxis) => Math.max(a.min, Math.min(a.max, 0));
@@ -126,8 +151,50 @@ export function curveRuns(plot: Plot, c: PlotCurve): V[][] {
   const out: V[][] = [];
   for (const s of stretches(plot, c, 1)) for (const run of runs(plot, s)) out.push(...clipRun(plot, run));
   for (const s of paramStretches(plot, c)) for (const run of paramRuns(plot, s)) out.push(...clipRun(plot, run));
-  for (const up of uprights(plot, c)) out.push(...clipRun(plot, up));
+  for (const up of joins(plot, c)) out.push(...clipRun(plot, up));
   return out;
+}
+
+// ---- flipped plots ------------------------------------------------------------------
+
+/** Of a function of a flipped plot, drawn as a curve given by a parameter: the lines across that join its pieces. */
+const TURNED = new WeakMap<PlotCurve, V[][]>();
+
+/** The lines that join the pieces of a function: upright, or across for a function of a flipped plot. */
+function joins(plot: Plot, c: PlotCurve): V[][] {
+  return [...uprights(plot, c), ...(TURNED.get(c) ?? [])];
+}
+
+/**
+ * The plot as it is drawn. A flipped plot has its variable running up the
+ * side and the values of its functions across: it is drawn as a plot with
+ * its two axes swapped, where each function of x becomes the curve (f(t), t).
+ * The axes of what is returned are the plot's own, swapped round, so a change
+ * to their ranges is a change to the plot; its notes, balloons and names have
+ * their places swapped too. `over` is the stretch of the variable to draw the
+ * functions over, when it is not the range of the plot. A plot that is not
+ * flipped is returned as it is.
+ */
+export function asDrawn(plot: Plot, over?: [number, number]): Plot {
+  if (!plot.flip) return plot;
+  const [lo, hi] = over ?? [plot.x.min, plot.x.max];
+  const along: Plot = { ...plot, x: { ...plot.x, min: lo, max: hi } };
+  const curves = plot.curves.map((c): PlotCurve => {
+    const placed = { ...c, lx: c.ly, ly: c.lx };
+    if (c.param) return { ...placed, pieces: c.pieces.map((p) => ({ ...p, x: p.expr, expr: p.x ?? "" })) };
+    const pieces = c.pieces.map((p) => ({ x: p.expr, expr: "x", from: Math.max(p.from ?? -Infinity, lo), to: Math.min(p.to ?? Infinity, hi) }))
+      .filter((p) => p.to > p.from);
+    const turned: PlotCurve = { ...placed, param: true, pieces };
+    TURNED.set(turned, uprights(along, c).map((up) => up.map(([x, y]): V => [y, x])));
+    return turned;
+  });
+  const swap = <T extends { x: number; y: number }>(q: T): T => ({ ...q, x: q.y, y: q.x });
+  return { ...plot, flip: undefined, x: plot.y, y: plot.x, curves, notes: plot.notes?.map(swap), balloons: plot.balloons?.map(swap) };
+}
+
+/** Whether a curve of a plot as drawn is a function of a flipped plot: it is shaded across to the axis, not closed on itself. */
+export function turned(c: PlotCurve): boolean {
+  return TURNED.has(c);
 }
 
 /** Where the name of a curve sits, in the plot's coordinates: where it was put, or else above the curve, two thirds of the way along what shows of it. */
@@ -194,8 +261,8 @@ function layout(plot: Plot): Layout {
   const xStep = tickStep(plot.x, plot.width), yStep = tickStep(plot.y, plot.height);
   const numbered = plot.ticks === undefined;
   // Where the other axis crosses, a number would sit on that axis: it is left out.
-  const xNumbers = !numbered ? [] : xs.filter((v) => marked(plot, "x", v)).map((v) => ({ v, tex: tickText(v, xStep) }));
-  const yNumbers = !numbered ? [] : ys.filter((v) => marked(plot, "y", v)).map((v) => ({ v, tex: tickText(v, yStep) }));
+  const xNumbers = !numbered ? [] : xs.filter((v) => marked(plot, "x", v)).map((v) => ({ v, tex: tickTex(v, xStep) }));
+  const yNumbers = !numbered ? [] : ys.filter((v) => marked(plot, "y", v)).map((v) => ({ v, tex: tickTex(v, yStep) }));
   const tick = plot.ticks === "none" ? 0 : box ? PLOT.tickBox : PLOT.tickCross;
   const engine = texEngine();
   const tall = Math.max(0, ...xNumbers.map((n) => { const m = engine.measure(n.tex); return (m.asc + m.desc) * PAPER.em; }));
@@ -210,9 +277,11 @@ function layout(plot: Plot): Layout {
 /**
  * The plot as primitives, in mm on paper, with the lower left corner of its
  * axis box at (0, 0). What belongs to a curve carries the curve's id; the
- * names of the axes are parts "xlabel" and "ylabel" of the plot itself.
+ * names of the axes are parts "xlabel" and "ylabel" of the plot itself. A
+ * flipped plot is laid out as it is drawn, with its axes swapped.
  */
-export function plotPrims(plot: Plot): Prim[] {
+export function plotPrims(given: Plot): Prim[] {
+  const plot = asDrawn(given);
   const { width: W, height: H } = plot;
   const box = plot.frame === "box";
   const L = layout(plot);
@@ -230,7 +299,10 @@ export function plotPrims(plot: Plot): Prim[] {
       out.push({ k: "region", layer: "fill", ref: c.id, color: tint(c.color, PLOT.shade), outlines: [{ kind: "path", start, segs: [...rest, start].map((to) => ({ k: "L" as const, to })) }] });
     };
     // A curve given by a parameter is shaded inside: closed from its end back to its start.
-    for (const s of paramStretches(plot, c)) for (const run of paramRuns(plot, s)) shade(run);
+    // A function of a flipped plot is shaded across to the axis it is drawn from.
+    for (const s of paramStretches(plot, c)) {
+      for (const run of paramRuns(plot, s)) shade(turned(c) ? [[0, run[0][1]], ...run, [0, run[run.length - 1][1]]] : run);
+    }
     for (const s of stretches(plot, c, 1)) {
       for (const run of runs(plot, s)) shade([[run[0][0], 0], ...run, [run[run.length - 1][0], 0]]);
     }
@@ -334,9 +406,12 @@ export function plotSvg(plot: Plot): string | null {
 /**
  * The plot as a tikzpicture with a pgfplots axis in it. The size, the ranges,
  * the ticks and where every label sits are all written out, so nothing is
- * left for pgfplots to choose: it comes out as the screen shows it.
+ * left for pgfplots to choose: it comes out as the screen shows it. A
+ * flipped plot is written as it is drawn, its functions as curves given by
+ * a parameter.
  */
-export function plotTikz(plot: Plot): string {
+export function plotTikz(given: Plot): string {
+  const plot = asDrawn(given);
   const { width: W, height: H } = plot;
   const box = plot.frame === "box";
   const L = layout(plot);
@@ -408,12 +483,14 @@ export function plotTikz(plot: Plot): string {
     const along = (s: ParamStretch) => `domain=${n(s.from)}:${n(s.to)}, samples=${s.samples}, restrict x to domain=${n(left)}:${n(right)}`;
     const point = (s: ParamStretch) => `({${toPgf(s.x)}}, {${toPgf(s.y)}})`;
     if (c.fill) {
-      for (const s of turns) body.push(`\\addplot[draw=none, fill=${tikzColor(tint(c.color, PLOT.shade))}, ${along(s)}, on layer=axis background] ${point(s)} -- cycle;`);
+      // A function of a flipped plot is shaded across to the axis it is drawn from; any other curve inside itself.
+      const close = (s: ParamStretch) => (turned(c) ? ` -- (axis cs:0,${n(s.to)}) -- (axis cs:0,${n(s.from)})` : "");
+      for (const s of turns) body.push(`\\addplot[draw=none, fill=${tikzColor(tint(c.color, PLOT.shade))}, ${along(s)}, on layer=axis background] ${point(s)}${close(s)} -- cycle;`);
     }
     for (const s of turns) body.push(`\\addplot[${pen}, ${along(s)}] ${point(s)};`);
     // The upright lines go in after the axis, in mm from its lower left corner like the names: inside it,
     // one that runs along the edge of the plot would be cut to half its thickness.
-    for (const up of uprights(plot, c)) {
+    for (const up of joins(plot, c)) {
       for (const part of clipRun(plot, up)) after.push(`\\draw[${pen}, line cap=round] ${part.map((q) => { const [X, Y] = toPaper(plot, q); return `(${mm(X)},${mm(Y)})`; }).join(" -- ")};`);
     }
   }

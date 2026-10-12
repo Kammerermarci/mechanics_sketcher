@@ -70,6 +70,13 @@ export function texRuns(tex: string): Run[] {
         }
         return;
       }
+      if (name === "frac" || name === "dfrac" || name === "tfrac") {
+        // On one line, as a/b: the stand-in has no fractions stacked one over the other.
+        atom(level, upright);
+        push("/", false, level);
+        atom(level, upright);
+        return;
+      }
       if (UPRIGHT.has(name)) return atom(level, true);
       if (TRANSPARENT.has(name)) return;
       if (name in SYMBOLS) {

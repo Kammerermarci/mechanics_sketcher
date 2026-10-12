@@ -125,3 +125,32 @@ describe("typed functions", () => {
     }
   });
 });
+
+describe("LaTeX", () => {
+  it("reads values written in LaTeX", () => {
+    expect(at("\\pi", 0)).toBeCloseTo(Math.PI, 12);
+    expect(at("2\\pi", 0)).toBeCloseTo(2 * Math.PI, 12);
+    expect(at("-\\pi", 0)).toBeCloseTo(-Math.PI, 12);
+    expect(at("\\pi/2", 0)).toBeCloseTo(Math.PI / 2, 12);
+    expect(at("\\frac{\\pi}{2}", 0)).toBeCloseTo(Math.PI / 2, 12);
+    expect(at("\\frac{3\\pi}{2}", 0)).toBeCloseTo((3 * Math.PI) / 2, 12);
+    expect(at("\\dfrac{1}{4}", 0)).toBe(0.25);
+    expect(at("\\sqrt{2}", 0)).toBeCloseTo(Math.SQRT2, 12);
+    expect(at("\\sqrt[3]{8}", 0)).toBeCloseTo(2, 12);
+    expect(at("2 \\cdot 3", 0)).toBe(6);
+    expect(at("$\\pi$", 0)).toBeCloseTo(Math.PI, 12);
+    expect(at("\\mathrm{e}^{2}", 0)).toBeCloseTo(Math.E ** 2, 12);
+  });
+
+  it("reads functions written in LaTeX", () => {
+    expect(at("2\\sin(\\pi x)", 0.5)).toBeCloseTo(2, 12);
+    expect(at("\\left(1 + x\\right)^{2}", 1)).toBe(4);
+    expect(at("\\frac{x^2}{2}", 3)).toBe(4.5);
+    expect(degree(parseExpr("\\frac{\\pi}{2}"))).toBe(0);
+  });
+
+  it("says what it does not know", () => {
+    expect(() => parseExpr("\\foo")).toThrow(ExprError);
+    expect(() => parseExpr("\\frac{1}{2")).toThrow(ExprError);
+  });
+});

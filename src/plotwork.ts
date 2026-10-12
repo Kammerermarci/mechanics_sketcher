@@ -13,7 +13,7 @@ import { type View, toScreen, toModel, drawPrims } from "./render";
 import { figureBounds } from "./export";
 import {
   PLOT, PLOT_COLORS, PARAM_RANGE, plotPrims, plotSvg, plotTikz, newPlot, newCurve, copyPlot, fitX, fitY, equalScales, pieceError, formulaError, readFormula,
-  toData, toPaper, curveLabelAt, curveRuns, drawable, tickStep, tickText, balloonPlace, nextBalloonText,
+  toData, toPaper, curveLabelAt, curveRuns, drawable, tickStep, tickText, balloonPlace, nextBalloonText, asDrawn,
 } from "./plot";
 import { evaluate, degree } from "./expr";
 import { icon } from "./icons";
@@ -86,22 +86,25 @@ function typed(text: string): number {
   return t === "" ? NaN : Number(t);
 }
 /**
- * Where a parameter starts or ends, as typed: a number, or a formula with no
- * variable in it such as 2pi or pi/2. NaN for anything else.
+ * A value as typed in a field: a number, or a formula with no variable in
+ * it, plain or in LaTeX, such as 2pi, \pi/2, \frac{3\pi}{2} or \sqrt{2}.
+ * NaN for anything else.
  */
 function typedConstant(text: string): number {
   const plain = typed(text);
   if (Number.isFinite(plain) || !text.trim()) return plain;
   const got = readFormula(text);
-  return typeof got === "string" || degree(got) > 0 ? NaN : evaluate(got, 0);
+  if (typeof got === "string" || degree(got) > 0) return NaN;
+  const v = evaluate(got, 0);
+  return Number.isFinite(v) ? v : NaN;
 }
-/** A value of a parameter as it is shown in its field: a round share of pi is written with pi, so that it reads back exactly. */
+/** A value as it is shown in its field: a round share of pi is written with \pi, as it would be typed in LaTeX, so that it reads back exactly. */
 function shownConstant(v: number): string {
   const twelfths = (v / Math.PI) * 12;
   if (v !== 0 && Math.abs(twelfths - Math.round(twelfths)) < 1e-9 && Math.abs(twelfths) <= 12 * 64) {
     const k = Math.round(twelfths), g = gcd(Math.abs(k), 12);
     const top = k / g, bottom = 12 / g;
-    return `${top === 1 ? "" : top === -1 ? "-" : top}pi${bottom === 1 ? "" : `/${bottom}`}`;
+    return `${top === 1 ? "" : top === -1 ? "-" : top}\\pi${bottom === 1 ? "" : `/${bottom}`}`;
   }
   return shown(v);
 }
@@ -153,7 +156,7 @@ export class PlotWorkspace {
   private focusNext: string | null = null;
   /** What a click on the plot puts down, if anything: a note, or a balloon. */
   private tool: "note" | "balloon" | null = null;
-  /** The spot a balloon being placed points at, in the plot's own coordinates, until its second click says where the balloon goes. */
+  /** The spot a balloon being placed points at, in the coordinates of the plot as it is drawn, until its second click says where the balloon goes. */
   private pending: V | null = null;
 
   constructor(private host: PlotHost, private svg: SVGSVGElement, private panel: HTMLElement, private empty: HTMLElement) {
@@ -246,11 +249,12 @@ export class PlotWorkspace {
   fit(): void {
     const p = this.plot();
     if (!p) return;
+    const d = asDrawn(p);
     const G = this.G, pad = Math.max(36, Math.min(G.w, G.h) * 0.12);
     const room: V = [Math.max(40, G.w - 2 * pad), Math.max(40, G.h - 2 * pad)];
     let w = room[0], h = (w * p.height) / p.width;
     if (h > room[1]) { h = room[1]; w = (h * p.width) / p.height; }
-    this.gv = { cx: (p.x.min + p.x.max) / 2, cy: (p.y.min + p.y.max) / 2, sx: w / (p.x.max - p.x.min), sy: h / (p.y.max - p.y.min) };
+    this.gv = { cx: (d.x.min + d.x.max) / 2, cy: (d.y.min + d.y.max) / 2, sx: w / (d.x.max - d.x.min), sy: h / (d.y.max - d.y.min) };
     this.fitted = p.id;
     this.host.render();
   }
@@ -259,13 +263,23 @@ export class PlotWorkspace {
   private keepFrame(): void {
     const p = this.plot();
     if (!p) return;
-    const a = this.gs([p.x.min, p.y.max]), b = this.gs([p.x.max, p.y.min]);
+    const d = asDrawn(p);
+    const a = this.gs([d.x.min, d.y.max]), b = this.gs([d.x.max, d.y.min]);
     if (!inside(this.G, a) || !inside(this.G, b)) this.fit();
   }
 
   // ---- where things are --------------------------------------------------------------
 
-  /** Where a point of the plot's own coordinates is on the graph, in screen pixels. */
+  /**
+   * The graph and the print show the plot as it is drawn: for a flipped plot,
+   * with its axes swapped. This takes a point of what is drawn back to the
+   * plot's own coordinates, x the variable and y the value.
+   */
+  private back(p: Plot, q: V): V {
+    return p.flip ? [q[1], q[0]] : q;
+  }
+
+  /** Where a point of the plot as it is drawn is on the graph, in screen pixels. */
   private gs([x, y]: V): V {
     const { G, gv } = this;
     return [G.x + G.w / 2 + (x - gv.cx) * gv.sx, G.y + G.h / 2 - (y - gv.cy) * gv.sy];
@@ -324,8 +338,9 @@ export class PlotWorkspace {
       this.page = { x0: Math.min(b.x0, 0) - PAGE_MARGIN, y0: Math.min(b.y0, 0) - PAGE_MARGIN, x1: Math.max(b.x1, p.width) + PAGE_MARGIN, y1: Math.max(b.y1, p.height) + PAGE_MARGIN };
     }
     const { G, P } = this;
+    const d = asDrawn(p);
     const rect = (r: Rect) => `x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}"`;
-    const a = this.gs([p.x.min, p.y.max]), b = this.gs([p.x.max, p.y.min]);
+    const a = this.gs([d.x.min, d.y.max]), b = this.gs([d.x.max, d.y.min]);
     let html = `<defs><clipPath id="pw-graph-clip"><rect ${rect(G)}/></clipPath><clipPath id="pw-print-clip"><rect ${rect(P)}/></clipPath>` +
       `<clipPath id="pw-frame-clip"><rect x="${n2(a[0])}" y="${n2(a[1])}" width="${n2(Math.max(0, b[0] - a[0]))}" height="${n2(Math.max(0, b[1] - a[1]))}"/></clipPath></defs>`;
     html += `<g clip-path="url(#pw-graph-clip)">${this.graphHtml(p)}</g>`;
@@ -346,8 +361,9 @@ export class PlotWorkspace {
   /** The graph: a grid over the plane, the axes, the curves, and the frame of what is exported. */
   private graphHtml(p: Plot): string {
     const { G, gv } = this;
+    const d = asDrawn(p);
     const [x0, y1] = this.gd([G.x, G.y]), [x1, y0] = this.gd([G.x + G.w, G.y + G.h]);
-    const a = this.gs([p.x.min, p.y.max]), b = this.gs([p.x.max, p.y.min]);
+    const a = this.gs([d.x.min, d.y.max]), b = this.gs([d.x.max, d.y.min]);
     let html = `<rect class="pw-graph" x="${G.x}" y="${G.y}" width="${G.w}" height="${G.h}"/>`;
     html += `<rect class="pw-frame-fill" x="${n2(a[0])}" y="${n2(a[1])}" width="${n2(Math.max(0, b[0] - a[0]))}" height="${n2(Math.max(0, b[1] - a[1]))}"/>`;
 
@@ -376,13 +392,15 @@ export class PlotWorkspace {
     if (inside(G, o)) nums += `<text class="pw-num" x="${n2(o[0] - 6)}" y="${n2(o[1] + 15)}" text-anchor="end">0</text>`;
     html += nums;
 
-    // The curves over all of the graph: faint outside the frame, as they are inside it.
-    const view: Plot = { ...p, x: { ...p.x, min: x0, max: x1 }, y: { ...p.y, min: y0, max: y1 }, width: G.w, height: G.h };
+    // The curves over all of the graph: faint outside the frame, as they are inside it. The functions of a
+    // flipped plot are drawn over as much of their variable as runs up the graph.
+    const over = asDrawn(p, p.flip ? [y0, y1] : undefined);
+    const view: Plot = { ...over, x: { ...over.x, min: x0, max: x1 }, y: { ...over.y, min: y0, max: y1 }, width: G.w, height: G.h };
     const lit = this.lit();
     this.paths = [];
     let curves = "";
-    for (const c of p.curves) {
-      if (!drawable(p, c)) continue;
+    for (const c of over.curves) {
+      if (!drawable(view, c)) continue;
       const on = c.id === this.selected || c.id === lit;
       const dash = c.dash === "dashed" ? ` stroke-dasharray="8 5"` : c.dash === "dotted" ? ` stroke-dasharray="0.1 5"` : "";
       for (const run of curveRuns(view, c)) {
@@ -397,7 +415,7 @@ export class PlotWorkspace {
     html += `<rect class="pw-frame" x="${n2(a[0])}" y="${n2(a[1])}" width="${n2(Math.max(0, b[0] - a[0]))}" height="${n2(Math.max(0, b[1] - a[1]))}"/>`;
     const held = this.drag?.kind === "frame" ? this.drag.h : this.hover.kind === "frame" && !this.tool ? this.hover.h : null;
     for (const h of HANDLES) {
-      const c = this.frameHandle(p, h);
+      const c = this.frameHandle(d, h);
       html += `<rect class="plot-handle${held === h ? " on" : ""}" x="${n2(c[0] - 4.5)}" y="${n2(c[1] - 4.5)}" width="9" height="9" rx="1.5"/>`;
     }
     if (this.drag?.kind === "frame" || this.drag?.kind === "shift") {
@@ -433,7 +451,7 @@ export class PlotWorkspace {
       inner += `<text class="plot-size" x="${n2((a[0] + b[0]) / 2)}" y="${n2(b[1] - 12)}" text-anchor="middle">${shown(p.width / 10)} × ${shown(p.height / 10)} cm</text>`;
     }
     if (this.tool === "balloon" && this.pending && this.paneAt(this.cursor) === "print") {
-      const from = S(toPaper(p, this.pending)), to = this.local(this.cursor);
+      const from = S(toPaper(asDrawn(p), this.pending)), to = this.local(this.cursor);
       inner += `<line class="preview" x1="${n2(from[0])}" y1="${n2(from[1])}" x2="${n2(to[0])}" y2="${n2(to[1])}"/>` +
         `<circle class="preview" cx="${n2(to[0])}" cy="${n2(to[1])}" r="${n2(PAPER.balloonRadius * pv.scale)}"/>`;
     }
@@ -491,13 +509,15 @@ export class PlotWorkspace {
     const short = (v: number, span: number) => String(Number(v.toFixed(Math.max(0, 2 - Math.floor(Math.log10(span))))));
     const pane = this.paneAt(this.cursor);
     if (pane === "graph") {
-      const [x, y] = this.gd(this.cursor);
-      return `x ${short(x, this.G.w / this.gv.sx)}   y ${short(y, this.G.h / this.gv.sy)}`;
+      // In the plot's own terms: for a flipped plot the variable x is what runs up the graph.
+      const [x, y] = this.back(p, this.gd(this.cursor));
+      const [sx, sy] = this.back(p, [this.G.w / this.gv.sx, this.G.h / this.gv.sy]);
+      return `x ${short(x, sx)}   y ${short(y, sy)}`;
     }
     if (pane === "print") {
       const q = toModel(this.pv, this.local(this.cursor));
       if (q[0] >= 0 && q[0] <= p.width && q[1] >= 0 && q[1] <= p.height) {
-        const [x, y] = toData(p, q);
+        const [x, y] = this.back(p, toData(asDrawn(p), q));
         return `x ${short(x, p.x.max - p.x.min)}   y ${short(y, p.y.max - p.y.min)}`;
       }
     }
@@ -515,8 +535,8 @@ export class PlotWorkspace {
     const p = this.plot();
     if (!p) return { kind: "none" };
     const pane = this.paneAt(sp);
-    if (pane === "graph") return this.graphHit(p, sp);
-    if (pane === "print") return this.printHit(p, this.local(sp));
+    if (pane === "graph") return this.graphHit(asDrawn(p), sp);
+    if (pane === "print") return this.printHit(asDrawn(p), this.local(sp));
     return { kind: "none" };
   }
 
@@ -584,15 +604,17 @@ export class PlotWorkspace {
     }
     if (this.tool) return this.place(p, pane, sp);
     const hit = this.hit(sp);
+    // What follows is in the terms of the plot as it is drawn, across and up.
+    const dp = asDrawn(p);
     // The ends of the range land on tenths of the distance between the ticks on paper, so that they are round numbers.
-    const gx = tickStep(p.x, p.width) / 10, gy = tickStep(p.y, p.height) / 10;
+    const gx = tickStep(dp.x, dp.width) / 10, gy = tickStep(dp.y, dp.height) / 10;
     const lq = toModel(this.pv, this.local(sp));
     switch (hit.kind) {
       case "frame":
-        this.drag = { kind: "frame", h: hit.h, x: [p.x.min, p.x.max], y: [p.y.min, p.y.max], gx, gy, moved: false };
+        this.drag = { kind: "frame", h: hit.h, x: [dp.x.min, dp.x.max], y: [dp.y.min, dp.y.max], gx, gy, moved: false };
         break;
       case "frame-edge":
-        this.drag = { kind: "shift", start: this.gd(sp), x: [p.x.min, p.x.max], y: [p.y.min, p.y.max], gx, gy, moved: false };
+        this.drag = { kind: "shift", start: this.gd(sp), x: [dp.x.min, dp.x.max], y: [dp.y.min, dp.y.max], gx, gy, moved: false };
         break;
       case "graph": case "graph-curve":
         this.drag = { kind: "pan", last: sp, start: sp, moved: false, select: true, click: hit.kind === "graph-curve" ? hit.id : null };
@@ -601,18 +623,18 @@ export class PlotWorkspace {
         this.drag = { kind: "size", h: hit.h, start: sp, width: p.width, height: p.height, cx: this.pv.cx, cy: this.pv.cy, moved: false };
         break;
       case "note": case "balloon": {
-        const note = p.notes?.find((n) => n.id === hit.id), balloon = p.balloons?.find((b) => b.id === hit.id);
-        const at = note ? toPaper(p, [note.x, note.y]) : balloon ? balloonPlace(p, balloon)[hit.kind === "balloon" && hit.tip ? "anchor" : "centre"] : lq;
-        const centre = balloon ? balloonPlace(p, balloon).centre : lq;
+        const note = dp.notes?.find((n) => n.id === hit.id), balloon = dp.balloons?.find((b) => b.id === hit.id);
+        const at = note ? toPaper(dp, [note.x, note.y]) : balloon ? balloonPlace(dp, balloon)[hit.kind === "balloon" && hit.tip ? "anchor" : "centre"] : lq;
+        const centre = balloon ? balloonPlace(dp, balloon).centre : lq;
         this.drag = { kind: "mark", id: hit.id, tip: hit.kind === "balloon" && hit.tip, offset: [at[0] - lq[0], at[1] - lq[1]], centre, moved: false };
         break;
       }
       case "name": {
-        const c = p.curves.find((x) => x.id === hit.id);
-        const at = c ? curveLabelAt(p, c) : null;
+        const c = dp.curves.find((x) => x.id === hit.id);
+        const at = c ? curveLabelAt(dp, c) : null;
         if (!c || !at) return;
         this.select(c.id);
-        const on = toPaper(p, at);
+        const on = toPaper(dp, at);
         this.drag = { kind: "name", id: c.id, offset: [on[0] - lq[0], on[1] - lq[1]], moved: false };
         break;
       }
@@ -633,6 +655,8 @@ export class PlotWorkspace {
       return this.host.render();
     }
     const lq = toModel(this.pv, this.local(sp));
+    // The plot as it is drawn: its axes are the plot's own, swapped round when it is flipped.
+    const dp = asDrawn(p);
     /** A value on the steps the range moves in, or, with Alt held, wherever it is. */
     const land = (v: number, g: number) => (ev.altKey ? Number(v.toPrecision(6)) : Number((Math.round(v / g) * g).toPrecision(12)));
     if (d.kind === "pan") {
@@ -645,18 +669,18 @@ export class PlotWorkspace {
       // The side follows the pointer; the two ends of an axis stay a step apart at the least.
       const [x, y] = this.gd(sp);
       const apart = (v: number) => Number(v.toPrecision(12));
-      if (d.h.x < 0) p.x.min = Math.min(land(x, d.gx), apart(d.x[1] - d.gx));
-      if (d.h.x > 0) p.x.max = Math.max(land(x, d.gx), apart(d.x[0] + d.gx));
-      if (d.h.y < 0) p.y.min = Math.min(land(y, d.gy), apart(d.y[1] - d.gy));
-      if (d.h.y > 0) p.y.max = Math.max(land(y, d.gy), apart(d.y[0] + d.gy));
-      d.moved = d.moved || p.x.min !== d.x[0] || p.x.max !== d.x[1] || p.y.min !== d.y[0] || p.y.max !== d.y[1];
+      if (d.h.x < 0) dp.x.min = Math.min(land(x, d.gx), apart(d.x[1] - d.gx));
+      if (d.h.x > 0) dp.x.max = Math.max(land(x, d.gx), apart(d.x[0] + d.gx));
+      if (d.h.y < 0) dp.y.min = Math.min(land(y, d.gy), apart(d.y[1] - d.gy));
+      if (d.h.y > 0) dp.y.max = Math.max(land(y, d.gy), apart(d.y[0] + d.gy));
+      d.moved = d.moved || dp.x.min !== d.x[0] || dp.x.max !== d.x[1] || dp.y.min !== d.y[0] || dp.y.max !== d.y[1];
     } else if (d.kind === "shift") {
       const [x, y] = this.gd(sp);
       const dx = land(x - d.start[0], d.gx), dy = land(y - d.start[1], d.gy);
-      p.x.min = Number((d.x[0] + dx).toPrecision(12));
-      p.x.max = Number((d.x[1] + dx).toPrecision(12));
-      p.y.min = Number((d.y[0] + dy).toPrecision(12));
-      p.y.max = Number((d.y[1] + dy).toPrecision(12));
+      dp.x.min = Number((d.x[0] + dx).toPrecision(12));
+      dp.x.max = Number((d.x[1] + dx).toPrecision(12));
+      dp.y.min = Number((d.y[0] + dy).toPrecision(12));
+      dp.y.max = Number((d.y[1] + dy).toPrecision(12));
       d.moved = d.moved || dx !== 0 || dy !== 0;
     } else if (d.kind === "size") {
       const whole = (v: number) => Math.max(PLOT.minSize, Math.min(PLOT.maxSize, ev.altKey ? Number(v.toFixed(2)) : Math.round(v)));
@@ -674,24 +698,25 @@ export class PlotWorkspace {
     } else if (d.kind === "name") {
       const c = p.curves.find((x) => x.id === d.id);
       if (!c) return;
-      const [x, y] = toData(p, [lq[0] + d.offset[0], lq[1] + d.offset[1]]);
+      const [x, y] = this.back(p, toData(dp, [lq[0] + d.offset[0], lq[1] + d.offset[1]]));
       c.lx = Number(x.toPrecision(6));
       c.ly = Number(y.toPrecision(6));
       d.moved = true;
     } else if (d.kind === "mark") {
       const to: V = [lq[0] + d.offset[0], lq[1] + d.offset[1]];
       const note = p.notes?.find((n) => n.id === d.id), balloon = p.balloons?.find((b) => b.id === d.id);
-      const at = (v: V): V => { const [x, y] = toData(p, v); return [Number(x.toPrecision(6)), Number(y.toPrecision(6))]; };
+      /** A place on paper in the plot's own coordinates, and as it is drawn. */
+      const at = (v: V): V => { const [x, y] = toData(dp, v); return [Number(x.toPrecision(6)), Number(y.toPrecision(6))]; };
       const mm = (v: number) => Number(v.toFixed(3));
-      if (note) [note.x, note.y] = at(to);
+      if (note) [note.x, note.y] = this.back(p, at(to));
       else if (balloon && d.tip) {
         // The tip moves; the balloon stays where it is on paper.
-        [balloon.x, balloon.y] = at(to);
-        const anchor = toPaper(p, [balloon.x, balloon.y]);
+        [balloon.x, balloon.y] = this.back(p, at(to));
+        const anchor = toPaper(dp, at(to));
         balloon.dx = mm(d.centre[0] - anchor[0]);
         balloon.dy = mm(d.centre[1] - anchor[1]);
       } else if (balloon) {
-        const { anchor } = balloonPlace(p, balloon);
+        const anchor = toPaper(dp, this.back(p, [balloon.x, balloon.y]));
         balloon.dx = mm(to[0] - anchor[0]);
         balloon.dy = mm(to[1] - anchor[1]);
       }
@@ -708,10 +733,13 @@ export class PlotWorkspace {
    */
   private place(p: Plot, pane: Pane, sp: V): void {
     const sk = this.host.sketch();
+    const dp = asDrawn(p);
     const round = (q: V): V => [Number(q[0].toPrecision(6)), Number(q[1].toPrecision(6))];
-    const at = round(pane === "graph" ? this.gd(sp) : toData(p, toModel(this.pv, this.local(sp))));
+    // Where it was clicked in the plot as it is drawn; what is kept is in the plot's own coordinates.
+    const at = round(pane === "graph" ? this.gd(sp) : toData(dp, toModel(this.pv, this.local(sp))));
     if (this.tool === "note") {
-      const note: PlotNote = { id: newId(sk, "mark"), x: at[0], y: at[1], text: "Text" };
+      const [x, y] = this.back(p, at);
+      const note: PlotNote = { id: newId(sk, "mark"), x, y, text: "Text" };
       (p.notes ??= []).push(note);
       this.selected = note.id;
     } else {
@@ -719,13 +747,14 @@ export class PlotWorkspace {
         this.pending = at;
         return this.host.render();
       }
-      const anchor = toPaper(p, this.pending);
-      const centre = pane === "graph" ? toPaper(p, this.gd(sp)) : toModel(this.pv, this.local(sp));
+      const anchor = toPaper(dp, this.pending);
+      const centre = pane === "graph" ? toPaper(dp, this.gd(sp)) : toModel(this.pv, this.local(sp));
       // Clicked again on the spot it points at: the balloon sits there, with no leader.
       const spot = pane === "graph" ? this.gs(this.pending) : toScreen(this.pv, anchor);
       const same = dist(spot, pane === "graph" ? sp : this.local(sp)) < 4;
+      const [x, y] = this.back(p, this.pending);
       const balloon: PlotBalloon = {
-        id: newId(sk, "mark"), x: this.pending[0], y: this.pending[1],
+        id: newId(sk, "mark"), x, y,
         dx: same ? 0 : Number((centre[0] - anchor[0]).toFixed(3)), dy: same ? 0 : Number((centre[1] - anchor[1]).toFixed(3)),
         text: nextBalloonText(p), end: "arrow",
       };
@@ -832,7 +861,8 @@ export class PlotWorkspace {
       tool("tool-note", "note", "Note", "Put text on the plot: click where it should start", `${off} aria-pressed="${this.tool === "note"}"`) +
       tool("tool-balloon", "balloon", "Balloon", "Put a balloon on the plot: click what it points at, then where it sits", `${off} aria-pressed="${this.tool === "balloon"}"`) +
       `<span class="ribbon-rule"></span>` +
-      tool("fit-y", "fity", "Fit range", "Set the vertical range so all of every function shows", off) +
+      tool("fit-y", "fity", "Fit range", "Set the range of the values so all of every function shows", off) +
+      tool("flip", "flipaxes", "Flip axes", "Swap the axes: the variable runs up the plot and the values across", `${off} aria-pressed="${!!p?.flip}"`) +
       tool("fit-view", "fit", "Zoom to fit", "Bring the frame of the exported range into the middle of the graph (0)", off) +
       `<span class="ribbon-rule"></span>` +
       tool("copy-plot", "copy", "Duplicate", "Make a copy of this plot", off) +
@@ -866,9 +896,12 @@ export class PlotWorkspace {
     const choice = (label: string, act: string, options: [string, string, boolean][]) =>
       `<div class="field"><span id="pl-${act}">${label}</span><div class="segmented" role="group" aria-labelledby="pl-${act}">${options.map(([v, name, on]) =>
         `<button type="button" data-pact="${act}" data-v="${v}" aria-pressed="${on}">${name}</button>`).join("")}</div></div>`;
-    const pair = (label: string, a: string, b: string, va: string, vb: string, mid = "to") =>
-      `<div class="field"><span>${label}</span><span class="pair"><input data-pf="${a}" type="text" inputmode="decimal" autocomplete="off" value="${esc(va)}" aria-label="${label}: from">` +
-      `<span>${mid}</span><input data-pf="${b}" type="text" inputmode="decimal" autocomplete="off" value="${esc(vb)}" aria-label="${label}: to"></span></div>`;
+    /** Two fields side by side. Plain number fields get the keyboard of numbers; the others take formulas and LaTeX too. */
+    const pair = (label: string, a: string, b: string, va: string, vb: string, mid = "to", numbers = false) => {
+      const mode = numbers ? ` inputmode="decimal"` : ` spellcheck="false"`;
+      return `<div class="field"><span>${label}</span><span class="pair"><input data-pf="${a}" type="text"${mode} autocomplete="off" value="${esc(va)}" aria-label="${label}: from">` +
+        `<span>${mid}</span><input data-pf="${b}" type="text"${mode} autocomplete="off" value="${esc(vb)}" aria-label="${label}: to"></span></div>`;
+    };
 
     let html = `<h2>Plot</h2>`;
     const plots = this.plots();
@@ -907,21 +940,25 @@ export class PlotWorkspace {
     }
 
     html += `<h3>Axes</h3>`;
-    html += text("Name of the horizontal axis", "x.label", p.x.label, "", "x");
-    html += pair("It runs from", "x.min", "x.max", shown(p.x.min), shown(p.x.max)) +
-      `<small class="under">The dashed frame on the graph is this range: drag its handles to pull it out or in, or its edge to move it.</small>`;
-    html += text("Name of the vertical axis", "y.label", p.y.label, "Names are written as TeX math, such as M_h or v\\,[\\mathrm{m/s}]. Leave one empty for none.", "y");
-    html += pair("It runs from", "y.min", "y.max", shown(p.y.min), shown(p.y.max));
+    html += choice("The variable x runs", "flip", [["across", "Across", !p.flip], ["up", "Up", !!p.flip]]);
+    // The axis drawn across first, then the one drawn up: x and y swap places in a flipped plot.
+    const [across, up] = p.flip ? (["y", "x"] as const) : (["x", "y"] as const);
+    html += text("Name of the horizontal axis", `${across}.label`, p[across].label, "", across);
+    html += pair("It runs from", `${across}.min`, `${across}.max`, shownConstant(p[across].min), shownConstant(p[across].max)) +
+      `<small class="under">A number, or a formula in LaTeX or plain, such as \\pi, 2\\pi or \\frac{\\pi}{2}. The dashed frame on the graph is this range: drag its handles to pull it out or in, or its edge to move it.</small>`;
+    html += text("Name of the vertical axis", `${up}.label`, p[up].label, "Names are written as TeX math, such as M_h or v\\,[\\mathrm{m/s}]. Leave one empty for none.", up);
+    html += pair("It runs from", `${up}.min`, `${up}.max`, shownConstant(p[up].min), shownConstant(p[up].max));
     html += `<div class="btn-row"><button type="button" class="plain" data-pact="fit-y">Fit it to the functions</button>` +
       `<button type="button" class="plain" data-pact="equal" title="The same length on paper for one unit on either axis, so that a circle is round">Same scale on both</button></div>`;
     html += choice("Drawn as", "frame", [["cross", "Arrows", p.frame !== "box"], ["box", "Box", p.frame === "box"]]);
     html += choice("Ticks", "ticks", [["numbers", "Numbers", p.ticks === undefined], ["marks", "Marks", p.ticks === "marks"], ["none", "None", p.ticks === "none"]]);
-    html += pair("A tick every", "x.step", "y.step", p.x.step === undefined ? "" : shown(p.x.step), p.y.step === undefined ? "" : shown(p.y.step), "across,") +
-      `<small class="under">up. Leave empty for a spacing that suits the size of the plot.</small>`;
+    const step = (k: "x" | "y") => (p[k].step === undefined ? "" : shownConstant(p[k].step!));
+    html += pair("A tick every", `${across}.step`, `${up}.step`, step(across), step(up), "across,") +
+      `<small class="under">up. Leave empty for a spacing that suits the size of the plot. Ticks a share of \\pi apart, such as \\pi/2, are numbered with \\pi.</small>`;
     html += choice("Grid", "grid", [["none", "None", p.grid === undefined], ["lines", "Lines", p.grid === "lines"], ["dots", "Dots", p.grid === "dots"]]);
 
     html += `<h3>Size on paper</h3>`;
-    html += pair("Width and height (cm)", "width", "height", shown(p.width / 10), shown(p.height / 10), "×") +
+    html += pair("Width and height (cm)", "width", "height", shown(p.width / 10), shown(p.height / 10), "×", true) +
       `<small class="under">Of the axes, without their labels. Dragging a handle on the print sets it too. Text is 10 pt at any size.</small>`;
     html += `<button type="button" class="danger" data-pact="del-plot">Delete this plot</button>`;
     return html;
@@ -969,8 +1006,8 @@ export class PlotWorkspace {
       const range = c.pieces.length > 1 || piece.from !== undefined || piece.to !== undefined;
       html += `<div class="piece">` +
         `<input data-pf="expr" data-i="${i}" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" class="${err ? "bad" : ""}" value="${esc(piece.expr)}" placeholder="2x + 1, sin(x), -5x^2/2" aria-label="Formula${c.pieces.length > 1 ? ` of piece ${i + 1}` : ""}">` +
-        (range ? `<span class="pair small"><span>from</span><input data-pf="from" data-i="${i}" type="text" inputmode="decimal" autocomplete="off" value="${piece.from === undefined ? "" : shown(piece.from)}" placeholder="${shown(p.x.min)}" aria-label="Piece ${i + 1} starts at">` +
-          `<span>to</span><input data-pf="to" data-i="${i}" type="text" inputmode="decimal" autocomplete="off" value="${piece.to === undefined ? "" : shown(piece.to)}" placeholder="${shown(p.x.max)}" aria-label="Piece ${i + 1} ends at">` +
+        (range ? `<span class="pair small"><span>from</span><input data-pf="from" data-i="${i}" type="text" spellcheck="false" autocomplete="off" value="${piece.from === undefined ? "" : shownConstant(piece.from)}" placeholder="${shownConstant(p.x.min)}" aria-label="Piece ${i + 1} starts at">` +
+          `<span>to</span><input data-pf="to" data-i="${i}" type="text" spellcheck="false" autocomplete="off" value="${piece.to === undefined ? "" : shownConstant(piece.to)}" placeholder="${shownConstant(p.x.max)}" aria-label="Piece ${i + 1} ends at">` +
           (c.pieces.length > 1 ? `<button type="button" class="icon-btn" data-pact="del-piece" data-i="${i}" aria-label="Remove piece ${i + 1}" title="Remove this piece">${icon("close", 16)}</button>` : "") + `</span>` : "") +
         `<small class="piece-msg${err ? " bad" : ""}">${esc(err ?? "")}</small></div>`;
     });
@@ -1046,9 +1083,11 @@ export class PlotWorkspace {
         this.focusNext = "xexpr|0";
         return this.host.commit();
       case "equal": {
-        const { x, y } = equalScales(p);
-        [p.x.min, p.x.max] = x;
-        [p.y.min, p.y.max] = y;
+        // Worked out on the plot as it is drawn: its axes are the plot's own, swapped round when it is flipped.
+        const d = asDrawn(p);
+        const { x, y } = equalScales(d);
+        [d.x.min, d.x.max] = x;
+        [d.y.min, d.y.max] = y;
         this.host.commit();
         return this.keepFrame();
       }
@@ -1111,6 +1150,18 @@ export class PlotWorkspace {
         return this.keepFrame();
       }
       case "fit-view": return this.fit();
+      case "flip": {
+        // From the ribbon it turns over; from the side panel it is set one way or the other.
+        const up = ds.v ? ds.v === "up" : !p.flip;
+        if (up === !!p.flip) return;
+        if (up) p.flip = true;
+        else delete p.flip;
+        // Each axis keeps its length on paper, and a balloon its place beside what it points at.
+        [p.width, p.height] = [p.height, p.width];
+        for (const b of p.balloons ?? []) [b.dx, b.dy] = [b.dy, b.dx];
+        this.host.commit();
+        return this.fit();
+      }
       case "copy-plot": {
         const copy = copyPlot(sk, p);
         this.current = copy.id;
@@ -1159,15 +1210,16 @@ export class PlotWorkspace {
     if (m) {
       if (live) return;
       const a = p[m[1] as "x" | "y"];
+      const c = typedConstant(input.value);
       if (m[2] === "step") {
         if (!input.value.trim()) delete a.step;
-        else if (!(v > 0)) return refuse("The distance between ticks is a number above zero. Leave it empty for a suitable one.");
-        else if ((a.max - a.min) / v > 80) return refuse("That is too many ticks to draw. Choose a larger distance between them.");
-        else a.step = v;
+        else if (!(c > 0)) return refuse("The distance between ticks is a number above zero, or a formula such as \\pi/2. Leave it empty for a suitable one.");
+        else if ((a.max - a.min) / c > 80) return refuse("That is too many ticks to draw. Choose a larger distance between them.");
+        else a.step = c;
         return done();
       }
-      const [min, max] = m[2] === "min" ? [v, a.max] : [a.min, v];
-      if (!Number.isFinite(v)) return refuse("The ends of an axis are numbers.");
+      const [min, max] = m[2] === "min" ? [c, a.max] : [a.min, c];
+      if (!Number.isFinite(c)) return refuse("The ends of an axis are numbers, or formulas such as 2\\pi or \\frac{\\pi}{2}.");
       if (!(max > min)) return refuse("An axis runs from a smaller number to a larger one.");
       a.min = min;
       a.max = max;
@@ -1206,7 +1258,7 @@ export class PlotWorkspace {
     if ((pf === "from" || pf === "to") && piece && c.param) {
       if (live) return;
       const t = typedConstant(input.value);
-      if (!Number.isFinite(t)) return refuse("Where the parameter starts and ends are numbers; pi can be used, as in 2pi.");
+      if (!Number.isFinite(t)) return refuse("Where the parameter starts and ends are numbers, or formulas such as 2\\pi.");
       const [from, to] = pf === "from" ? [t, piece.to ?? PARAM_RANGE[1]] : [piece.from ?? PARAM_RANGE[0], t];
       if (!(to > from)) return refuse("The parameter runs from a smaller number to a larger one.");
       piece[pf] = t;
@@ -1214,9 +1266,10 @@ export class PlotWorkspace {
     }
     if ((pf === "from" || pf === "to") && piece) {
       if (live) return;
+      const c = typedConstant(input.value);
       if (!input.value.trim()) delete piece[pf];
-      else if (!Number.isFinite(v)) return refuse("Where a piece starts and ends are numbers. Leave one empty for the end of the axis.");
-      else piece[pf] = v;
+      else if (!Number.isFinite(c)) return refuse("Where a piece starts and ends are numbers, or formulas such as \\pi/2. Leave one empty for the end of the axis.");
+      else piece[pf] = c;
       return done();
     }
     if (pf === "label") {

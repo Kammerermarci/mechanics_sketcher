@@ -573,6 +573,12 @@ export interface Plot {
   grid?: "lines" | "dots";
   /** Unset: tick marks with their numbers. */
   ticks?: "marks" | "none";
+  /**
+   * The axes swapped: the variable x runs up the side and the values of the
+   * functions across. `x` is still the variable and `y` the values; `width`
+   * and `height` are still across and up on paper.
+   */
+  flip?: true;
   notes?: PlotNote[];
   balloons?: PlotBalloon[];
 }

@@ -3,8 +3,9 @@ import { emptySketch, serialize, deserialize, type Plot, type PlotCurve } from "
 import {
   PLOT, niceStep, tickValues, tickText, stretches, runs, uprights, plotPrims, plotSvg, plotTikz, fitY, newPlot, newCurve, copyPlot,
   pieceError, toPaper, toData, curveLabelAt, axisCross, paramStretches, paramRuns, drawable, formulaError, fitX, equalScales, PARAM_RANGE,
-  balloonPlace, nextBalloonText, plotIds,
+  balloonPlace, nextBalloonText, plotIds, piTex, tickTex, asDrawn,
 } from "../src/plot";
+import type { V } from "../src/geom";
 import { PAPER, PT_MM, type Prim } from "../src/prims";
 import { primsToTikz } from "../src/export";
 
@@ -501,5 +502,83 @@ describe("steep straight lines", () => {
     const p = plot([{ pieces: [{ expr: "1 - 20x" }] }]);
     const [s] = stretches(p, p.curves[0]);
     expect([s.from, s.to]).toEqual([-1, 5]);
+  });
+});
+
+describe("ticks a share of pi apart", () => {
+  it("writes shares of pi with pi", () => {
+    expect([0, 12, 24, -12, 6, 18, -18, 3, 8].map(piTex)).toEqual(["0", "\\pi", "2\\pi", "-\\pi", "\\frac{\\pi}{2}", "\\frac{3\\pi}{2}", "-\\frac{3\\pi}{2}", "\\frac{\\pi}{4}", "\\frac{2\\pi}{3}"]);
+    expect(tickTex(Math.PI, Math.PI / 2)).toBe("\\pi");
+    expect(tickTex(1.5, 0.5)).toBe("1.5");
+    // Ticks that are not a share of pi apart keep their numbers, even where one falls on a multiple of pi.
+    expect(tickTex(0, 1)).toBe("0");
+  });
+
+  it("numbers the ticks of an axis that runs over shares of pi", () => {
+    const p = plot([{ pieces: [{ expr: "sin(x)" }] }], { x: { min: 0, max: 2 * Math.PI, label: "x", step: Math.PI / 2 }, y: { min: -1.5, max: 1.5, label: "y" } });
+    expect(texts(plotPrims(p), "xtick").map((t) => t.tex)).toEqual(["\\frac{\\pi}{2}", "\\pi", "\\frac{3\\pi}{2}"]);
+    expect(plotTikz(p)).toContain("xticklabels={$\\frac{\\pi}{2}$,$\\pi$,$\\frac{3\\pi}{2}$}");
+  });
+});
+
+describe("flipped plots", () => {
+  const flipped = (curves: Partial<PlotCurve>[], more: Partial<Plot> = {}) => plot(curves, { flip: true, x: { min: 0, max: 2, label: "z" }, y: { min: -1, max: 5, label: "N" }, ...more });
+
+  it("is drawn with its axes swapped, each function as the curve (f(t), t)", () => {
+    const p = flipped([{ pieces: [{ expr: "x^2" }] }]);
+    const d = asDrawn(p);
+    // The axes are the plot's own: a change to the drawn ones is a change to the plot.
+    expect(d.x).toBe(p.y);
+    expect(d.y).toBe(p.x);
+    expect(d.curves[0].param).toBe(true);
+    expect(d.curves[0].pieces[0]).toMatchObject({ x: "x^2", expr: "x", from: 0, to: 2 });
+    // On paper the value runs across and the variable up.
+    const [path] = paths(plotPrims(p));
+    expect(path.pts.length).toBeGreaterThan(10);
+    for (const q of path.pts) {
+      const [value, z] = toData(d, q);
+      expect(value).toBeCloseTo(z * z, 6);
+    }
+    expect(texts(plotPrims(p), "xlabel")[0].tex).toBe("N");
+    expect(texts(plotPrims(p), "ylabel")[0].tex).toBe("z");
+  });
+
+  it("leaves a plot that is not flipped as it is", () => {
+    const p = plot([{ pieces: [{ expr: "x" }] }]);
+    expect(asDrawn(p)).toBe(p);
+  });
+
+  it("joins the pieces of a function across", () => {
+    const p = flipped([{ pieces: [{ expr: "1", to: 1 }, { expr: "3", from: 1 }] }]);
+    const d = asDrawn(p);
+    const across = paths(plotPrims(p)).map((x) => x.pts.map((q) => toData(d, q))).find((pts) => pts.length === 2 && Math.abs(pts[0][1] - pts[1][1]) < 1e-9);
+    expect(across).toBeDefined();
+    expect(across!.map(([v]) => v).sort()).toEqual([1, 3]);
+    expect(across![0][1]).toBeCloseTo(1, 9);
+  });
+
+  it("shades a function across to the axis it is drawn from", () => {
+    const p = flipped([{ fill: true, pieces: [{ expr: "2" }] }]);
+    const d = asDrawn(p);
+    const shade = plotPrims(p).find((x): x is Extract<Prim, { k: "region" }> => x.k === "region")!;
+    const o = shade.outlines[0] as { start: V; segs: { to: V }[] };
+    const corners = [o.start, ...o.segs.map((s) => s.to)].map((q) => toData(d, q).map((v) => Number(v.toFixed(6))));
+    expect(corners).toContainEqual([0, 0]);
+    expect(corners).toContainEqual([0, 2]);
+    expect(corners).toContainEqual([2, 0]);
+    expect(corners).toContainEqual([2, 2]);
+  });
+
+  it("writes a flipped function for pgfplots as a curve given by a parameter", () => {
+    const tikz = plotTikz(flipped([{ fill: true, pieces: [{ expr: "x^2" }] }]));
+    expect(tikz).toContain("xmin=-1, xmax=5, ymin=0, ymax=2");
+    expect(tikz).toMatch(/\\addplot\[draw=\{rgb[^\]]*domain=0:2[^\]]*\] \(\{x\^2\}, \{x\}\);/);
+    expect(tikz).toContain("-- (axis cs:0,2) -- (axis cs:0,0) -- cycle;");
+  });
+
+  it("is kept in a saved file", () => {
+    const sk = emptySketch();
+    sk.plots = [flipped([{ pieces: [{ expr: "x" }] }])];
+    expect(deserialize(serialize(sk)).plots![0].flip).toBe(true);
   });
 });
