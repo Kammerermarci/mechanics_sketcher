@@ -21,6 +21,62 @@ from disk by double-click.
 
 ## Using it
 
+Select an object and press **Page Up** to raise it one step in the stacking
+order, or **Page Down** to lower it. A filled shape and its boundary strokes
+always move together. This order is saved with the sketch and used in exports.
+
+Changes and added features are recorded in [the change log](CHANGELOG.md).
+In **View settings** (the sliders button), choose a **Dots** or **Grid**
+background and set its spacing in mm. Every tenth gridline is heavier. One
+drawing unit is treated as 1 mm for spacing, independently of the figure's
+printed size. These settings are saved with the sketch.
+
+Editing dimensions, creating copies or patterns, and editing plot ranges keeps
+the camera position and zoom fixed. Use **Zoom to fit**, **0**, or **Home** to
+bring the whole figure into view when needed.
+
+**Rectangle** has a dropdown for **2-point**, **Center-point**, and **3-point**
+rectangles. Click opposite corners for 2-point; center then corner for
+Center-point; or the ends of a first edge, then its width, for 3-point.
+**Arc** has **Center-point** (center, start, end) and **3-point** (start, end,
+point on the curve). The chosen mode stays on the main button and is remembered
+in this browser; **A** uses the chosen arc mode. Both tools support snapping,
+Construction, live previews, constraints, dimensions, and Undo.
+
+For annotation colours, click the multicolour swatch to choose a custom colour.
+**OK** applies it; **OK and Add** also saves it in the fill, load, and datum
+palettes for future use in this browser. **Cancel** leaves the colour unchanged.
+
+**Gradient Fill**, immediately after Fill on Annotate, offers **Linear** and
+**Radial** modes. Click a closed region, then drag its square handle to move
+the gradient and its round handle to set direction or radius. In the side
+panel, choose Start/End (or Center/Edge) and select a palette or custom colour.
+You can reverse the colours, reset the handles, or switch to a solid fill.
+Gradients are saved with the sketch and included in print and SVG exports.
+TikZ exports approximate them with 128 colour bands clipped to the region.
+
+**Snap to grid** also applies when moving existing points, geometry, annotation
+positions and labels, gradient handles, axis tips, dimensions, and other
+editing handles. Hold **Alt** for free movement. Grouped geometry keeps its
+relative spacing; constraints and handles tied to curves still limit movement.
+
+Hold **Ctrl** during a drag to lock movement horizontally or vertically. The
+first clear movement chooses the axis; it stays locked while Ctrl is held.
+**Alt + Ctrl** combines that axis lock with the grid-snapping override.
+The same modifiers work while drawing a line or setting a beam/3-point
+rectangle's first edge: place the first point, then hold Ctrl for the next point.
+
+Select sketch objects and use **Ctrl+C** / **Ctrl+V**, or the **Copy objects**
+and **Paste objects** buttons beside Undo/Redo. A filled boundary edge or the
+fill itself copies the complete filled region, including gradient colours and
+holes. Attached annotations and internal constraints come along. Each paste
+creates an independent copy with a small offset, selects it, and is one Undo
+step. Repeated pastes are staggered; the camera stays fixed. Copies can also be
+pasted into another drawing or browser tab when clipboard access is available.
+Enable **Snap to grid** there, or press **S** while sketching, to place new
+geometry on the dots or grid intersections. Hold **Alt** to temporarily bypass
+snapping. Existing joints and curves still take priority.
+
 The first time the page is opened it greets you with a short guide to the
 steps below, and the first time each tool is picked up a small tip says how
 it is used. Both have a *Don't show this again* box. The question mark in the
@@ -57,6 +113,9 @@ of mass.
    there sets its *line thickness* in points, from 0.1 to 3; double-click it
    to go back to the standard (0.8 pt for a solid line, 0.6 pt for an arrow,
    0.4 pt for a centre line). The head of a thicker arrow grows with it.
+   Select a straight or curved arrow to adjust its **Arrowhead size** from
+   50% to 300% in steps of 25%, relative to the standard head for that thickness.
+   Double-click this slider to reset it to 100%.
    *Trim (X)* removes the piece of a line, arc or circle under the cursor, up
    to where other curves cross it; the piece that would go is shown in red
    first. The cut ends stay on the curve they were cut at. A circle needs
@@ -163,6 +222,14 @@ of mass.
      it. It is plain text set in the document's font; put math between
      dollar signs (`Link $AB$, $F_1 = 2a$`) and `\\` where a new line
      starts. Click a note to change it, drag it to move it.
+     Notes, balloons and axes have a **Colour** palette in the side panel,
+     as do arrows. Every colour picker uses the same palette as fills,
+     including your saved custom colours. **Another colour** opens the shared
+     picker; **OK and Add** saves that colour for use everywhere, including plots.
+     Colour is the last adjustable setting for an object: press **Change colour**
+     to open the palette popup. Large saved palettes scroll inside the popup.
+     Solid and gradient fills keep their colour swatches visible directly in
+     the side panel, including saved custom colours.
    - *Centre mark:* click a circle or arc. Its two lines are drawn like a
      centre line, long and short dashes in turn; a slider in the side panel
      sets how many gaps each line has, and a checkbox switches the

@@ -9,10 +9,16 @@ const SUPPORT = "Click a joint, or a spot on a line, to put the support there. D
 
 /** Keyed by tool, command or action. */
 export const TIPS: Record<string, Tip> = {
+  gradient: { title: "Linear gradient fill", body: "Click inside a closed shape. Drag the square handle to move the gradient and the round handle to set its direction and length. Choose Start or End in the side panel, then choose a colour. The dropdown beside Gradient Fill also offers radial gradients." },
+  radialgradient: { title: "Radial gradient fill", body: "Click inside a closed shape. The square handle is the center; the round handle sets the radius. Choose Center or Edge in the side panel to edit its colour. Gradient handles follow the shape when its size changes." },
   line: { title: "Line", body: "Click where the line starts and click again where it ends; the next click starts a new one. Click a joint that is there already to connect to it. Lines that are nearly level or upright snap and stay that way: hold Alt to switch that off." },
   centerline: { title: "Centre line", body: "Drawn like a line, but thin and dash-dotted. It is part of the exported figure and does not close shapes for filling. It makes a good line to mirror about." },
   circle: { title: "Circle", body: "Click the centre, then click again to set the radius. Give the radius a value afterwards with Dimension." },
   arc: { title: "Arc", body: "Click the centre, then where the arc starts. Sweep round the centre and click where it ends." },
+  arc3: { title: "3-point arc", body: "Click the start, the end, then a point on the curve. The arc passes through all three points, including curves longer than a semicircle. Use the arrow beside Arc to change modes; your choice becomes the main button's default." },
+  rectangle: { title: "2-point rectangle", body: "Click opposite corners to draw a rectangle with horizontal and vertical sides. Use the arrow beside Rectangle for center-point and 3-point rectangles. Your choice becomes the main button's default." },
+  rectcenter: { title: "Center-point rectangle", body: "Click the center, then a corner. The rectangle grows equally around its center. A construction diagonal keeps the center tied to the rectangle when dimensions change." },
+  rect3: { title: "3-point rectangle", body: "Click the two ends of the first edge, then click to either side to set the width. The rectangle can be at any angle; parallel and perpendicular constraints keep it rectangular." },
   point: { title: "Point", body: "Click to place a point of its own: on a line, on a circle or anywhere. Constrain and dimension against it like any joint." },
   beam: { title: "Beam", body: "Click where the beam starts and where it ends, then move away from its middle line and click to set the width. Round or square ends are chosen in the side panel while the tool is active." },
   arcbeam: { title: "Curved beam", body: "Click the centre the beam bends round, then where the beam starts. Sweep round the centre and click where it ends, then move towards or away from the centre and click to set the width. Round or square ends are chosen in the side panel while the tool is active." },

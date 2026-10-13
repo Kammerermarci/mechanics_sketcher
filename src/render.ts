@@ -9,6 +9,8 @@ import { type Prim, type StrokeStyle, type Outline, PAPER, dashOf, strokeWidth, 
 import type { Overlaps } from "./regions";
 import { texEngine } from "./tex";
 import { ICONS } from "./icons";
+import { backgroundPattern } from "./background";
+import { svgGradient } from "./gradient-fill";
 
 export interface View {
   /** Model point at the centre of the canvas. */
@@ -42,7 +44,7 @@ export interface Preview {
 
 export interface SnapMark {
   pos: V;
-  kind: "point" | "curve" | "mid" | "h" | "v";
+  kind: "point" | "curve" | "mid" | "h" | "v" | "grid";
   /** For h and v: the point the alignment is measured from. */
   from?: V;
 }
@@ -192,25 +194,12 @@ export function layoutGlyphs(sk: Sketch, view: View, show: (c: Constraint) => bo
 
 // ---- drawing ----------------------------------------------------------------
 
-function gridStep(scale: number): number {
-  const target = 22 / scale; // model units for roughly 22 px
-  const pow = Math.pow(10, Math.floor(Math.log10(target)));
-  for (const m of [1, 2, 5, 10]) if (m * pow >= target) return m * pow;
-  return 10 * pow;
-}
-
-function background(view: View, showOrigin: boolean, plain: boolean): string {
+function background(view: View, sk: Sketch, plain: boolean): string {
   if (plain) return `<rect class="sheet" width="${view.w}" height="${view.h}"/>`;
-  const step = gridStep(view.scale) * view.scale;
   const o = toScreen(view, [0, 0]);
-  const ox = ((o[0] % step) + step) % step - step / 2;
-  const oy = ((o[1] % step) + step) % step - step / 2;
   const L = 34;
-  let out =
-    `<defs><pattern id="grid" width="${n2(step)}" height="${n2(step)}" patternUnits="userSpaceOnUse" x="${n2(ox)}" y="${n2(oy)}">` +
-    `<circle class="grid-dot" cx="${n2(step / 2)}" cy="${n2(step / 2)}" r="0.9"/></pattern></defs>` +
-    `<rect width="${view.w}" height="${view.h}" fill="url(#grid)"/>`;
-  if (showOrigin) {
+  let out = backgroundPattern(view, sk);
+  if (sk.showOrigin) {
     out +=
       `<g class="origin"><path d="M${n2(o[0])} ${n2(o[1] - L)}V${n2(o[1])}H${n2(o[0] + L)}"/>` +
       `<path class="tip" d="M${n2(o[0] + L)} ${n2(o[1])}l-6-3v6zM${n2(o[0])} ${n2(o[1] - L)}l-3 6h6z"/>` +
@@ -295,7 +284,9 @@ export function drawPrims(s: PrimScene): string {
   for (const p of s.prims) {
     const cls = primClass(s, p);
     if (p.k === "region") {
-      out += `<path class="${cls}" d="${outlinePath(p.outlines, M, pxPerMm)}" fill="${p.color}" fill-rule="evenodd"/>`;
+      const id = `screen-gradient-${s.prims.indexOf(p)}`;
+      if (p.gradient) out += svgGradient(p.outlines, p.gradient, p.color, id, M, pxPerMm);
+      out += `<path class="${cls}" d="${outlinePath(p.outlines, M, pxPerMm)}" fill="${p.gradient ? `url(#${id})` : p.color}" fill-rule="evenodd"/>`;
       continue;
     }
     if (p.k === "text") {
@@ -373,6 +364,12 @@ function drawHandles(s: Scene): string {
 }
 
 function drawGrips(s: Scene): string {
+  if (s.plain) return "";
+  const gradient = s.sk.symbols.find((p) => s.selection.has(p.id) && p.type === "fill" && p.gradient);
+  if (gradient && s.grips.length === 2) {
+    const [a, b] = s.grips;
+    return `<path class="gradient-guide" d="M${n2(a[0])} ${n2(a[1])}L${n2(b[0])} ${n2(b[1])}"/><rect class="grip" x="${n2(a[0] - 4)}" y="${n2(a[1] - 4)}" width="8" height="8"/><circle class="grip" cx="${n2(b[0])}" cy="${n2(b[1])}" r="4.5"/>`;
+  }
   return s.grips.map((g) => `<rect class="grip" x="${n2(g[0] - 4)}" y="${n2(g[1] - 4)}" width="8" height="8" rx="1.5"/>`).join("");
 }
 
@@ -439,6 +436,7 @@ function drawSnap(s: Scene): string {
   if (!m) return "";
   const p = toScreen(s.view, m.pos);
   const [x, y] = [n2(p[0]), n2(p[1])];
+  if (m.kind === "grid") return `<rect class="snap" x="${n2(p[0] - 4)}" y="${n2(p[1] - 4)}" width="8" height="8"/>`;
   if (m.kind === "point") return `<circle class="snap" cx="${x}" cy="${y}" r="8"/>`;
   if (m.kind === "curve") return `<path class="snap" d="M${n2(p[0] - 5)} ${n2(p[1] - 5)}l10 10m0-10l-10 10"/>`;
   if (m.kind === "mid") return `<path class="snap" d="M${x} ${n2(p[1] - 7)}l6.5 11h-13z"/>`;
@@ -459,6 +457,6 @@ export function renderScene(s: Scene): string {
     const x = Math.min(s.box.a[0], s.box.b[0]), y = Math.min(s.box.a[1], s.box.b[1]);
     box = `<rect class="marquee" x="${n2(x)}" y="${n2(y)}" width="${n2(Math.abs(s.box.a[0] - s.box.b[0]))}" height="${n2(Math.abs(s.box.a[1] - s.box.b[1]))}"/>`;
   }
-  if (s.plain) return background(s.view, false, true) + drawPrims(s) + drawGrips(s) + drawPreview(s) + drawSnap(s) + box;
-  return background(s.view, s.sk.showOrigin, false) + drawPrims(s) + drawOverlaps(s) + drawHandles(s) + drawGlyphs(s) + drawGrips(s) + drawPreview(s) + drawSnap(s) + box;
+  if (s.plain) return background(s.view, s.sk, true) + drawPrims(s) + drawGrips(s) + drawPreview(s) + drawSnap(s) + box;
+  return background(s.view, s.sk, false) + drawPrims(s) + drawOverlaps(s) + drawHandles(s) + drawGlyphs(s) + drawGrips(s) + drawPreview(s) + drawSnap(s) + box;
 }

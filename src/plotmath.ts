@@ -6,6 +6,7 @@
 import { type Plot, type PlotCurve, type PlotPiece } from "./model";
 import { type Expr, ExprError, parseExpr, evaluate, degree } from "./expr";
 import { type V } from "./geom";
+import { PALETTE_COLORS } from "./custom-colors";
 
 /** Sizes of what a plot is drawn with, in mm on paper, and the colours of its grid. */
 export const PLOT = {
@@ -24,7 +25,7 @@ export const PLOT = {
 };
 /** Dash patterns of a curve, as on and off lengths in mm. Dots are dashes of no length with round ends. */
 export const PLOT_DASH: Record<NonNullable<PlotCurve["dash"]>, number[]> = { dashed: [2, 1.2], dotted: [0.01, 1.1] };
-export const PLOT_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#17201b"];
+export const PLOT_COLORS = PALETTE_COLORS;
 
 // ---- reading the formulas -------------------------------------------------------
 

@@ -12,12 +12,16 @@ import {
 } from "./model";
 import { SketchSolver, type Drag, type SolveResult, type Freedom } from "./solver";
 import { History } from "./history";
+import { snapToGrid } from "./grid-snap";
+import { moveInZ } from "./z-order";
+import { dominantDragAxis, lockDragToAxis, type DragAxis } from "./drag-axis";
+import { arrowStylePanel, arrowHeadScale } from "./arrow-style";
 import {
   type V, add, sub, mul, dot, cross, norm, perp, mid, dist, angleOf, polar, wrap, inSweep,
   projectOnSegment, intersectLines, boxIsEmpty, grow, TWO_PI,
 } from "./geom";
 import {
-  type Prim, PAPER, printMm, geometryBox, buildPrims, dimensionPrims,
+  type Prim, PAPER, printMm, geometryBox, buildPrims, dimensionPrims, fillOutlines,
   primDistance, textCentre, distanceFrame, angleFrame, roundFrame, symbolPosition, balloonAnchor,
   curveParam, sideOfCurve, formatNumber, frameTips, arrowLabelAt, arrowAnchor, centerMarkEnds,
   centerMarkDashes, curveLength, hatchCount, standardWeight, loadScaleOf, loadLabel, loadReach, lineLoadFrame,
@@ -39,9 +43,14 @@ import { type BeamEnds, straightBeam, curvedBeam } from "./beam";
 import { PlotWorkspace } from "./plotwork";
 import { baseline, beamAxis, diagramShape, plotPeak, traceShape, traceReach } from "./diagram";
 import { defaultLook, lookOf, elementLength, springTurns } from "./element";
+import { rectangleCorners, rectangleParts, arcThrough, threePointArc, type RectangleMode } from "./primitive-geometry";
+import { PrimitiveModes } from "./primitive-menus";
+import { colorPanel, PALETTE_COLORS, showColorPalette, showCustomColor, sharedColorPalette } from "./custom-colors";
+import { defaultGradient, gradientPoints, gradientPosition } from "./gradient-fill";
+import { copyObjects, pasteObjects, readObjectClipboard, type ObjectClipboard } from "./object-clipboard";
 
 type DrawTool =
-  | "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "beam" | "arcbeam"
+  | "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "arc3" | "rectangle" | "rectcenter" | "rect3" | "beam" | "arcbeam"
   /** A line or an arc drawn as something else: a spring, a damper, a spiral spring, a damper bent round a joint. */
   | "spring" | "damper" | "spiral" | "arcdamper";
 /** Tools that take two clicks and make a line between them. */
@@ -50,7 +59,7 @@ type LineTool = (typeof LINE_TOOLS)[number];
 const isLineTool = (t: Tool): t is LineTool => (LINE_TOOLS as readonly Tool[]).includes(t);
 /** Tools that take a centre, a start and a sweep, and make an arc. */
 const isArcTool = (t: Tool): t is "arc" | "arcarrow" | "arcdamper" => t === "arc" || t === "arcarrow" || t === "arcdamper";
-type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "hatch" | "datum" | "mass" | "note" | "load" | "lineload" | "moment" | "diagram";
+type SymbolTool = "pin" | "roller" | "wall" | "frame" | "centermark" | "balloon" | "fill" | "gradient" | "radialgradient" | "hatch" | "datum" | "mass" | "note" | "load" | "lineload" | "moment" | "diagram";
 /** Tools that copy what is selected and take one more click to say how: about which line, around which point. */
 type CopyTool = "mirror" | "turn";
 type Command =
@@ -80,12 +89,15 @@ interface Snap {
   curveId?: Id;
   midpoint?: boolean;
   axis?: "h" | "v";
+  grid?: true;
 }
 
 type Pending =
   | { tool: "line"; start: Snap }
   | { tool: "circle"; center: Snap }
   | { tool: "arc"; center: Snap; start?: Snap; sweep: number; lastAng: number }
+  | { tool: "rectangle"; mode: RectangleMode; a: Snap; b?: Snap }
+  | { tool: "arc3"; start: Snap; end?: Snap }
   /** A beam: its two centres are clicked first, then how wide it is. */
   | { tool: "beam"; a: Snap; b?: Snap }
   /** A curved beam: the centre of the bend, where it starts, where it ends after the sweep, then how wide it is. */
@@ -94,6 +106,7 @@ type Pending =
   | { tool: "balloon"; anchor: Snap };
 
 type DragState =
+  | { kind: "gradient"; id: Id; end: 0 | 1; startScreen: V; moved: boolean }
   /** `quiet`: the press already confirmed a typed value, so releasing does nothing more. */
   | { kind: "pan"; last: V; moved: boolean; quiet: boolean }
   /** `click`: what to select if the press turns out to be a click, not a drag. */
@@ -154,11 +167,15 @@ const TOOLS: ToolDef[] = [
   { id: "construction", label: "Construction lines", short: "Construction", key: "G", icon: "construction", tab: "sketch", group: -1 },
   { id: "select", label: "Select", key: "Esc", icon: "select", tab: "both", group: 0 },
 
+  { id: "point", label: "Point", key: "P", icon: "point", tab: "sketch", group: 1 },
   { id: "line", label: "Line", key: "L", icon: "line", tab: "sketch", group: 1 },
   { id: "centerline", label: "Centre line", icon: "centerline", tab: "sketch", group: 1 },
   { id: "circle", label: "Circle", key: "C", icon: "circle", tab: "sketch", group: 1 },
   { id: "arc", label: "Arc", key: "A", icon: "arc", tab: "sketch", group: 1 },
-  { id: "point", label: "Point", key: "P", icon: "point", tab: "sketch", group: 1 },
+  { id: "arc3", label: "3-point arc", icon: "arc3", tab: "sketch", group: 1 },
+  { id: "rectangle", label: "2-point rectangle", icon: "rectangle", tab: "sketch", group: 1 },
+  { id: "rectcenter", label: "Center-point rectangle", icon: "rectcenter", tab: "sketch", group: 1 },
+  { id: "rect3", label: "3-point rectangle", icon: "rect3", tab: "sketch", group: 1 },
   { id: "beam", label: "Beam", icon: "beam", tab: "sketch", group: 1 },
   { id: "arcbeam", label: "Curved beam", short: "Curved", icon: "arcbeam", tab: "sketch", group: 1 },
   { id: "trim", label: "Trim", key: "X", icon: "trim", tab: "sketch", group: 2 },
@@ -191,6 +208,8 @@ const TOOLS: ToolDef[] = [
   { id: "centermark", label: "Centre mark", icon: "centermark", tab: "annotate", group: 4 },
   { id: "balloon", label: "Balloon", key: "B", icon: "balloon", tab: "annotate", group: 4 },
   { id: "fill", label: "Fill", icon: "fill", tab: "annotate", group: 5 },
+  { id: "gradient", label: "Linear gradient fill", icon: "gradient", tab: "annotate", group: 5 },
+  { id: "radialgradient", label: "Radial gradient fill", icon: "radialgradient", tab: "annotate", group: 5 },
   { id: "hatch", label: "Hatching", icon: "hatch", tab: "annotate", group: 5 },
 
   { id: "spring", label: "Spring", icon: "spring", tab: "dynamics", group: 1 },
@@ -205,7 +224,7 @@ const COMMAND_IDS: Command[] = [
 ];
 const isCommand = (t: Tool): t is Command => (COMMAND_IDS as Tool[]).includes(t);
 const isSymbolTool = (t: Tool): t is SymbolTool =>
-  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "hatch", "datum", "mass", "note", "load", "lineload", "moment", "diagram"].includes(t);
+  ["pin", "roller", "wall", "frame", "centermark", "balloon", "fill", "gradient", "radialgradient", "hatch", "datum", "mass", "note", "load", "lineload", "moment", "diagram"].includes(t);
 const isCopyTool = (t: Tool): t is CopyTool => t === "mirror" || t === "turn";
 const toolDef = (t: Tool | "shift" | "construction"): ToolDef => TOOLS.find((d) => d.id === t)!;
 
@@ -219,7 +238,7 @@ const RELATION_NAMES: Record<string, string> = {
 const SUPPORT_SCALE_MIN = 30, SUPPORT_SCALE_MAX = 300;
 const SUPPORT_NAMES: Record<SupportKind, string> = { pin: "Pin support", roller: "Roller support", fixed: "Fixed support" };
 /** Fill colours offered as swatches: light tones that print well under black lines. */
-const FILL_COLORS = ["#d5dbe1", "#eceff1", "#f6d9a8", "#f4b6a6", "#b9d7ee", "#bfe3c4", "#d9c8ea", "#8f9aa3"];
+const FILL_COLORS = PALETTE_COLORS;
 /** A new hatching, in annotation mm: the size of the ground under a support, as the view is when it is made. */
 const DEFAULT_HATCH = { spacing: 1.3, depth: 1.6 };
 /** The hatching sliders run from few, long strokes to many, short ones, in equal ratios along the slider. */
@@ -232,9 +251,9 @@ const CENTRE_GAPS_MAX = 16;
 const ratioPos = (v: number, [lo, hi]: [number, number]) => Math.round(Math.max(0, Math.min(100, (100 * Math.log(v / lo)) / Math.log(hi / lo))));
 const ratioValue = (pos: number, [lo, hi]: [number, number]) => lo * (hi / lo) ** (Math.max(0, Math.min(100, pos)) / 100);
 /** Colours offered for datum points: strong ones, so the dot reads on top of the lines. */
-const DATUM_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#17201b"];
+const DATUM_COLORS = ["#d32f2f"];
 /** Colours offered for loads: red first, as the usual way to set them apart from the structure. */
-const LOAD_COLORS = ["#d32f2f", "#1565c0", "#2e7d32", "#ef6c00", "#6a1b9a", "#17201b"];
+const LOAD_COLORS = ["#d32f2f"];
 /** How large the first load of each kind is drawn, in screen pixels: a force's length, the height of a spread load, a moment's radius. */
 const LOAD_START: Record<LoadKind, number> = { force: 64, line: 34, moment: 30 };
 /** How far apart the arrows of a new spread load are, in screen pixels. */
@@ -322,6 +341,11 @@ export class App {
   private freedomStale = true;
   private fillColor = FILL_COLORS[0];
   private beamEnds: BeamEnds = "round";
+  private primitiveModes = new PrimitiveModes();
+  private customPalette = sharedColorPalette();
+  private gradientStop: "start" | "end" = "start";
+  private copiedObjects: ObjectClipboard | null = null;
+  private pasteCount = 0;
   /** Construction is switched on: the lines, circles and arcs drawn are construction lines, left out of the figure. */
   private constructing = false;
   private tips = new TipBook();
@@ -357,6 +381,11 @@ export class App {
   private cursor: V = [0, 0]; // last pointer position, screen px
   private snapMark: SnapMark | null = null;
   private altKey = false;
+  private ctrlKey = false;
+  private dragAxisLock: DragAxis | null = null;
+  private dragLockOrigin: V | null = null;
+  private drawingAxisLock: DragAxis | null = null;
+  private drawingLockOrigin: V | null = null;
   private spaceKey = false;
   /** What the box on the drawing is editing: a dimension, or the name of something. */
   private editing: EditTarget | null = null;
@@ -702,9 +731,10 @@ export class App {
   /** Handles on the selected symbol: the tips of a pair of axes or the ends of a centre mark, which can be pulled. Screen pixels. */
   private grips(mm: number): V[] {
     const s = this.selectedSymbol();
-    if (!s || this.tool !== "select") return [];
+    if (!s || (this.tool !== "select" && this.tool !== "gradient" && this.tool !== "radialgradient")) return [];
     let at: V[] = [];
-    if (s.type === "frame") {
+    if (s.type === "fill" && s.gradient) at = gradientPoints(fillOutlines(this.sk, s, mm), s.gradient);
+    else if (s.type === "frame") {
       const tips = frameTips(this.sk, s, mm);
       at = [tips.x, tips.y].filter((t): t is V => t !== null);
     } else if (s.type === "centermark") at = centerMarkEnds(this.sk, s, mm);
@@ -748,7 +778,7 @@ export class App {
   private toolHint(): string {
     const hint = this.toolHintFor();
     // While Construction is on, the drawing tools say so: what they make is left out of the figure.
-    const drawing = this.tool === "line" || this.tool === "centerline" || this.tool === "circle" || this.tool === "arc";
+    const drawing = this.tool === "line" || this.tool === "centerline" || this.tool === "circle" || this.tool === "arc" || this.tool === "arc3" || ["rectangle", "rectcenter", "rect3"].includes(this.tool);
     return this.constructing && drawing ? `Construction lines: ${hint}` : hint;
   }
 
@@ -774,7 +804,7 @@ export class App {
           return p ? "Click where the arrow points. Hold Alt to switch snapping off."
             : `Click where the arrow starts. It is constrained and dimensioned like a line. ${done}`;
         }
-        return p ? "Click where the line ends. Hold Alt to switch snapping off."
+        return p ? "Click where the line ends. Ctrl locks horizontal/vertical; Alt switches snapping off."
           : `Click where the ${this.tool === "line" ? "line" : "centre line"} starts. ${done}`;
       case "trim": return `Click the part of a line, circle or arc to remove, up to where other curves cross it. Or hold the button and drag across everything that should go. ${done}`;
       case "beam":
@@ -797,6 +827,13 @@ export class App {
         return `Click a line, an arc or a side of a beam to lay the plot along it, on the side positive values should go${param ? ", or a point to draw its parametric curves about" : ""}. ${done}`;
       }
       case "circle": return p ? "Click to set the radius." : `Click the centre. ${done}`;
+      case "rectangle": return p ? "Click the opposite corner. Hold Alt to switch snapping off." : `Click the first corner. ${done}`;
+      case "rectcenter": return p ? "Click a corner to set the width and height." : `Click the rectangle's center. ${done}`;
+      case "rect3":
+        return p?.tool !== "rectangle" ? `Click the first corner of the first edge. ${done}`
+          : p.b ? "Move to either side of the first edge and click to set the width." : "Click the second corner to set the first edge and its angle.";
+      case "arc3": return p?.tool !== "arc3" ? `Click where the arc starts. ${done}`
+        : p.end ? "Click a point on the arc to set its curve." : "Click where the arc ends.";
       case "arc":
       case "arcarrow":
       case "arcdamper": {
@@ -814,6 +851,8 @@ export class App {
         return p ? "Click where the balloon should sit. Clicking the same spot again leaves out the leader."
           : `Click what the balloon points at. ${done}`;
       case "fill": return `Click inside a closed shape to fill it. ${done}`;
+      case "gradient":
+      case "radialgradient": return `Click inside a closed shape for a ${this.tool === "gradient" ? "linear" : "radial"} gradient. Drag its handles to set direction or radius; choose endpoint colours in the side panel. ${done}`;
       case "hatch": return `Click a line, arc or circle, on the side the hatching should go. ${done}`;
       case "datum": return `Click where the datum point goes: a joint, a spot on a curve, or anywhere. ${done}`;
       case "dimension":
@@ -843,6 +882,29 @@ export class App {
     if (!p || this.drag?.kind === "pan") return null;
     const snap = this.snapAt(this.cursor, this.snapAnchor());
     const pv: Preview = { lines: [], circles: [], arcs: [], points: [] };
+    if (p.tool === "rectangle") {
+      pv.points.push(p.a.pos);
+      if (p.mode === "rect3" && !p.b) pv.lines.push([p.a.pos, snap.pos]);
+      else {
+        const corners = rectangleCorners(p.mode, p.a.pos, (p.b ?? snap).pos, p.b ? snap.pos : undefined);
+        if (corners) {
+          corners.forEach((v, i) => pv.lines.push([v, corners[(i + 1) % 4]]));
+          pv.points.push(...corners);
+        }
+      }
+      return pv;
+    }
+    if (p.tool === "arc3") {
+      pv.points.push(p.start.pos);
+      if (!p.end) pv.lines.push([p.start.pos, snap.pos]);
+      else {
+        const shape = arcThrough(p.start.pos, p.end.pos, snap.pos);
+        if (shape) pv.arcs.push(shape);
+        else pv.lines.push([p.start.pos, p.end.pos]);
+        pv.points.push(p.end.pos, snap.pos);
+      }
+      return pv;
+    }
     if (p.tool === "balloon") {
       const raw = toModel(this.view, this.cursor);
       pv.lines.push([p.anchor.pos, raw]);
@@ -967,7 +1029,9 @@ export class App {
       const kind = p.layer === "dim" ? "dim" : p.layer === "sym" ? "sym" : "curve";
       offer({ id: p.ref, kind, part: p.part, text: p.k === "text" }, 2, d);
     }
-    return [...found.values()].sort((a, b) => a.rank - b.rank || a.d - b.d);
+    const depth = new Map<Id, number>();
+    this.prims.forEach((p, i) => { if (p.ref) depth.set(p.ref, i); });
+    return [...found.values()].sort((a, b) => a.rank - b.rank || a.d - b.d || (depth.get(b.id) ?? -1) - (depth.get(a.id) ?? -1));
   }
 
   private hitTest(sp: V, geometryOnly = false): Hit | null {
@@ -999,20 +1063,35 @@ export class App {
     const p = this.pending;
     if (p?.tool === "line") return p.start.pos;
     if (p?.tool === "beam" && !p.b) return p.a.pos;
+    if (p?.tool === "rectangle" && p.mode === "rect3" && !p.b) return p.a.pos;
     return undefined;
   }
 
   private snapAt(sp: V, anchor?: V): Snap {
-    const raw = toModel(this.view, sp);
-    if (this.altKey) return { pos: raw };
+    let raw = toModel(this.view, sp);
+    let lockedAxis: DragAxis | null = null;
+    if (this.ctrlKey && anchor) {
+      if (!this.drawingLockOrigin || dist(this.drawingLockOrigin, anchor) > 1e-10) {
+        this.drawingLockOrigin = [...anchor];
+        this.drawingAxisLock = null;
+      }
+      if (!this.drawingAxisLock && dist(raw, anchor) * this.view.scale >= 3) this.drawingAxisLock = dominantDragAxis(raw, anchor);
+      lockedAxis = this.drawingAxisLock;
+      if (lockedAxis) raw = lockDragToAxis(raw, anchor, lockedAxis);
+    } else { this.drawingAxisLock = null; this.drawingLockOrigin = null; }
+    const allowed = (p: V) => !lockedAxis || Math.abs(p[lockedAxis === "x" ? 1 : 0] - anchor![lockedAxis === "x" ? 1 : 0]) < 1e-9;
+    const orthogonal = lockedAxis ? { axis: lockedAxis === "x" ? "h" as const : "v" as const } : {};
+    if (this.altKey) return { pos: raw, ...orthogonal };
 
     let bestD = POINT_TOL;
     let hitPoint: Point | null = null;
+    const pointTarget = lockedAxis ? toScreen(this.view, raw) : sp;
     for (const p of points(this.sk)) {
-      const d = dist(toScreen(this.view, [p.x, p.y]), sp);
+      if (!allowed([p.x, p.y])) continue;
+      const d = dist(toScreen(this.view, [p.x, p.y]), pointTarget);
       if (d < bestD) { bestD = d; hitPoint = p; }
     }
-    if (hitPoint) return { pos: [hitPoint.x, hitPoint.y], pointId: hitPoint.id };
+    if (hitPoint) return { pos: [hitPoint.x, hitPoint.y], pointId: hitPoint.id, ...orthogonal };
 
     const tol = CURVE_TOL / this.view.scale;
     let bestCurve: Snap | null = null;
@@ -1023,7 +1102,7 @@ export class App {
         const A: V = [a.x, a.y], B: V = [b.x, b.y];
         const pr = projectOnSegment(raw, A, B);
         const d = dist(raw, pr.point);
-        if (d >= bestCurveD) continue;
+        if (d >= bestCurveD || !allowed(pr.point)) continue;
         const m = mid(A, B);
         const nearMid = dist(pr.point, m) * this.view.scale < 9;
         bestCurveD = d;
@@ -1039,13 +1118,24 @@ export class App {
         }
         const d = Math.abs(dist(raw, C) - r);
         if (d >= bestCurveD) continue;
+        const rim = polar(C, r, ang);
+        if (!allowed(rim)) continue;
         bestCurveD = d;
-        bestCurve = { pos: polar(C, r, ang), curveId: e.id };
+        bestCurve = { pos: rim, curveId: e.id };
       }
     }
-    if (bestCurve) return bestCurve;
+    if (bestCurve) return { ...bestCurve, ...orthogonal };
+
+    if (this.sk.snapToGrid) {
+      let pos = snapToGrid(raw, this.sk.backgroundSpacingMm ?? 1);
+      if (lockedAxis) pos = lockDragToAxis(pos, anchor!, lockedAxis);
+      const axis = anchor && Math.abs(pos[1] - anchor[1]) < 1e-10 && Math.abs(pos[0] - anchor[0]) * this.view.scale > 14 ? "h"
+        : anchor && Math.abs(pos[0] - anchor[0]) < 1e-10 && Math.abs(pos[1] - anchor[1]) * this.view.scale > 14 ? "v" : undefined;
+      return { pos, grid: true, ...(axis ? { axis } : {}), ...orthogonal };
+    }
 
     if (anchor) {
+      if (lockedAxis) return { pos: raw, ...orthogonal };
       const a = toScreen(this.view, anchor);
       const dx = Math.abs(sp[0] - a[0]), dy = Math.abs(sp[1] - a[1]);
       if (dy < 7 && dx > 14) return { pos: [raw[0], anchor[1]], axis: "h" };
@@ -1058,6 +1148,7 @@ export class App {
     if (s.pointId) return { pos: s.pos, kind: "point" };
     if (s.curveId) return { pos: s.pos, kind: s.midpoint ? "mid" : "curve" };
     if (s.axis) return { pos: s.pos, kind: s.axis, from: anchor };
+    if (s.grid) return { pos: s.pos, kind: "grid" };
     return null;
   }
 
@@ -1099,6 +1190,52 @@ export class App {
     const snap = this.snapAt(sp, this.snapAnchor());
     const autos: ConstraintDraft[] = [];
     const p = this.pending;
+
+    if (this.tool === "rectangle" || this.tool === "rectcenter" || this.tool === "rect3") {
+      if (!p || p.tool !== "rectangle") {
+        this.pending = { tool: "rectangle", mode: this.tool, a: snap };
+        return;
+      }
+      if (p.mode === "rect3" && !p.b) {
+        if (dist(p.a.pos, snap.pos) * this.view.scale < 3) return;
+        p.b = snap;
+        return;
+      }
+      const corners = rectangleCorners(p.mode, p.a.pos, (p.b ?? snap).pos, p.b ? snap.pos : undefined);
+      if (!corners || dist(corners[0], corners[1]) * this.view.scale < 3 || dist(corners[1], corners[2]) * this.view.scale < 3) {
+        return this.toast("Give the rectangle a nonzero width and height.");
+      }
+      const existing: Partial<Record<number, Id>> = {};
+      let center: Id | undefined;
+      if (p.mode === "rectcenter") center = this.materialize(p.a, autos);
+      else existing[0] = this.materialize(p.a, autos);
+      if (p.mode === "rect3") {
+        existing[1] = this.materialize(p.b!, autos);
+        if (dist(corners[2], snap.pos) < 1e-9) existing[2] = this.materialize(snap, autos);
+      } else existing[2] = this.materialize(snap, autos);
+      const made = rectangleParts(this.sk, corners, p.mode, existing, center, this.constructing);
+      this.pending = null;
+      this.finishDrawing([...made.autos, ...autos]);
+      return;
+    }
+    if (this.tool === "arc3") {
+      if (!p || p.tool !== "arc3") {
+        this.pending = { tool: "arc3", start: snap };
+        return;
+      }
+      if (!p.end) {
+        if (dist(p.start.pos, snap.pos) * this.view.scale < 3) return;
+        p.end = snap;
+        return;
+      }
+      const shape = arcThrough(p.start.pos, p.end.pos, snap.pos);
+      if (!shape) return this.toast("Choose a third point away from the straight line between the arc's ends.");
+      const start = this.materialize(p.start, autos), end = this.materialize(p.end, autos), through = this.materialize(snap, autos);
+      const made = threePointArc(this.sk, start, end, through, shape, this.constructing);
+      this.pending = null;
+      this.finishDrawing([...made.autos, ...autos]);
+      return;
+    }
 
     if (this.tool === "point") {
       if (snap.pointId) return;
@@ -1247,6 +1384,9 @@ export class App {
   }
 
   private setTool(t: Tool): void {
+    this.drawingAxisLock = null;
+    this.drawingLockOrigin = null;
+    if (t === "rectangle" || t === "arc" || t === "gradient") t = this.primitiveModes[t];
     if (isCopyTool(t) && !this.copyReady(toolDef(t).label)) {
       // Not picked up, but asked for: this is when its tip is wanted.
       return this.showTip(t);
@@ -1357,7 +1497,6 @@ export class App {
     this.setTool("select");
     this.selection = new Set((made as CopyResult).made);
     this.finishDrawing(autos);
-    this.keepInView();
     // The keyboard goes back to the drawing, not to the button a dialog was opened from.
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   }
@@ -1597,7 +1736,7 @@ export class App {
       return;
     }
 
-    if (tool === "fill") {
+    if (tool === "fill" || tool === "gradient" || tool === "radialgradient") {
       const region = regionAt(this.sk, raw);
       if (!region) {
         this.toast("Click inside a closed shape. Its lines must meet at shared points.");
@@ -1608,7 +1747,9 @@ export class App {
         : !f.circle && f.points.length === region.face.points.length && region.face.points.every((id) => f.points.includes(id)));
       const existing = this.sk.symbols.find(same);
       if (existing && existing.type === "fill") {
-        existing.color = this.fillColor; // filling a filled shape recolours it
+        if (tool === "fill") existing.color = this.fillColor; // solid Fill recolours it
+        if (tool === "fill") delete existing.gradient;
+        else if (existing.gradient?.type !== (tool === "gradient" ? "linear" : "radial")) existing.gradient = defaultGradient(tool === "gradient" ? "linear" : "radial");
         this.selection = new Set([existing.id]);
         return this.commit();
       }
@@ -1616,6 +1757,7 @@ export class App {
         ? addSymbol(this.sk, { type: "fill", color: this.fillColor, circle: region.circle, points: [], arcs: [], curves: [], holes: [] })
         : addSymbol(this.sk, { type: "fill", color: this.fillColor, points: region.face.points, arcs: region.face.arcs, curves: region.face.curves, holes: region.holes });
       this.selection = new Set([f.id]);
+      if (tool !== "fill") f.gradient = defaultGradient(tool === "gradient" ? "linear" : "radial");
       return this.commit();
     }
 
@@ -1810,7 +1952,7 @@ export class App {
     const shape = s?.type === "diagram" ? diagramShape(this.sk, s) : null;
     if (s?.type !== "diagram" || !shape?.peak) return;
     const { t, v } = shape.peak;
-    const h = dot(sub(toModel(this.view, sp), shape.base.at(t)), shape.base.left(t));
+    const h = dot(sub(this.dragModel(sp), shape.base.at(t)), shape.base.left(t));
     if (Math.abs(h) * this.view.scale < 3) return; // on the member itself it has no height to take
     s.scale = Math.abs(h / v);
     s.side = h * v >= 0 ? 1 : -1;
@@ -1836,7 +1978,7 @@ export class App {
       // The same for a diagram: its end follows the pointer along the member.
       const base = baseline(this.sk, s);
       if (!base) return;
-      let t = base.nearest(toModel(this.view, sp));
+      let t = base.nearest(this.dragModel(sp));
       if (!this.altKey) for (const stop of [0, 0.5, 1]) if (Math.abs(t - stop) * base.length * this.view.scale < 8) t = stop;
       const [t0, t1] = d.end === 0 ? [Math.min(t, s.t1 - 0.02), s.t1] : [s.t0, Math.max(t, s.t0 + 0.02)];
       // Its strokes stay as far apart as they were.
@@ -1848,7 +1990,7 @@ export class App {
     if (s?.type !== "lineload") return;
     const f = lineLoadFrame(this.sk, s, 1);
     if (!f) return;
-    const m = toModel(this.view, sp);
+    const m = this.dragModel(sp);
     // Followed along the arrows, back to the line.
     const foot = intersectLines(m, f.body, f.a, sub(f.b, f.a)) ?? projectOnSegment(m, f.a, f.b).point;
     const span = sub(f.b, f.a);
@@ -1870,13 +2012,18 @@ export class App {
   private dragSymbol(d: Extract<DragState, { kind: "sym" }>, sp: V): void {
     const s = symbol(this.sk, d.id);
     if (!s) return;
-    const m = toModel(this.view, sp);
+    const raw = toModel(this.view, sp);
+    const translating = (isLoad(s) && d.part === "label") || ["balloon", "datum", "note", "frame"].includes(s.type);
+    const m = translating ? raw : this.dragModel(sp);
     const mm = this.mm();
     const snapAngle = (a: number) => (this.altKey ? a : Math.round(a / (15 * DEG)) * 15 * DEG);
 
     if (isLoad(s) && d.part === "label") {
       // The name moves on its own; the load stays.
-      const moved = mul(sub(m, d.startModel), mm);
+      const initial = loadLabel(this.sk, { ...s, dx: d.origin[0], dy: d.origin[1] }, mm)?.at;
+      const start = initial ? mul(initial, 1 / mm) : d.startModel;
+      const target = this.snapDraggedPosition(add(start, sub(raw, d.startModel)), start);
+      const moved = mul(sub(target, start), mm);
       s.dx = d.origin[0] + moved[0];
       s.dy = d.origin[1] + moved[1];
     } else if (s.type === "load" || s.type === "moment") {
@@ -1906,7 +2053,12 @@ export class App {
     } else if (s.type === "balloon" || s.type === "datum") {
       // The balloon, or the datum's name, moves; what it belongs to stays. A
       // balloon is placed in the drawing; a name keeps its distance in annotation mm.
-      const moved = mul(sub(m, d.startModel), s.type === "balloon" ? 1 : mm);
+      const unit = s.type === "balloon" ? 1 : mm;
+      const joint = s.type === "datum" ? point(this.sk, s.at) : null;
+      const anchor: V = s.type === "balloon" ? balloonAnchor(this.sk, s) : [joint!.x, joint!.y];
+      const start = add(anchor, mul(d.origin, 1 / unit));
+      const target = this.snapDraggedPosition(add(start, sub(raw, d.startModel)), start);
+      const moved = mul(sub(target, start), unit);
       s.dx = d.origin[0] + moved[0];
       s.dy = d.origin[1] + moved[1];
     } else if (s.type === "hatch") {
@@ -1916,19 +2068,22 @@ export class App {
       const whole = curveLength(this.sk, s.on);
       s.depth = Math.max(whole * HATCH_REACH[0], Math.min(whole * HATCH_REACH[1], Math.abs(off)));
     } else if (s.type === "note") {
-      const pos = add(d.origin, sub(m, d.startModel));
+      const pos = this.snapDraggedPosition(add(d.origin, sub(raw, d.startModel)), d.origin);
       s.x = pos[0];
       s.y = pos[1];
     } else if (s.type === "frame") {
       // Axes move freely; dropped on a joint they pin to it.
-      const pos = add(d.origin, sub(m, d.startModel));
+      const rawPosition = add(d.origin, sub(raw, d.startModel));
+      let pos = rawPosition;
       const screenPos = toScreen(this.view, pos);
       const near = points(this.sk).find((p) => dist(toScreen(this.view, [p.x, p.y]), screenPos) < POINT_TOL);
-      if (near && !this.altKey) {
+      if (near && !this.altKey && !this.ctrlKey) {
+        this.snapMark = { pos: [near.x, near.y], kind: "point" };
         s.at = near.id;
         s.x = near.x;
         s.y = near.y;
       } else {
+        pos = this.snapDraggedPosition(rawPosition, d.origin);
         delete s.at;
         s.x = pos[0];
         s.y = pos[1];
@@ -1942,9 +2097,11 @@ export class App {
     if (!s || s.type !== "frame") return;
     const mm = this.mm();
     const o = mul(symbolPosition(this.sk, s), mm);
-    const q = mul(toModel(this.view, sp), mm);
     const ang = s.angle + (d.axis === "y" ? Math.PI / 2 : 0);
-    const size = dot(sub(q, o), [Math.cos(ang), Math.sin(ang)]) - d.slack;
+    const direction: V = [Math.cos(ang), Math.sin(ang)];
+    const target = this.snapDraggedPosition(sub(toModel(this.view, sp), mul(direction, d.slack / mm)));
+    const q = mul(target, mm);
+    const size = dot(sub(q, o), direction);
     // Kept in the drawing's units, and never shorter than the arrowhead it carries.
     const length = Math.max(2 * PAPER.arrowLen, size) / mm;
     if (d.axis === "x") s.xSize = length;
@@ -1965,9 +2122,9 @@ export class App {
     const mm = this.mm();
     const f = roundFrame(this.sk, s.on, mm);
     if (!f) return;
-    const over = dist(mul(toModel(this.view, sp), mm), f.c) - f.r;
+    const over = dist(mul(this.dragModel(sp), mm), f.c) - f.r;
     let scale = over / PAPER.centreOver;
-    if (!this.altKey) scale = Math.round(scale * 20) / 20; // steps of 0.05, unless Alt is held
+    if (!this.altKey && !this.sk.snapToGrid) scale = Math.round(scale * 20) / 20; // grid targets take priority over size increments
     s.scale = Math.max(0.2, Math.min(10, scale));
   }
 
@@ -2004,6 +2161,30 @@ export class App {
 
   // ---- pointer --------------------------------------------------------------
 
+  /** Applies the drawing grid to the actual position a handle or object will take. */
+  private snapDraggedPosition(position: V, origin?: V): V {
+    if (this.ctrlKey && this.drag && "startScreen" in this.drag) {
+      this.dragLockOrigin ??= origin ?? toModel(this.view, this.drag.startScreen);
+      if (!this.dragAxisLock && dist(position, this.dragLockOrigin) * this.view.scale >= 3) this.dragAxisLock = dominantDragAxis(position, this.dragLockOrigin);
+      position = this.dragAxisLock ? lockDragToAxis(position, this.dragLockOrigin, this.dragAxisLock) : this.dragLockOrigin;
+    } else {
+      this.dragAxisLock = null;
+      this.dragLockOrigin = null;
+    }
+    if (!this.sk.snapToGrid || this.altKey) {
+      this.snapMark = null;
+      return position;
+    }
+    let snapped = snapToGrid(position, this.sk.backgroundSpacingMm ?? 1);
+    if (this.dragAxisLock && this.dragLockOrigin) snapped = lockDragToAxis(snapped, this.dragLockOrigin, this.dragAxisLock);
+    this.snapMark = { pos: snapped, kind: "grid" };
+    return snapped;
+  }
+
+  private dragModel(sp: V): V {
+    return this.snapDraggedPosition(toModel(this.view, sp));
+  }
+
   private screenPos(ev: PointerEvent | WheelEvent | MouseEvent): V {
     const r = this.svg.getBoundingClientRect();
     return [ev.clientX - r.left, ev.clientY - r.top];
@@ -2013,6 +2194,9 @@ export class App {
     const sp = this.screenPos(ev);
     this.cursor = sp;
     this.altKey = ev.altKey;
+    this.ctrlKey = ev.ctrlKey;
+    this.dragAxisLock = null;
+    this.dragLockOrigin = null;
     const wasEditing = this.editing !== null;
     if (wasEditing) this.commitEditor();
     // Working on the canvas ends any typing in the panels.
@@ -2026,6 +2210,17 @@ export class App {
       return;
     }
     if (ev.button !== 0) return;
+
+    const gradientFill = this.selectedSymbol();
+    if (gradientFill?.type === "fill" && gradientFill.gradient && ["select", "gradient", "radialgradient"].includes(this.tool)) {
+      const handles = gradientPoints(fillOutlines(this.sk, gradientFill, 1), gradientFill.gradient).map((p) => toScreen(this.view, p));
+      const handle = handles.findIndex((p) => dist(p, sp) < 10);
+      if (handle >= 0) {
+        this.gradientStop = handle === 0 ? "start" : "end";
+        this.drag = { kind: "gradient", id: gradientFill.id, end: handle as 0 | 1, startScreen: sp, moved: false };
+        return this.touch();
+      }
+    }
 
     if (isCommand(this.tool)) {
       this.commandClick(sp);
@@ -2141,6 +2336,7 @@ export class App {
     const sp = this.screenPos(ev);
     this.cursor = sp;
     this.altKey = ev.altKey;
+    this.ctrlKey = ev.ctrlKey;
     const d = this.drag;
 
     if (d?.kind === "pan") {
@@ -2151,15 +2347,33 @@ export class App {
       d.last = sp;
     } else if (d?.kind === "box") {
       d.b = sp;
+    } else if (d?.kind === "gradient") {
+      const fill = symbol(this.sk, d.id);
+      if (fill?.type !== "fill" || !fill.gradient) return;
+      const outlines = fillOutlines(this.sk, fill, 1);
+      const points = gradientPoints(outlines, fill.gradient);
+      const next = this.snapDraggedPosition(toModel(this.view, sp), points[d.end]);
+      if (d.end === 1 && dist(next, points[0]) * this.view.scale < 3) return;
+      if (!d.moved && dist(sp, d.startScreen) < 3) return;
+      d.moved = true;
+      if (d.end === 0) {
+        const delta = sub(next, points[0]);
+        fill.gradient.from = gradientPosition(outlines, next);
+        fill.gradient.to = gradientPosition(outlines, add(points[1], delta));
+      } else fill.gradient.to = gradientPosition(outlines, next);
+      this.render();
     } else if (d?.kind === "trim") {
       this.trimStroke(d, sp);
     } else if (d?.kind === "move") {
       if (!d.moved && dist(sp, d.startScreen) < 3) return;
       d.moved = true;
       const m = toModel(this.view, sp);
-      const delta = sub(m, d.startModel);
+      let delta = sub(m, d.startModel);
+      const reference = d.targets.find((p) => p.id === d.grabbed) ?? d.targets[0];
+      if (!d.rim && reference) delta = sub(this.snapDraggedPosition(add([reference.x, reference.y], delta), [reference.x, reference.y]), [reference.x, reference.y]);
+      const rimTarget = d.rim ? this.dragModel(sp) : m;
       const drags: Drag[] = d.rim
-        ? [{ kind: "rim", id: d.rim, x: m[0], y: m[1] }]
+        ? [{ kind: "rim", id: d.rim, x: rimTarget[0], y: rimTarget[1] }]
         : d.targets.map((t) => ({ kind: "point", id: t.id, x: t.x + delta[0], y: t.y + delta[1] }));
       this.solve(drags);
       this.chromeDirty = true;
@@ -2196,9 +2410,11 @@ export class App {
       d.moved = true;
       const l = entity(this.sk, d.id);
       if (l?.type === "line" || l?.type === "arc") {
-        const moved = mul(sub(toModel(this.view, sp), d.startModel), this.mm());
-        l.lx = d.origin[0] + moved[0];
-        l.ly = d.origin[1] + moved[1];
+        const mm = this.mm(), anchor = arrowAnchor(this.sk, l, mm);
+        const initial = mul(add(anchor, d.origin), 1 / mm);
+        const target = this.snapDraggedPosition(add(initial, sub(toModel(this.view, sp), d.startModel)), initial);
+        const offset = sub(mul(target, mm), anchor);
+        [l.lx, l.ly] = offset;
       }
     } else if (this.tool === "select") {
       this.hover = this.hitTest(sp)?.id ?? null;
@@ -2238,6 +2454,9 @@ export class App {
   private onPointerUp(ev: PointerEvent): void {
     const d = this.drag;
     this.drag = null;
+    this.dragAxisLock = null;
+    this.dragLockOrigin = null;
+    this.snapMark = null;
     if (this.svg.hasPointerCapture(ev.pointerId)) this.svg.releasePointerCapture(ev.pointerId);
     if (!d) return;
 
@@ -2265,7 +2484,7 @@ export class App {
     } else if ((d.kind === "sym" || d.kind === "axis" || d.kind === "label") && !d.moved && d.edit && ev.type === "pointerup") {
       // The same for a name: a click on it, and it is typed where it stands.
       this.openEditor(d.edit);
-    } else if ((d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label" || d.kind === "reach" || d.kind === "span" || d.kind === "height") && d.moved) {
+    } else if ((d.kind === "gradient" || d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label" || d.kind === "reach" || d.kind === "span" || d.kind === "height") && d.moved) {
       this.commit();
     }
     this.touch();
@@ -2378,7 +2597,7 @@ export class App {
     const d = constraint(this.sk, id);
     if (!d || !isDimension(d)) return;
     const mm = this.mm();
-    const q = mul(toModel(this.view, sp), mm);
+    const q = mul(this.dragModel(sp), mm);
     if (d.type === "distance") {
       const f = distanceFrame(this.sk, d, mm);
       d.offset = dot(sub(q, f.A), f.n) / mm;
@@ -2585,19 +2804,7 @@ export class App {
     }
     this.result = r;
     this.commit();
-    this.keepInView();
     return true;
-  }
-
-  /** Refits the view when an edit left the figure off screen or tiny. */
-  private keepInView(): void {
-    const b = geometryBox(this.sk);
-    if (boxIsEmpty(b)) return;
-    const [x0, y1] = toScreen(this.view, [b.x0, b.y0]);
-    const [x1, y0] = toScreen(this.view, [b.x1, b.y1]);
-    const outside = x0 < 0 || y0 < 0 || x1 > this.view.w || y1 > this.view.h;
-    const tiny = x1 - x0 < this.view.w * 0.15 && y1 - y0 < this.view.h * 0.15;
-    if (outside || tiny) this.fit();
   }
 
   private openDimEditor(id: Id): void {
@@ -2970,6 +3177,51 @@ export class App {
 
   // ---- history, files, view -------------------------------------------------
 
+  private async copySelection(): Promise<void> {
+    if (this.tab === "plot") return;
+    const copied = copyObjects(this.sk, this.selection);
+    if (!copied) return this.toast("Select an object or filled region to copy.");
+    this.copiedObjects = copied;
+    this.pasteCount = 0;
+    try { await navigator.clipboard.writeText(JSON.stringify(copied)); } catch { /* The in-app copy still works when clipboard access is unavailable. */ }
+    this.toast("Copied objects and their fills. Paste with Ctrl+V.");
+  }
+
+  private async pasteSelection(incoming?: ObjectClipboard): Promise<void> {
+    if (this.tab === "plot") return;
+    let copied = incoming ?? this.copiedObjects;
+    if (!copied) try { copied = readObjectClipboard(await navigator.clipboard.readText()); } catch { /* Keyboard paste can provide data without clipboard-read permissions. */ }
+    if (!copied) return this.toast("Copy an object in Mech Sketch first.");
+    if (JSON.stringify(copied) !== JSON.stringify(this.copiedObjects)) this.pasteCount = 0;
+    this.copiedObjects = copied;
+    const before = clone(this.sk);
+    const step = this.sk.snapToGrid ? this.sk.backgroundSpacingMm ?? 1 : 24 / this.view.scale;
+    const offset: V = [step * (this.pasteCount + 1), -step * (this.pasteCount + 1)];
+    const made = pasteObjects(this.sk, copied, offset);
+    const result = this.solver.solve(this.sk);
+    if (!result.ok || result.conflicting.length > this.result.conflicting.length) {
+      this.sk = before;
+      this.solve();
+      this.touch();
+      return this.toast("The copied geometry could not be pasted with its constraints.");
+    }
+    this.result = result;
+    this.pasteCount++;
+    this.setTool("select");
+    this.selection = new Set(made);
+    this.commit();
+  }
+
+  private pasteClipboardEvent(event: ClipboardEvent): void {
+    const target = event.target as HTMLElement;
+    if (this.tab === "plot" || document.querySelector("dialog[open]") || target.isContentEditable || ["INPUT", "TEXTAREA"].includes(target.tagName)) return;
+    const text = event.clipboardData?.getData("text/plain") ?? "";
+    const incoming = readObjectClipboard(text);
+    if (!incoming && (text !== "" || !this.copiedObjects)) return;
+    event.preventDefault();
+    void this.pasteSelection(incoming ?? this.copiedObjects!);
+  }
+
   private undo(): void {
     const sk = this.history.undo();
     if (!sk) return;
@@ -3212,7 +3464,7 @@ export class App {
    * Switches the print preview on or off. Going in, the view is fitted to the
    * figure as it prints; coming back, it returns to where it was.
    */
-  private setPreview(on: boolean): void {
+  private setPreview(on: boolean, fitView = true): void {
     if (on === this.preview) return;
     this.closeEditor();
     this.preview = on;
@@ -3220,7 +3472,7 @@ export class App {
     else if (this.tip?.id === "preview") this.closeTip();
     if (on) {
       this.viewBeforePreview = { ...this.view };
-      this.fit();
+      if (fitView) this.fit();
     } else if (this.viewBeforePreview) {
       const { cx, cy, scale } = this.viewBeforePreview;
       Object.assign(this.view, { cx, cy, scale });
@@ -3238,12 +3490,18 @@ export class App {
     $("#view-actions").innerHTML =
       `<button type="button" class="icon-btn" data-act="undo" aria-label="Undo" title="Undo (Ctrl+Z)">${icon("undo")}</button>` +
       `<button type="button" class="icon-btn" data-act="redo" aria-label="Redo" title="Redo (Ctrl+Y)">${icon("redo")}</button>` +
+      `<button type="button" class="icon-btn" data-act="copy-objects" aria-label="Copy objects" title="Copy objects and fills (Ctrl+C)">${icon("copyobjects")}</button>` +
+      `<button type="button" class="icon-btn" data-act="paste-objects" aria-label="Paste objects" title="Paste objects and fills (Ctrl+V)">${icon("pasteobjects")}</button>` +
       `<span class="rule"></span>` +
       // A plain link, so it opens in the browser like any other; it is left out until there is somewhere to send people.
       (SUPPORT_URL ? `<a class="icon-btn support" href="${esc(SUPPORT_URL)}" target="_blank" rel="noopener noreferrer" aria-label="Support Mech Sketch" title="Support Mech Sketch with a donation">${icon("heart")}</a>` : "") +
       `<div class="menu">` +
       `<button type="button" class="icon-btn" id="view-btn" data-menu="view" aria-label="View settings" title="View settings" aria-haspopup="true" aria-expanded="false" aria-controls="view-list">${icon("sliders")}</button>` +
       `<div class="menu-list popover" id="view-list" role="group" aria-labelledby="view-btn" hidden>` +
+      `<label class="pop-row"><span>Background style</span><select id="background-style"><option value="dots">Dots</option><option value="grid">Grid</option></select></label>` +
+      `<label class="pop-row"><span>Background spacing (mm)</span><input id="background-spacing" type="number" min="0.1" max="1000" step="any" value="1" aria-describedby="background-note"></label>` +
+      `<p class="pop-note" id="background-note">One drawing unit is treated as 1 mm. Every tenth gridline is heavier. Backgrounds are saved with the sketch and hidden in print.</p>` +
+      `<label class="check pop-check" title="Press S while sketching to toggle. Hold Alt to temporarily bypass snapping."><input id="snap-to-grid" type="checkbox"><span>Snap to grid (S)</span></label>` +
       `<label class="pop-row" title="Double-click for 100%."><span>Dimension size while editing</span>` +
       `<span class="pop-ctl"><input id="edit-scale" type="range" min="${EDIT_SCALE_MIN}" max="${EDIT_SCALE_MAX}" step="5" value="100"><output id="edit-scale-out" for="edit-scale">100%</output></span></label>` +
       `<p class="pop-note">How large text, arrows and symbols look on screen while you draw. The size in print is set in the corner box.</p>` +
@@ -3291,12 +3549,16 @@ export class App {
       bar.dataset.shown = "plot";
       return;
     }
-    const tools = TOOLS.filter((t) => t.tab === this.tab || t.tab === "both");
+    const tools = TOOLS.filter((t) => (t.tab === this.tab || t.tab === "both") && !["rectcenter", "rect3", "arc3", "radialgradient"].includes(t.id));
     let html = "";
     let group: number | null = null;
     for (const t of tools) {
       if (group !== null && t.group !== group) html += `<span class="ribbon-rule"></span>`;
       group = t.group;
+      if (t.id === "rectangle" || t.id === "arc" || t.id === "gradient") {
+        html += this.primitiveModes.button(t.id);
+        continue;
+      }
       const attr = t.id === "shift" || t.id === "construction" ? `data-act="${t.id}"` : isCommand(t.id) ? `data-cmd="${t.id}"` : `data-tool="${t.id}"`;
       html += `<button type="button" class="tool" ${attr} aria-label="${t.label}" title="${t.label}${t.key ? ` (${t.key})` : ""}">${icon(t.icon, 22)}<span>${t.short ?? t.label}</span></button>`;
     }
@@ -3337,6 +3599,10 @@ export class App {
   }
 
   private updateButtons(): void {
+    $<HTMLInputElement>("#snap-to-grid").checked = this.sk.snapToGrid ?? false;
+    $<HTMLSelectElement>("#background-style").value = this.sk.backgroundStyle ?? "dots";
+    const spacing = $<HTMLInputElement>("#background-spacing");
+    if (document.activeElement !== spacing) spacing.value = String(this.sk.backgroundSpacingMm ?? 1);
     // The Plot ribbon greys out what needs a plot, so it is drawn afresh each time.
     if ($("#ribbon").dataset.shown !== this.tab || this.tab === "plot") this.buildRibbon();
     document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((b) => {
@@ -3347,6 +3613,8 @@ export class App {
     });
     $<HTMLButtonElement>('[data-act="undo"]').disabled = !this.history.canUndo;
     $<HTMLButtonElement>('[data-act="redo"]').disabled = !this.history.canRedo;
+    $<HTMLButtonElement>('[data-act="copy-objects"]').disabled = this.tab === "plot" || this.selection.size === 0;
+    $<HTMLButtonElement>('[data-act="paste-objects"]').disabled = this.tab === "plot";
     $<HTMLButtonElement>('[data-act="origin"]').setAttribute("aria-pressed", String(this.sk.showOrigin));
     $<HTMLButtonElement>('[data-act="preview"]').setAttribute("aria-pressed", String(this.preview));
     document.querySelector('#ribbon [data-act="construction"]')?.setAttribute("aria-pressed", String(this.constructing));
@@ -3486,13 +3754,16 @@ export class App {
         html += `<p class="muted note-block">Drag the balloon to move it; its leader keeps pointing at the same spot.</p>`;
         break;
       }
-      case "fill":
-        html += `<h2>Fill</h2>`;
-        html += `<div class="field"><span id="colour-label">Colour</span><div class="swatches" role="group" aria-labelledby="colour-label">${FILL_COLORS.map((c) =>
-          `<button type="button" class="swatch" data-color="${c}" aria-pressed="${s.color === c}" aria-label="Colour ${c}" title="${c}" style="background:${c}"></button>`).join("")}` +
-          `<label class="swatch custom" title="Another colour"><input data-field="sym-color" type="color" value="${esc(s.color)}" aria-label="Another colour"></label></div></div>`;
+      case "fill": {
+        html += `<h2>${s.gradient ? "Gradient fill" : "Fill"}</h2>`;
+        html += `<div class="field"><span>Fill style</span><div class="segmented">${(["solid", "linear", "radial"] as const).map((kind) => `<button type="button" data-gradient-kind="${kind}" aria-pressed="${(s.gradient?.type ?? "solid") === kind}">${kind === "solid" ? "Solid" : kind === "linear" ? "Linear" : "Radial"}</button>`).join("")}</div></div>`;
+        if (s.gradient) {
+          html += `<div class="field"><span>Gradient colour to edit</span><div class="segmented">${(["start", "end"] as const).map((stop) => `<button type="button" data-gradient-stop="${stop}" aria-pressed="${this.gradientStop === stop}"><span class="gradient-sample" style="background:${stop === "start" ? s.color : s.gradient!.color}"></span>${s.gradient!.type === "radial" ? (stop === "start" ? "Center" : "Edge") : (stop === "start" ? "Start" : "End")}</button>`).join("")}</div></div>`;
+          html += `<p class="muted">Drag the square handle to move the gradient; drag the round handle to set direction or radius.</p><button type="button" class="plain" data-act="gradient-reverse">Reverse colours</button><button type="button" class="plain" data-act="gradient-reset">Reset gradient handles</button>`;
+        }
         if (s.holes.length) html += `<p class="muted note-block">${s.holes.length === 1 ? "The circle inside is" : "The circles inside are"} left unfilled.</p>`;
         break;
+      }
       case "hatch":
         html += `<h2>Hatching</h2>`;
         html += slider("Stroke size", "sym-depth", 0, 100, 1, ratioPos(s.depth / (curveLength(this.sk, s.on) || 1), HATCH_REACH), this.hatchLabel(s, "depth"),
@@ -3553,9 +3824,6 @@ export class App {
         const magnitude = s.type === "lineload" ? Math.max(s.q1, s.q2) : s.value;
         const size = magnitude * loadScaleOf(this.sk, kind);
         const plain = (v: number) => formatNumber(Number(v.toPrecision(6)));
-        const colours = `<div class="field"><span id="colour-label">Colour</span><div class="swatches" role="group" aria-labelledby="colour-label">${LOAD_COLORS.map((c) =>
-          `<button type="button" class="swatch" data-color="${c}" aria-pressed="${s.color === c}" aria-label="Colour ${c}" title="${c}" style="background:${c}"></button>`).join("")}` +
-          `<label class="swatch custom" title="Another colour"><input data-field="sym-color" type="color" value="${esc(s.color)}" aria-label="Another colour"></label></div></div>`;
         const sizeSlider = slider(`Size (all ${which} together)`, "sym-size", 0, 100, 1, ratioPos(size / (geometryExtent(this.sk) || 1), LOAD_SIZE), this.loadSizeLabel(s),
           `Every one of the ${which} is drawn at one scale, so their sizes compare as their magnitudes do. This sets that scale; it belongs to the drawing, and neither size slider changes it.`, magnitude <= 0);
         const choice = (label: string, id: string, options: [string, string, boolean][]) =>
@@ -3587,7 +3855,6 @@ export class App {
           }
           html += rotate;
         }
-        html += colours;
         break;
       }
       case "note":
@@ -3599,14 +3866,15 @@ export class App {
         html += `<div class="field"><span id="mark-label">Marked with</span><div class="segmented" role="group" aria-labelledby="mark-label">` +
           `<button type="button" data-mass="0" aria-pressed="${!s.mass}">A dot</button><button type="button" data-mass="1" aria-pressed="${!!s.mass}">Centre of mass</button></div></div>`;
         html += text("Name", "sym-label", s.label, "Written as TeX math. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.", true);
-        html += `<div class="field"><span id="colour-label">Colour</span><div class="swatches" role="group" aria-labelledby="colour-label">${DATUM_COLORS.map((c) =>
-          `<button type="button" class="swatch" data-color="${c}" aria-pressed="${s.color === c}" aria-label="Colour ${c}" title="${c}" style="background:${c}"></button>`).join("")}` +
-          `<label class="swatch custom" title="Another colour"><input data-field="sym-color" type="color" value="${esc(s.color)}" aria-label="Another colour"></label></div></div>`;
         html += `<p class="muted note-block">The ${s.mass ? "mark" : "dot"} and its name are part of the exported figure. The point under it is constrained and dimensioned like any other.</p>`;
         html += `<button type="button" class="plain" data-act="undatum">Back to a plain point</button>`;
         break;
     }
-    return html + extra + `<button type="button" class="danger" data-act="delete">Delete</button>`;
+    html += extra;
+    if (s.type === "note" || s.type === "balloon" || s.type === "frame" || s.type === "fill" || s.type === "datum" || isLoad(s)) {
+      html += colorPanel(s.type === "fill" && s.gradient && this.gradientStop === "end" ? s.gradient.color : s.color, false, s.type === "fill");
+    }
+    return html + `<button type="button" class="danger" data-act="delete">Delete</button>`;
   }
 
   private drawPanel(): void {
@@ -3762,6 +4030,7 @@ export class App {
         }
         const arrow = named?.arrow ? named : null;
         if (arrow) {
+          html += arrowStylePanel(arrow);
           const heads: [ArrowEnds, string][] = arrow.type === "line"
             ? [["end", "End"], ["start", "Start"], ["both", "Both"]]
             : [["end", "Anticlockwise"], ["start", "Clockwise"], ["both", "Both"]];
@@ -3777,6 +4046,8 @@ export class App {
         html += `<h3>Constraints on the selection</h3>`;
         html += attached.length ? this.constraintRows(attached) : `<p class="muted">None yet.</p>`;
       }
+      const arrow = this.selectedArrow();
+      if (arrow) html += colorPanel(arrow.color);
       html += `<button type="button" class="danger" data-act="delete">Delete selection</button>`;
     } else {
       html += `<h2>Nothing selected</h2>`;
@@ -3800,6 +4071,7 @@ export class App {
   // ---- events ---------------------------------------------------------------
 
   private bindEvents(): void {
+    document.addEventListener("paste", (e) => this.pasteClipboardEvent(e));
     const svg = this.svg;
     svg.addEventListener("pointerdown", (e) => this.onPointerDown(e));
     svg.addEventListener("pointermove", (e) => this.onPointerMove(e));
@@ -3835,6 +4107,11 @@ export class App {
       if (menuBtn) return this.setMenu(menuBtn, menuBtn.getAttribute("aria-expanded") !== "true", e.detail === 0);
       if (ds.pact) return this.plots.act(ds.pact, ds);
       if (ds.tab) this.setTab(ds.tab as Tab);
+      else if (ds.primitive && this.primitiveModes.select(ds.primitive)) {
+        this.buildRibbon();
+        this.setTool(ds.primitive);
+        $("#ribbon").querySelector<HTMLElement>(`[data-tool="${ds.primitive}"]`)?.focus();
+      }
       else if (ds.tool) this.setTool(ds.tool as Tool);
       else if (ds.cmd) this.activate(ds.cmd as Command);
       else if (ds.select) { this.setTool("select"); this.selection = new Set([ds.select]); this.touch(); }
@@ -3881,6 +4158,12 @@ export class App {
         if (ds.frame === "circle") delete x.frame;
         else x.frame = ds.frame as BalloonFrame;
       });
+      else if (ds.gradientStop) { this.gradientStop = ds.gradientStop === "end" ? "end" : "start"; this.touch(); }
+      else if (ds.gradientKind) this.editSymbol((s) => {
+        if (s.type !== "fill") return;
+        if (ds.gradientKind === "solid") delete s.gradient;
+        else if (ds.gradientKind === "linear" || ds.gradientKind === "radial") s.gradient = { ...defaultGradient(ds.gradientKind), color: s.gradient?.color ?? "#ffffff" };
+      });
       else if (ds.color) this.setColor(ds.color);
       else if (ds.head) this.setArrowHead(ds.head as ArrowEnds);
       else if (ds.place) this.setRadiusPlace(ds.place === "outside");
@@ -3919,8 +4202,13 @@ export class App {
     this.panel.addEventListener("dblclick", (e) => {
       const input = e.target as HTMLInputElement;
       const field = input.dataset?.field;
-      if (field !== "weight" && field !== "support-scale") return;
+      if (field !== "weight" && field !== "support-scale" && field !== "arrow-head-scale") return;
       input.blur();
+      if (field === "arrow-head-scale") {
+        const arrow = this.selectedArrow();
+        if (arrow) { delete arrow.headScale; this.commit(); }
+        return;
+      }
       if (field === "weight") return this.resetWeight();
       delete this.sk.supportScale;
       this.commit();
@@ -3934,6 +4222,30 @@ export class App {
     editScale.addEventListener("input", () => this.setEditScale(Number(editScale.value), false));
     editScale.addEventListener("change", () => this.setEditScale(Number(editScale.value), true));
     editScale.addEventListener("dblclick", () => this.setEditScale(100, true));
+
+    $<HTMLInputElement>("#snap-to-grid").addEventListener("change", () => this.toggleGridSnap());
+
+    const backgroundStyle = $<HTMLSelectElement>("#background-style");
+    backgroundStyle.addEventListener("change", () => {
+      this.sk.backgroundStyle = backgroundStyle.value === "grid" ? "grid" : "dots";
+      this.commit();
+    });
+    const backgroundSpacing = $<HTMLInputElement>("#background-spacing");
+    const commitBackgroundSpacing = () => {
+      const value = backgroundSpacing.valueAsNumber;
+      if (!Number.isFinite(value) || value < 0.1 || value > 1000) {
+        backgroundSpacing.value = String(this.sk.backgroundSpacingMm ?? 1);
+        return this.toast("Background spacing must be between 0.1 and 1000 mm.");
+      }
+      if (value === (this.sk.backgroundSpacingMm ?? 1)) return;
+      this.sk.backgroundSpacingMm = value;
+      this.commit();
+    };
+    backgroundSpacing.addEventListener("change", commitBackgroundSpacing);
+    backgroundSpacing.addEventListener("blur", commitBackgroundSpacing);
+    backgroundSpacing.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") commitBackgroundSpacing();
+    });
 
     // The slider acts as it moves. What it changes only shows in print, so the preview comes on with it.
     this.titleblock.addEventListener("input", (e) => {
@@ -4003,13 +4315,42 @@ export class App {
     window.addEventListener("keydown", (e) => { if (!this.menuKey(e)) this.onKeyDown(e); });
     window.addEventListener("keyup", (e) => {
       this.altKey = e.altKey;
+      this.ctrlKey = e.ctrlKey;
+      if (!this.ctrlKey) { this.dragAxisLock = null; this.dragLockOrigin = null; }
+      if (!this.ctrlKey) { this.drawingAxisLock = null; this.drawingLockOrigin = null; }
       if (e.code === "Space") { this.spaceKey = false; this.render(); }
     });
-    window.addEventListener("blur", () => { this.spaceKey = false; this.altKey = false; });
+    window.addEventListener("blur", () => { this.spaceKey = false; this.altKey = false; this.ctrlKey = false; this.dragAxisLock = null; this.dragLockOrigin = null; this.drawingAxisLock = null; this.drawingLockOrigin = null; });
   }
 
   private action(act: string): void {
     switch (act) {
+      case "copy-objects": return void this.copySelection();
+      case "paste-objects": return void this.pasteSelection();
+      case "gradient-reverse": return this.editSymbol((s) => { if (s.type === "fill" && s.gradient) [s.color, s.gradient.color] = [s.gradient.color, s.color]; });
+      case "gradient-reset": return this.editSymbol((s) => { if (s.type === "fill" && s.gradient) s.gradient = { ...defaultGradient(s.gradient.type), color: s.gradient.color }; });
+      case "color-palette": {
+        const arrow = this.selectedArrow();
+        if (arrow) return showColorPalette(arrow.color ?? "#17201b", (color, save) => {
+          if (save) this.customPalette.add(color);
+          this.setColor(color);
+        });
+        const selected = this.selectedSymbol();
+        if (!selected || !(selected.type === "fill" || selected.type === "datum" || selected.type === "note" || selected.type === "balloon" || selected.type === "frame" || isLoad(selected))) return;
+        return showColorPalette((selected.type === "fill" && selected.gradient && this.gradientStop === "end" ? selected.gradient.color : selected.color) ?? "#17201b", (color, save) => {
+          if (save) this.customPalette.add(color);
+          this.setColor(color);
+        });
+      }
+      case "custom-color": {
+        const selected = this.selectedSymbol();
+        if (selected?.type !== "fill") return;
+        const color = selected.gradient && this.gradientStop === "end" ? selected.gradient.color : selected.color;
+        return showCustomColor(color, (chosen, save) => {
+          if (save) this.customPalette.add(chosen);
+          this.setColor(chosen);
+        });
+      }
       case "undo": return this.undo();
       case "redo": return this.redo();
       case "fit": return this.tab === "plot" ? this.plots.fit() : this.fit();
@@ -4067,6 +4408,14 @@ export class App {
         this.sk.showOrigin = !this.sk.showOrigin;
         return this.commit();
     }
+  }
+
+  /** Toggle placement snapping without changing geometry, the tool, or the camera. */
+  private toggleGridSnap(): void {
+    this.sk.snapToGrid = !this.sk.snapToGrid;
+    this.updateSnapMark();
+    this.commit();
+    this.toast(`Snap to grid ${this.sk.snapToGrid ? "on" : "off"} (S). Hold Alt to bypass snapping.`);
   }
 
   private selectedDimension(): Dimension | null {
@@ -4219,7 +4568,7 @@ export class App {
     const out = this.titleblock.querySelector("#dim-scale-out");
     if (out) out.textContent = `${Math.round(this.sk.dimScale * 100)}%`;
     if (!this.preview) {
-      this.setPreview(true);
+      this.setPreview(true, false);
       this.toast("Showing the print preview, where the dimension size applies. Press Q to go back to editing.");
     }
     this.render();
@@ -4253,13 +4602,16 @@ export class App {
     }
     this.result = r;
     this.commit();
-    this.keepInView();
   }
 
   /** Colours the selected fill or datum point, and remembers the colour for the next one of its kind. */
   private setColor(color: string): void {
     if (!/^#[0-9a-f]{6}$/i.test(color)) return;
+    const arrow = this.selectedArrow();
+    if (arrow) { arrow.color = color; return this.commit(); }
     const s = this.selectedSymbol();
+    if (s?.type === "fill" && s.gradient && this.gradientStop === "end") { s.gradient.color = color; return this.commit(); }
+    if (s?.type === "note" || s?.type === "balloon" || s?.type === "frame") { s.color = color; return this.commit(); }
     if (s?.type === "datum") this.datumColor = color;
     else if (s && isLoad(s)) this.loadColor = color;
     else this.fillColor = color;
@@ -4271,6 +4623,12 @@ export class App {
     if (!s || s.type !== "support" || s.kind === kind) return;
     s.kind = kind;
     this.commit();
+  }
+
+  private selectedArrow(): Line | Arc | null {
+    if (this.selection.size !== 1) return null;
+    const e = entity(this.sk, [...this.selection][0]);
+    return e && (e.type === "line" || e.type === "arc") && e.arrow ? e : null;
   }
 
   private setDimMode(mode: DistanceMode): void {
@@ -4448,6 +4806,13 @@ export class App {
       return slide(this.weightLabel(v));
     }
 
+    if (field === "arrow-head-scale") {
+      const arrow = this.selectedArrow();
+      if (!arrow || !Number.isFinite(Number(input.value))) return;
+      arrow.headScale = arrowHeadScale(Number(input.value) / 100);
+      return slide(`${arrow.headScale * 100}%`);
+    }
+
     if (field === "turn-angle") {
       const c = this.selection.size === 1 ? constraint(this.sk, [...this.selection][0]) : undefined;
       if (c?.type === "turn") this.setTurnAngle(c.id, parseNumber(input.value));
@@ -4507,6 +4872,11 @@ export class App {
     const list = document.getElementById(btn.getAttribute("aria-controls") ?? "");
     if (!list) return;
     btn.setAttribute("aria-expanded", String(open));
+    if (open && list.classList.contains("primitive-menu")) {
+      const rect = btn.getBoundingClientRect();
+      list.style.left = `${Math.max(8, Math.min(rect.left - 40, window.innerWidth - 280))}px`;
+      list.style.top = `${rect.bottom + 4}px`;
+    }
     list.hidden = !open;
     if (open && btn.dataset.menu === "export") this.showTip("export");
     if (open && focus) list.querySelector<HTMLElement>("button, input")?.focus();
@@ -4551,6 +4921,7 @@ export class App {
 
   private onKeyDown(e: KeyboardEvent): void {
     this.altKey = e.altKey;
+    this.ctrlKey = e.ctrlKey;
     // A dialog has the keyboard to itself: no tool is picked up behind it.
     if (document.querySelector("dialog[open]")) return;
     const target = e.target as HTMLElement;
@@ -4561,6 +4932,7 @@ export class App {
 
     if (mod && !typing) {
       const k = e.key.toLowerCase();
+      if (k === "c" && this.tab !== "plot") { e.preventDefault(); return void this.copySelection(); }
       if (k === "z") { e.preventDefault(); return e.shiftKey ? this.redo() : this.undo(); }
       if (k === "y") { e.preventDefault(); return this.redo(); }
       if (k === "s") { e.preventDefault(); return this.save(); }
@@ -4578,6 +4950,12 @@ export class App {
     }
     if (typing || mod || e.altKey) {
       if (e.key === "Enter" && typing && this.panel.contains(target)) target.blur();
+      return;
+    }
+
+    if (target.tagName !== "SELECT" && this.tab !== "plot" && (e.key === "PageUp" || e.key === "PageDown")) {
+      e.preventDefault();
+      if (moveInZ(this.sk, this.selection, buildPrims(this.sk, this.mm(), { editor: true }), e.key === "PageUp" ? 1 : -1)) this.commit();
       return;
     }
 
@@ -4603,6 +4981,11 @@ export class App {
     }
 
     const key = e.key.toUpperCase();
+    if (key === "S" && !e.shiftKey && target.tagName !== "SELECT") {
+      e.preventDefault();
+      if (!e.repeat) this.toggleGridSnap();
+      return;
+    }
     if (key === "R" && this.tool === "select" && this.picked().syms.length) {
       e.preventDefault();
       return this.rotateSelected(e.shiftKey ? -Math.PI / 2 : Math.PI / 2);

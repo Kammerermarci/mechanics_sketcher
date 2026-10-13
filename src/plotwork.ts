@@ -12,12 +12,13 @@ import { type Prim, PAPER, primDistance } from "./prims";
 import { type View, toScreen, toModel, drawPrims } from "./render";
 import { figureBounds } from "./export";
 import {
-  PLOT, PLOT_COLORS, PARAM_RANGE, plotPrims, plotSvg, plotTikz, newPlot, newCurve, copyPlot, fitX, fitY, equalScales, pieceError, formulaError, readFormula,
+  PLOT, PARAM_RANGE, plotPrims, plotSvg, plotTikz, newPlot, newCurve, copyPlot, fitX, fitY, equalScales, pieceError, formulaError, readFormula,
   toData, toPaper, curveLabelAt, curveRuns, drawable, tickStep, tickText, balloonPlace, nextBalloonText, asDrawn,
 } from "./plot";
 import { evaluate, degree } from "./expr";
 import { icon } from "./icons";
 import { showTexFields, texInline } from "./texfield";
+import { sharedColorPalette, colorPanel, showColorPalette } from "./custom-colors";
 
 /** What the workspace needs from the app around it. */
 export interface PlotHost {
@@ -258,15 +259,6 @@ export class PlotWorkspace {
     this.gv = { cx: (d.x.min + d.x.max) / 2, cy: (d.y.min + d.y.max) / 2, sx: w / (d.x.max - d.x.min), sy: h / (d.y.max - d.y.min) };
     this.fitted = p.id;
     this.host.render();
-  }
-
-  /** Brings the frame back into view when its range was changed so that it is not all on the graph any more. */
-  private keepFrame(): void {
-    const p = this.plot();
-    if (!p) return;
-    const d = asDrawn(p);
-    const a = this.gs([d.x.min, d.y.max]), b = this.gs([d.x.max, d.y.min]);
-    if (!inside(this.G, a) || !inside(this.G, b)) this.fit();
   }
 
   // ---- where things are --------------------------------------------------------------
@@ -972,6 +964,7 @@ export class PlotWorkspace {
 
   /** The fields of a note or a balloon. */
   private markHtml(m: PlotNote | PlotBalloon): string {
+    const colours = colorPanel(m.color, true);
     const field = (note: string) =>
       `<label class="field"><span>Text</span><input data-pf="atext" type="text" spellcheck="false" autocomplete="off" value="${esc(m.text)}"${"end" in m ? ` data-tex="math"` : ""}><small>${note}</small></label>`;
     const choice = (label: string, act: string, options: [string, string, boolean][]) =>
@@ -979,13 +972,13 @@ export class PlotWorkspace {
         `<button type="button" data-pact="${act}" data-v="${v}" aria-pressed="${on}">${name}</button>`).join("")}</div></div>`;
     if (!("end" in m)) {
       return field("Plain text, set in the document's font. Put math between dollar signs, as in $M_{max}$, and \\\\ where a new line starts. Drag the note on the plot to move it.") +
-        `<button type="button" class="danger" data-pact="del-mark">Delete this note</button>`;
+        colours + `<button type="button" class="danger" data-pact="del-mark">Delete this note</button>`;
     }
     const frame = m.frame ?? "circle";
     return field("Written as TeX math. Drag the balloon to move it, and the tip of its leader to what it points at.") +
       choice("Frame", "aframe", [["circle", "Circle", frame === "circle"], ["box", "Box", frame === "box"], ["underline", "Underline", frame === "underline"], ["none", "None", frame === "none"]]) +
       choice("Leader ends with", "aend", [["arrow", "Arrow", m.end === "arrow"], ["dot", "Dot", m.end === "dot"], ["none", "Nothing", m.end === "none"]]) +
-      `<button type="button" class="danger" data-pact="del-mark">Delete this balloon</button>`;
+      colours + `<button type="button" class="danger" data-pact="del-mark">Delete this balloon</button>`;
   }
 
   /** The fields of a curve given by a parameter: its two formulas and what the parameter runs over. */
@@ -1023,15 +1016,13 @@ export class PlotWorkspace {
     }
     html += `<label class="field"><span>Name</span><input data-pf="label" type="text" spellcheck="false" autocomplete="off" value="${esc(c.label ?? "")}" placeholder="M(x), v_1" data-tex="math">` +
       `<small>Written as TeX math and set beside the curve; drag it on the plot to move it.${c.lx !== undefined ? ` <button type="button" class="linkish" data-pact="name-back">Put it back beside the curve</button>` : ""}</small></label>`;
-    html += `<div class="field"><span id="pl-colour">Colour</span><div class="swatches" role="group" aria-labelledby="pl-colour">${PLOT_COLORS.map((col) =>
-      `<button type="button" class="swatch" data-pact="color" data-v="${col}" aria-pressed="${c.color === col}" aria-label="Colour ${col}" title="${col}" style="background:${col}"></button>`).join("")}` +
-      `<label class="swatch custom" title="Another colour"><input data-pf="color" type="color" value="${esc(c.color)}" aria-label="Another colour"></label></div></div>`;
     const weight = c.weight ?? PLOT.weight;
     html += `<label class="field"><span>Line thickness</span><span class="slider-row"><input data-pf="weight" type="range" min="${WEIGHT_MIN}" max="${WEIGHT_MAX}" step="0.1" value="${weight}"><output>${shown(weight)} pt</output></span></label>`;
     html += `<div class="field"><span id="pl-dash">Line</span><div class="segmented" role="group" aria-labelledby="pl-dash">${([["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"]] as const).map(([v, name]) =>
       `<button type="button" data-pact="dash" data-v="${v}" aria-pressed="${(c.dash ?? "solid") === v}">${name}</button>`).join("")}</div></div>`;
     html += `<label class="check"><input data-pf="fill" type="checkbox"${c.fill ? " checked" : ""}><span>${c.param ? "Shade the inside" : "Shade down to the axis"}</span></label>`;
     if (c.pieces.length > 1 && !c.param) html += `<label class="check"><input data-pf="join" type="checkbox"${c.join !== false ? " checked" : ""}><span>Draw the jumps between pieces</span></label>`;
+    html += colorPanel(c.color, true);
     html += `<button type="button" class="danger" data-pact="del-curve">Delete this ${c.param ? "curve" : "function"}</button>`;
     return html;
   }
@@ -1094,8 +1085,7 @@ export class PlotWorkspace {
         const { x, y } = equalScales(d);
         [d.x.min, d.x.max] = x;
         [d.y.min, d.y.max] = y;
-        this.host.commit();
-        return this.keepFrame();
+        return this.host.commit();
       }
       case "del-curve":
         if (!c) return;
@@ -1124,10 +1114,21 @@ export class PlotWorkspace {
         delete c.lx;
         delete c.ly;
         return this.host.commit();
-      case "color":
-        if (!c || !ds.v) return;
-        c.color = ds.v;
+      case "color": {
+        const selected = m ? ("note" in m ? m.note : m.balloon) : c;
+        if (!selected || !ds.v) return;
+        selected.color = ds.v;
         return this.host.commit();
+      }
+      case "color-palette": {
+        const selected = m ? ("note" in m ? m.note : m.balloon) : c;
+        if (!selected) return;
+        return showColorPalette(selected.color ?? "#17201b", (color, save) => {
+          if (save) sharedColorPalette().add(color);
+          selected.color = color;
+          this.host.commit();
+        });
+      }
       case "dash":
         if (!c) return;
         if (ds.v === "solid") delete c.dash;
@@ -1152,8 +1153,7 @@ export class PlotWorkspace {
         const range = fitY(p);
         if (!range) return this.host.toast(p.curves.some((x) => drawable(p, x)) ? "These functions have no values to fit the range to." : "There is no function to fit the range to yet.");
         [p.y.min, p.y.max] = range;
-        this.host.commit();
-        return this.keepFrame();
+        return this.host.commit();
       }
       case "fit-view": return this.fit();
       case "flip": {
@@ -1165,8 +1165,7 @@ export class PlotWorkspace {
         // Each axis keeps its length on paper, and a balloon its place beside what it points at.
         [p.width, p.height] = [p.height, p.width];
         for (const b of p.balloons ?? []) [b.dx, b.dy] = [b.dy, b.dx];
-        this.host.commit();
-        return this.fit();
+        return this.host.commit();
       }
       case "copy-plot": {
         const copy = copyPlot(sk, p);
@@ -1229,8 +1228,7 @@ export class PlotWorkspace {
       if (!(max > min)) return refuse("An axis runs from a smaller number to a larger one.");
       a.min = min;
       a.max = max;
-      done();
-      return this.keepFrame();
+      return done();
     }
     if (pf === "width" || pf === "height") {
       if (live) return;

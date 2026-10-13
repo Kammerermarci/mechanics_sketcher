@@ -381,7 +381,7 @@ export function balloonPlace(plot: Plot, b: PlotBalloon): { anchor: V; centre: V
  */
 export function annotationPrims(plot: Plot): Prim[] {
   const out: Prim[] = [];
-  for (const n of plot.notes ?? []) out.push(...noteShape(n.id, toPaper(plot, [n.x, n.y]), n.text).map((p) => ({ ...p, part: "note" })));
+  for (const n of plot.notes ?? []) out.push(...noteShape(n.id, toPaper(plot, [n.x, n.y]), n.text, n.color).map((p) => ({ ...p, part: "note" })));
   for (const b of plot.balloons ?? []) {
     const { anchor, centre } = balloonPlace(plot, b);
     out.push(...balloonShape(b.id, anchor, centre, b).map((p) => ({ ...p, part: p.part ?? "balloon" })));

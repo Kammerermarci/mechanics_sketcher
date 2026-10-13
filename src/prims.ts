@@ -5,10 +5,12 @@
 import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
   type Arc, type Line, type Curve, type Sym, type Support, type Frame, type CenterMark, type Balloon,
-  type Fill as FillSym, type Hatch, type Datum, type Note, type Load, type LineLoad, type Moment, type AnyLoad, type LoadKind, type Diagram, type Trace,
+  type Fill as FillSym, type FillGradient, type Hatch, type Datum, type Note, type Load, type LineLoad, type Moment, type AnyLoad, type LoadKind, type Diagram, type Trace,
   entity, point, arcRadius, arcAngles, isDimension, isNamed, geometryBox, geometryExtent,
 } from "./model";
 import { elementPaths, elementReach } from "./element";
+import { arrowColor, arrowHeadScale } from "./arrow-style";
+import { orderPrims } from "./z-order";
 import {
   type V, type Box, add, sub, mul, dot, norm, perp, mid, polar, dist, len, angleOf, wrap, inSweep,
   distToSegment, intersectLines, TWO_PI,
@@ -97,6 +99,8 @@ export function dashOf(p: { stroke: StrokeStyle; dash?: number[] }): number[] | 
 export type Fill = "paper" | "ink";
 
 interface Base {
+  /** The object group painted at one depth; a fill and its outline share this id. */
+  stack?: Id;
   /** The entity, symbol or dimension this primitive belongs to. */
   ref?: Id;
   layer: "fill" | "geom" | "sym" | "dim";
@@ -141,7 +145,7 @@ export type OutlineSeg =
   /** An arc about c from angle a0 to a1, counter-clockwise when ccw. */
   | { k: "A"; to: V; c: V; r: number; a0: number; a1: number; ccw: boolean };
 /** A filled area with no outline of its own. Later outlines cut holes (even-odd). */
-export interface RegionPrim extends Base { k: "region"; outlines: Outline[]; color: string }
+export interface RegionPrim extends Base { k: "region"; outlines: Outline[]; color: string; gradient?: FillGradient }
 export type Prim = LinePrim | CirclePrim | PolyPrim | PathPrim | ArcPrim | TextPrim | RegionPrim;
 
 // ---- scale ------------------------------------------------------------------
@@ -555,7 +559,7 @@ function supportPrims(sk: Sketch, s: Support, mm: number): Prim[] {
 }
 
 function framePrims(sk: Sketch, f: Frame, mm: number): Prim[] {
-  const base = { ref: f.id, layer: "sym" as const };
+  const base = { ref: f.id, layer: "sym" as const, ...(f.color && /^#[0-9a-f]{6}$/i.test(f.color) ? { ink: f.color } : {}) };
   const o = mul(symbolPosition(sk, f), mm);
   const out: Prim[] = [];
   const axes: [number, string, number, string][] = [[f.angle, f.xLabel, f.xSize, "x"], [f.angle + Math.PI / 2, f.yLabel, f.ySize, "y"]];
@@ -651,8 +655,8 @@ function balloonPrims(sk: Sketch, s: Balloon, mm: number): Prim[] {
 }
 
 /** A balloon whose text is centred at `centre`, with its leader to `anchor`, both in paper mm. */
-export function balloonShape(ref: Id, anchor: V, centre: V, s: Pick<Balloon, "text" | "end" | "frame">): Prim[] {
-  const base = { ref, layer: "sym" as const };
+export function balloonShape(ref: Id, anchor: V, centre: V, s: Pick<Balloon, "text" | "end" | "frame" | "color">): Prim[] {
+  const base = { ref, layer: "sym" as const, ...(s.color && /^#[0-9a-f]{6}$/i.test(s.color) ? { ink: s.color } : {}) };
   const frame = s.frame ?? "circle";
   const out: Prim[] = [];
   const far = dist(anchor, centre);
@@ -701,14 +705,15 @@ function datumPrims(sk: Sketch, s: Datum, mm: number): Prim[] {
 }
 
 function notePrims(s: Note, mm: number): Prim[] {
-  return noteShape(s.id, [s.x * mm, s.y * mm], s.text);
+  return noteShape(s.id, [s.x * mm, s.y * mm], s.text, s.color);
 }
 
 /** A note whose text starts at `at`, the middle of its left edge, in paper mm. */
-export function noteShape(ref: Id, at: V, typed: string): Prim[] {
+export function noteShape(ref: Id, at: V, typed: string, color?: string): Prim[] {
   if (!typed.trim()) return [];
   const { latex, lines } = noteLatex(typed);
   const text: TextPrim = { ref, layer: "sym", k: "text", at, tex: noteTex(typed), anchor: "w", latex };
+  if (color && /^#[0-9a-f]{6}$/i.test(color)) text.ink = color;
   if (lines > 1) text.lines = lines;
   return [text];
 }
@@ -1016,7 +1021,7 @@ export function outlinePolygon(o: Outline): V[] {
 
 function fillPrims(sk: Sketch, f: FillSym, mm: number): Prim[] {
   const outlines = fillOutlines(sk, f, mm);
-  return outlines.length ? [{ k: "region", outlines, color: f.color, ref: f.id, layer: "fill" }] : [];
+  return outlines.length ? [{ k: "region", outlines, color: f.color, ...(f.gradient ? { gradient: f.gradient } : {}), ref: f.id, layer: "fill" }] : [];
 }
 
 export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
@@ -1090,7 +1095,7 @@ export interface BuildOptions {
 
 export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
   const out: Prim[] = [];
-  // Fills lie under everything else, and so does the shading of a spread load: the line it is on is drawn over it.
+  // Collect fills and shading first; orderPrims then groups each object's visual parts at one depth.
   for (const sym of sk.symbols) {
     if (sym.type === "fill") out.push(...symbolPrims(sk, sym, mm));
     else if (sym.type === "lineload") out.push(...loadShade(sk, sym, mm));
@@ -1100,13 +1105,14 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
   for (const e of sk.entities) {
     if (e.type === "point") continue;
     if (e.construction && !opts.editor) continue;
-    const base: { ref: Id; layer: "geom"; stroke: StrokeStyle; width?: number; dash?: number[] } = { ref: e.id, layer: "geom", stroke: curveStroke(e) };
+    const base: { ref: Id; layer: "geom"; stroke: StrokeStyle; width?: number; dash?: number[]; ink?: string } = { ref: e.id, layer: "geom", stroke: curveStroke(e) };
+    if (e.type !== "circle" && e.arrow && !e.construction) base.ink = arrowColor(e);
     if (e.weight !== undefined) base.width = e.weight * PT_MM;
     if (e.dashed && !e.construction) base.dash = DASHED;
     const named = isNamed(e) ? e : null;
     const name = (): void => {
       const at = named ? arrowLabelAt(sk, named, mm) : null;
-      if (at) out.push({ ref: e.id, layer: "geom", k: "text", at, tex: labelTex(named?.label ?? ""), anchor: "c", part: "label" });
+      if (at) out.push({ ref: e.id, layer: "geom", k: "text", at, tex: labelTex(named?.label ?? ""), anchor: "c", part: "label", ...(base.ink ? { ink: base.ink } : {}) });
     };
     if (e.type !== "circle" && e.element && !e.construction) {
       // A spring or a damper: drawn in its place, from one end to the other.
@@ -1120,7 +1126,7 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
     }
     const arrow = e.type !== "circle" && !e.construction ? e.arrow : undefined;
     // The head of a thicker arrow grows with it, though not as fast, so it still reads as a head.
-    const head = PAPER.arrowScale * Math.sqrt(Math.max(1, (e.weight ?? 0) / standardWeight(e)));
+    const head = PAPER.arrowScale * Math.sqrt(Math.max(1, (e.weight ?? 0) / standardWeight(e))) * (e.type !== "circle" ? arrowHeadScale(e.headScale) : 1);
     if (e.type === "line") {
       const line: LinePrim = { ...base, k: "line", a: P(sk, e.p1, mm), b: P(sk, e.p2, mm) };
       if (arrow) {
@@ -1150,7 +1156,7 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
     if (c.hidden && !opts.editor) continue;
     out.push(...dimensionPrims(sk, c, mm));
   }
-  return out;
+  return orderPrims(sk, out);
 }
 
 // ---- shared drawing helpers -------------------------------------------------

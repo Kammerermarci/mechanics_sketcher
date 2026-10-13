@@ -8,6 +8,8 @@ import {
   geometryBox,
 } from "./model";
 import { type V, add, sub, mul, dot, cross, norm, dist, boxIsEmpty } from "./geom";
+import { fillOutlines } from "./prims";
+import { gradientPoints, gradientPosition } from "./gradient-fill";
 
 /** How a copy is placed: where points land, and what that does to directions. */
 interface Move {
@@ -173,6 +175,10 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
     if (e.centre) made.centre = true;
     if (e.dashed) made.dashed = true;
     if (e.weight !== undefined) made.weight = e.weight;
+    if (e.type !== "circle" && made.type !== "circle") {
+      if (e.color !== undefined) made.color = e.color;
+      if (e.headScale !== undefined) made.headScale = e.headScale;
+    }
     cmap.set(e.id, made.id);
     out.curves.push(made.id);
   }
@@ -288,6 +294,11 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
           });
         }
       }
+    }
+    if (made?.type === "fill" && s.type === "fill" && s.gradient) {
+      const [from, to] = gradientPoints(fillOutlines(sk, s, 1), s.gradient);
+      const outlines = fillOutlines(sk, made, 1);
+      made.gradient = { ...s.gradient, from: gradientPosition(outlines, move.at(from)), to: gradientPosition(outlines, move.at(to)) };
     }
     if (made) out.symbols.push(made.id);
   }

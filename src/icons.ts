@@ -4,6 +4,8 @@
 const dot = (x: number, y: number, r = 1.7) => `<circle cx="${x}" cy="${y}" r="${r}" fill="currentColor" stroke="none"/>`;
 
 export const ICONS: Record<string, string> = {
+  copyobjects: `<rect x="7" y="7" width="10" height="10" rx="1"/><path d="M12 7V3H3v9h4"/>`,
+  pasteobjects: `<path d="M6 4H3v13h14V4h-3"/><rect x="6" y="2" width="8" height="4" rx="1"/><path d="M6 10h8M6 13h6"/>`,
   select: `<path d="M5 3l10.5 7.2-4.6.9 2.6 5.2-2 1-2.6-5.2L5 15.6z" fill="currentColor" stroke="none"/>`,
   point: `<path d="M10 2.5v4M10 13.5v4M2.5 10h4M13.5 10h4"/>${dot(10, 10, 2)}`,
   line: `<path d="M4.5 15.5l11-11"/>${dot(4.5, 15.5)}${dot(15.5, 4.5)}`,
@@ -11,6 +13,13 @@ export const ICONS: Record<string, string> = {
   construction: `<path d="M6 14l8-8" stroke-dasharray="2.200 2.700"/>${dot(4.5, 15.5)}${dot(15.5, 4.5)}`,
   circle: `<circle cx="10" cy="10" r="6.8"/>${dot(10, 10, 1.3)}`,
   arc: `<path d="M4 15.5A11.5 11.5 0 0 1 15.5 4"/>${dot(4, 15.5)}${dot(15.5, 4)}${dot(15.5, 15.5, 1.3)}`,
+  rectangle: `<rect x="3" y="5" width="14" height="10"/>${dot(3, 5)}${dot(17, 15)}`,
+  rectcenter: `<rect x="3" y="5" width="14" height="10"/><path d="M6 10h8M10 7v6" stroke-width="1"/>${dot(17, 15)}`,
+  rect3: `<path d="M2 10l11-7 5 7-11 7z"/>${dot(2, 10)}${dot(13, 3)}${dot(18, 10)}`,
+  arc3: `<path d="M3 14A7.5 7.5 0 0 1 17 14"/>${dot(3, 14)}${dot(17, 14)}${dot(10, 4.5)}`,
+  chevron: `<path d="M5 8l5 5 5-5"/>`,
+  gradient: `<rect x="3" y="4" width="14" height="12"/><path d="M5 5v10M7 5v10M9 5v10" stroke-width="1.4"/><path d="M11 5v10" stroke-width="1"/><path d="M13 5v10" stroke-width="0.5"/>`,
+  radialgradient: `<rect x="3" y="3" width="14" height="14"/><circle cx="10" cy="10" r="5" stroke-width="0.6"/><circle cx="10" cy="10" r="3" stroke-width="1.2"/>${dot(10, 10)}`,
 
   horizontal: `<path d="M3 10h14"/><path d="M3 7.5v5M17 7.5v5" stroke-width="1.2"/>`,
   vertical: `<path d="M10 3v14"/><path d="M7.5 3h5M7.5 17h5" stroke-width="1.2"/>`,

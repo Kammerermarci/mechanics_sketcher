@@ -10,6 +10,7 @@ import {
 import { type V, type Box, emptyBox, grow, boxIsEmpty, polar, wrap, TWO_PI } from "./geom";
 import { texEngine } from "./tex";
 import { latexAccents } from "./accents";
+import { svgGradient, tikzGradient } from "./gradient-fill";
 import { outlinePath } from "./render";
 
 /**
@@ -77,7 +78,9 @@ export function primsToSvg(prims: Prim[], k = 1): string | null {
   const body: string[] = [];
   for (const p of prims) {
     if (p.k === "region") {
-      body.push(`<path d="${outlinePath(p.outlines, M, 1)}" fill="${p.color}" fill-rule="evenodd" stroke="none"/>`);
+      const id = `export-gradient-${prims.indexOf(p)}`;
+      if (p.gradient) body.push(svgGradient(p.outlines, p.gradient, p.color, id, M, 1));
+      body.push(`<path d="${outlinePath(p.outlines, M, 1)}" fill="${p.gradient ? `url(#${id})` : p.color}" fill-rule="evenodd" stroke="none"/>`);
       continue;
     }
     if (p.k === "text") {
@@ -254,7 +257,8 @@ export function tikzParts(prims: Prim[], k = 1): { styles: string[]; lines: stri
     }
     flush();
     if (p.k === "region") {
-      lines.push(`  \\fill[fill=${tikzColor(p.color)}, even odd rule] ${p.outlines.map(tikzOutline).join(" ")};`);
+      const path = p.outlines.map(tikzOutline).join(" ");
+      lines.push(p.gradient ? tikzGradient(p.outlines, p.gradient, p.color, path) : `  \\fill[fill=${tikzColor(p.color)}, even odd rule] ${path};`);
     } else if (p.k === "text") {
       const where = (p.anchor === "c" ? "inner sep=0pt" : `label, anchor=${TIKZ_ANCHOR[p.anchor]}`) +
         (p.rot ? `, rotate=${deg(p.rot)}` : "") +

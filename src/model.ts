@@ -28,6 +28,10 @@ export interface Line {
   dashed?: boolean;
   /** An arrow annotation: which end carries the head. p1 is the start, p2 the end. */
   arrow?: ArrowEnds;
+  /** Arrow stroke, heads and label colour. Unset: standard ink. */
+  color?: string;
+  /** Arrowhead size multiplier relative to its standard size for the thickness. Unset: 1. */
+  headScale?: number;
   /**
    * Drawn as a machine element between its two points instead of as a line:
    * a spring, a damper, or a spiral spring wound about p1 whose outer end is p2.
@@ -90,6 +94,10 @@ export interface Arc {
   dashed?: boolean;
   /** A curved arrow: which end carries the head. p1 is the start, p2 the end, counter-clockwise. */
   arrow?: ArrowEnds;
+  /** Arrow stroke, heads and label colour. Unset: standard ink. */
+  color?: string;
+  /** Arrowhead size multiplier relative to its standard size for the thickness. Unset: 1. */
+  headScale?: number;
   /** Drawn as a spring or a damper bent round its centre, as one that resists turning is. */
   element?: ArcElement;
   look?: ElementLook;
@@ -207,6 +215,8 @@ export interface Support {
 }
 /** A pair of coordinate axes, placed anywhere as an annotation. */
 export interface Frame {
+  /** Axis and label colour. Unset: standard ink. */
+  color?: string;
   id: Id;
   type: "frame";
   /** A point it is pinned to. When absent it sits at x, y. */
@@ -242,6 +252,8 @@ export interface CenterMark {
 export type LeaderEnd = "arrow" | "dot" | "none";
 /** A circled number (or any TeX) with a leader, for naming parts. */
 export interface Balloon {
+  /** Text, frame and leader colour. Unset: standard ink. */
+  color?: string;
   id: Id;
   type: "balloon";
   text: string;
@@ -262,11 +274,20 @@ export interface Balloon {
 /** A circle or a box around a balloon's text, a line under it, or nothing at all. */
 export type BalloonFrame = "circle" | "box" | "underline" | "none";
 /** A closed region filled with a colour. */
+export interface FillGradient {
+  type: "linear" | "radial";
+  /** Coordinates relative to the fill's bounding box, in y-up drawing directions. */
+  from: [number, number];
+  to: [number, number];
+  /** The end/outer colour. Fill.color is the start/center colour. */
+  color: string;
+}
 export interface Fill {
   id: Id;
   type: "fill";
   /** CSS hex colour, e.g. "#d5dbe1". */
   color: string;
+  gradient?: FillGradient;
   /** Set when the region is one whole circle. */
   circle?: Id;
   /** Otherwise the corners of the region, in order around it. */
@@ -309,6 +330,8 @@ export interface Datum {
 }
 /** Text placed freely on the figure. */
 export interface Note {
+  /** Text colour. Unset: standard ink. */
+  color?: string;
   id: Id;
   type: "note";
   /** Where the text starts: the middle of its left edge, in model units. */
@@ -487,6 +510,14 @@ export interface Sketch {
   dimScale: number;
   /** Whether the editor draws axes at the origin. They are never exported. */
   showOrigin: boolean;
+  /** Editor background only. Unset: dots. */
+  backgroundStyle?: "dots" | "grid";
+  /** Background spacing in drawing mm (one model unit = one mm). Unset: 1. */
+  backgroundSpacingMm?: number;
+  /** Snap new placements to the background grid. Unset: disabled. */
+  snapToGrid?: boolean;
+  /** Object groups in back-to-front order. Unset: the default drawing order. */
+  zOrder?: Id[];
   /**
    * How large loads are drawn: model units of arrow length (or of radius, for
    * a moment) per unit of magnitude. Each kind gets its scale when the first
@@ -539,6 +570,7 @@ export interface PlotAxis {
 }
 /** Text placed on a plot. It starts at x, y in the plot's own coordinates: the middle of its left edge. */
 export interface PlotNote {
+  color?: string;
   id: Id;
   x: number;
   y: number;
@@ -547,6 +579,7 @@ export interface PlotNote {
 }
 /** A balloon on a plot: its text in a frame, with a leader to the spot x, y it points at, in the plot's own coordinates. */
 export interface PlotBalloon {
+  color?: string;
   id: Id;
   x: number;
   y: number;
@@ -876,6 +909,15 @@ export function serialize(sk: Sketch): string {
 
 /** Brings a symbol saved by an earlier build up to the current shape. */
 function upgradeSymbol(s: Sym): Sym {
+  if (s.type === "fill" && s.gradient) {
+    const g = s.gradient;
+    const vector = (p: unknown): p is [number, number] => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) < 1e6);
+    if (!(g.type === "linear" || g.type === "radial") || !vector(g.from) || !vector(g.to) ||
+      !/^#[0-9a-f]{6}$/i.test(g.color) || Math.hypot(g.to[0] - g.from[0], g.to[1] - g.from[1]) < 1e-9) {
+      const { gradient: _invalid, ...solid } = s;
+      return solid;
+    }
+  }
   if (s.type === "frame" && s.xSize === undefined) {
     const { size, ...rest } = s as Frame & { size?: number };
     return { ...rest, xSize: size ?? 10, ySize: size ?? 10 };
@@ -979,6 +1021,11 @@ export function deserialize(text: string): Sketch {
     figureWidthMm,
     dimScale,
     showOrigin: raw.showOrigin ?? true,
+    ...(raw.snapToGrid === true ? { snapToGrid: true } : {}),
+    ...(Array.isArray(raw.zOrder) ? { zOrder: [...new Set(raw.zOrder.filter((id): id is Id => typeof id === "string"))] } : {}),
+    ...(raw.backgroundStyle === "dots" || raw.backgroundStyle === "grid" ? { backgroundStyle: raw.backgroundStyle } : {}),
+    ...(typeof raw.backgroundSpacingMm === "number" && Number.isFinite(raw.backgroundSpacingMm) && raw.backgroundSpacingMm >= 0.1 && raw.backgroundSpacingMm <= 1000
+      ? { backgroundSpacingMm: raw.backgroundSpacingMm } : {}),
     ...(raw.loadScale && typeof raw.loadScale === "object" ? { loadScale: raw.loadScale } : {}),
     ...(typeof raw.supportScale === "number" && raw.supportScale > 0 ? { supportScale: raw.supportScale } : {}),
     ...(plots.length ? { plots } : {}),
