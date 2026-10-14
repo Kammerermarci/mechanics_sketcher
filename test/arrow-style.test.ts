@@ -3,9 +3,10 @@ import { App } from "../src/app";
 import { arrowHeadScale, arrowStylePanel } from "../src/arrow-style";
 import { CustomPalette, PALETTE_COLORS, colorPanel } from "../src/custom-colors";
 import { emptySketch, addPoint, addLine, addArc, addSymbol, serialize, deserialize, entity, type Line } from "../src/model";
-import { buildPrims, arrowHeads, standardWeight, PAPER } from "../src/prims";
+import { buildPrims, arrowHeads, standardWeight, strokedEnds, strokedSweep, PAPER } from "../src/prims";
 import { toSvg, toTikz } from "../src/export";
-import { linearCopy } from "../src/pattern";
+import { linearCopy, mirrorCopy } from "../src/pattern";
+import { History } from "../src/history";
 import { annotationPrims, newPlot } from "../src/plot";
 
 function arrows() {
@@ -17,6 +18,45 @@ function arrows() {
 }
 
 describe("arrow appearance and shared colours", () => {
+  it("removes all heads from straight and curved arrows while retaining the complete stroke and label", () => {
+    const { sk, line, arc } = arrows();
+    for (const arrow of [line, arc]) arrow.arrow = "none";
+    const prims = buildPrims(sk, 10, { editor: false });
+    for (const arrow of [line, arc]) {
+      const p = prims.find((p) => p.ref === arrow.id && (p.k === "line" || p.k === "arc"));
+      if (!p || (p.k !== "line" && p.k !== "arc")) throw new Error("Missing arrow stroke");
+      expect(arrowHeads(p)).toHaveLength(0);
+      expect(p.arrowA).toBeFalsy(); expect(p.arrowB).toBeFalsy();
+      if (p.k === "line") expect(strokedEnds(p)).toEqual([p.a, p.b]);
+      else expect(strokedSweep(p)).toEqual([p.a0, p.a1]);
+      expect(prims.some((p) => p.ref === arrow.id && p.k === "text" && p.tex === "F")).toBe(true);
+    }
+    expect(toTikz(sk)).not.toContain("Stealth[");
+    expect(toSvg(sk)).toBeTruthy();
+    const saved = deserialize(serialize(sk));
+    expect(entity(saved, line.id)).toMatchObject({ arrow: "none", label: "F" });
+    expect(entity(saved, arc.id)).toMatchObject({ arrow: "none", label: "F" });
+    expect(typeof linearCopy(sk, [line.id], 2, [10, 0])).not.toBe("string");
+    const axis = addLine(sk, addPoint(sk, -2, -2).id, addPoint(sk, -2, 8).id);
+    expect(typeof mirrorCopy(sk, [arc.id], axis.id)).not.toBe("string");
+    expect(sk.entities.filter((e) => e.type === "arc").every((e) => e.arrow === "none")).toBe(true);
+  });
+
+  it("can restore heads after choosing None, with Undo/Redo", () => {
+    const { sk, line } = arrows(), history = new History(); history.reset(sk);
+    const app = Object.assign(Object.create(App.prototype), {
+      sk, selection: new Set([line.id]), commit: () => history.commit(sk),
+    }) as any;
+    app.setArrowHead("none");
+    expect(line.arrow).toBe("none");
+    expect((entity(history.undo()!, line.id) as Line).arrow).toBe("both");
+    expect((entity(history.redo()!, line.id) as Line).arrow).toBe("none");
+    app.setArrowHead("end");
+    expect(line.arrow).toBe("end");
+    const p = buildPrims(sk, 10, { editor: false }).find((p) => p.ref === line.id && p.k === "line");
+    if (!p || p.k !== "line") throw new Error("Missing arrow");
+    expect(arrowHeads(p)).toHaveLength(1);
+  });
   it("preserves standard heads and adjusts both straight and curved arrows", () => {
     const { sk, line, arc } = arrows();
     for (const arrow of [line, arc]) {

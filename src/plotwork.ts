@@ -19,6 +19,8 @@ import { evaluate, degree } from "./expr";
 import { icon } from "./icons";
 import { showTexFields, texInline } from "./texfield";
 import { sharedColorPalette, colorPanel, showColorPalette } from "./custom-colors";
+import { wheelPanDelta } from "./wheel-pan";
+import { textSizePanel, textSize, setTextSize } from "./text-size";
 
 /** What the workspace needs from the app around it. */
 export interface PlotHost {
@@ -125,7 +127,7 @@ function gridStep(perUnit: number, px: number): number {
 }
 const inside = (r: Rect, [x, y]: V) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 
-const WEIGHT_MIN = 0.1, WEIGHT_MAX = 3;
+const WEIGHT_MIN = 0, WEIGHT_MAX = 3;
 /** Below this width the graph goes above the print instead of beside it. */
 const SIDE_BY_SIDE = 760;
 /** Room left round the page on the print, and the most screen pixels a millimetre of it is shown at. */
@@ -399,7 +401,7 @@ export class PlotWorkspace {
       for (const run of curveRuns(view, c)) {
         const pts = run.map((q) => this.gs(q));
         this.paths.push({ id: c.id, pts });
-        curves += `<path class="pw-curve" d="M${pts.map((q) => `${n2(q[0])} ${n2(q[1])}`).join("L")}" stroke="${esc(c.color)}" stroke-width="${on ? 3.2 : 2}"${dash}/>`;
+        if (c.weight !== 0) curves += `<path class="pw-curve" d="M${pts.map((q) => `${n2(q[0])} ${n2(q[1])}`).join("L")}" stroke="${esc(c.color)}" stroke-width="${on ? 3.2 : 2}"${dash}/>`;
       }
     }
     html += `<g class="pw-fade">${curves}</g><g clip-path="url(#pw-frame-clip)">${curves}</g>`;
@@ -483,7 +485,7 @@ export class PlotWorkspace {
       case "frame": return "Drag to pull this side of the frame out or in: it is the range that is exported. Hold Alt to leave the round numbers.";
       case "frame-edge": case "shift": return "Drag the frame to move the range that is exported.";
       case "graph-curve": return "Click to select this function; its formula is in the side panel. Drag to move around the graph.";
-      case "graph": case "pan": return "Drag to move around the graph; the wheel zooms it (Shift: sideways only, Alt: up and down only). The dashed frame is what is exported; 0 brings it back into view.";
+      case "graph": case "pan": return "Drag or Shift+scroll to move around the graph; the wheel zooms it (Alt: up and down only). The dashed frame is what is exported; 0 brings it back into view.";
       case "size": return this.drag ? "Sets the size of the plot on paper, in whole millimetres. Hold Alt for any size." : "Drag to set the size of the plot on paper.";
       case "note": return "Drag the note to move it; click it to change its text in the side panel.";
       case "balloon": return this.hover.kind === "balloon" && this.hover.tip ? "Drag the tip of the leader to what the balloon points at." : "Drag the balloon to move it; click it to change its text in the side panel.";
@@ -796,8 +798,15 @@ export class PlotWorkspace {
     const sp = this.screenPos(ev);
     // The print is always shown whole; the wheel zooms the graph only.
     if (!this.plot() || this.paneAt(sp) !== "graph") return;
+    const pan = wheelPanDelta(ev, [this.G.w, this.G.h]);
+    if (pan) {
+      this.gv.cx += pan[0] / this.gv.sx;
+      this.gv.cy -= pan[1] / this.gv.sy;
+      this.host.render();
+      return;
+    }
     const q = this.gd(sp);
-    // With Shift held, some browsers report the turn of the wheel as sideways.
+    // Some wheels report their movement on the horizontal axis.
     const turn = (ev.deltaY || ev.deltaX) * (ev.deltaMode === 1 ? 32 : 1);
     const f = Math.exp(-turn * 0.0016);
     const { G, gv } = this;
@@ -942,9 +951,11 @@ export class PlotWorkspace {
     // The axis drawn across first, then the one drawn up: x and y swap places in a flipped plot.
     const [across, up] = p.flip ? (["y", "x"] as const) : (["x", "y"] as const);
     html += text("Name of the horizontal axis", `${across}.label`, p[across].label, "", across, "math");
+    html += textSizePanel(p[across], `${across}.text-size`, "data-pf", "Horizontal axis text size");
     html += pair("It runs from", `${across}.min`, `${across}.max`, shownConstant(p[across].min), shownConstant(p[across].max)) +
       `<small class="under">A number, or a formula in LaTeX or plain, such as \\pi, 2\\pi or \\frac{\\pi}{2}. The dashed frame on the graph is this range: drag its handles to pull it out or in, or its edge to move it.</small>`;
     html += text("Name of the vertical axis", `${up}.label`, p[up].label, "Names are written as TeX math, such as M_h or v\\,[\\mathrm{m/s}]. Leave one empty for none.", up, "math");
+    html += textSizePanel(p[up], `${up}.text-size`, "data-pf", "Vertical axis text size");
     html += pair("It runs from", `${up}.min`, `${up}.max`, shownConstant(p[up].min), shownConstant(p[up].max));
     html += `<div class="btn-row"><button type="button" class="plain" data-pact="fit-y">Fit it to the functions</button>` +
       `<button type="button" class="plain" data-pact="equal" title="The same length on paper for one unit on either axis, so that a circle is round">Same scale on both</button></div>`;
@@ -964,7 +975,7 @@ export class PlotWorkspace {
 
   /** The fields of a note or a balloon. */
   private markHtml(m: PlotNote | PlotBalloon): string {
-    const colours = colorPanel(m.color, true);
+    const colours = colorPanel(m.color, true) + textSizePanel(m, "text-size", "data-pf");
     const field = (note: string) =>
       `<label class="field"><span>Text</span><input data-pf="atext" type="text" spellcheck="false" autocomplete="off" value="${esc(m.text)}"${"end" in m ? ` data-tex="math"` : ""}><small>${note}</small></label>`;
     const choice = (label: string, act: string, options: [string, string, boolean][]) =>
@@ -1017,6 +1028,7 @@ export class PlotWorkspace {
     html += `<label class="field"><span>Name</span><input data-pf="label" type="text" spellcheck="false" autocomplete="off" value="${esc(c.label ?? "")}" placeholder="M(x), v_1" data-tex="math">` +
       `<small>Written as TeX math and set beside the curve; drag it on the plot to move it.${c.lx !== undefined ? ` <button type="button" class="linkish" data-pact="name-back">Put it back beside the curve</button>` : ""}</small></label>`;
     const weight = c.weight ?? PLOT.weight;
+    html += textSizePanel(c, "text-size", "data-pf");
     html += `<label class="field"><span>Line thickness</span><span class="slider-row"><input data-pf="weight" type="range" min="${WEIGHT_MIN}" max="${WEIGHT_MAX}" step="0.1" value="${weight}"><output>${shown(weight)} pt</output></span></label>`;
     html += `<div class="field"><span id="pl-dash">Line</span><div class="segmented" role="group" aria-labelledby="pl-dash">${([["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"]] as const).map(([v, name]) =>
       `<button type="button" data-pact="dash" data-v="${v}" aria-pressed="${(c.dash ?? "solid") === v}">${name}</button>`).join("")}</div></div>`;
@@ -1201,6 +1213,18 @@ export class PlotWorkspace {
     const refuse = (why: string) => { if (!live) { this.host.toast(why); this.host.touch(); } };
     const label = input.value.trim().replace(/^\$+|\$+$/g, "");
     const v = typed(input.value);
+
+    if (pf === "text-size" || pf === "x.text-size" || pf === "y.text-size") {
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) return;
+      const mark = this.mark();
+      const object = pf === "x.text-size" ? p.x : pf === "y.text-size" ? p.y : mark ? ("note" in mark ? mark.note : mark.balloon) : this.curve();
+      if (!object) return;
+      setTextSize(object, value);
+      const output = input.parentElement?.querySelector("output");
+      if (output) output.textContent = `${Math.round(textSize(object) * 100)}%`;
+      return done();
+    }
 
     if (pf === "current") {
       this.current = input.value;

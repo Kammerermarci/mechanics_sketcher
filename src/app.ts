@@ -12,6 +12,12 @@ import {
 } from "./model";
 import { SketchSolver, type Drag, type SolveResult, type Freedom } from "./solver";
 import { History } from "./history";
+import { solveGroupMove } from "./group-move";
+import { selectionGeometry } from "./selection-move";
+import { wheelPanDelta } from "./wheel-pan";
+import { balloonTipGrip, moveBalloonTip } from "./balloon-tip";
+import { textSizePanel, setTextSize, bearsText, type TextSize } from "./text-size";
+import { preserveMathSpaces, setPreserveMathSpaces } from "./math-labels";
 import { snapToGrid } from "./grid-snap";
 import { moveInZ } from "./z-order";
 import { dominantDragAxis, lockDragToAxis, type DragAxis } from "./drag-axis";
@@ -42,12 +48,12 @@ import { TipBook, welcomeDue, setWelcomeDue, firstInSession } from "./guide";
 import { type BeamEnds, straightBeam, curvedBeam } from "./beam";
 import { PlotWorkspace } from "./plotwork";
 import { baseline, beamAxis, diagramShape, plotPeak, traceShape, traceReach } from "./diagram";
-import { defaultLook, lookOf, elementLength, springTurns } from "./element";
+import { defaultLook, lookOf, elementLength, springTurns, springLead } from "./element";
 import { rectangleCorners, rectangleParts, arcThrough, threePointArc, type RectangleMode } from "./primitive-geometry";
 import { PrimitiveModes } from "./primitive-menus";
 import { colorPanel, PALETTE_COLORS, showColorPalette, showCustomColor, sharedColorPalette } from "./custom-colors";
 import { defaultGradient, gradientPoints, gradientPosition } from "./gradient-fill";
-import { copyObjects, pasteObjects, readObjectClipboard, type ObjectClipboard } from "./object-clipboard";
+import { copyObjects, pasteObjects, pasteOffsetAtCursor, readObjectClipboard, type ObjectClipboard } from "./object-clipboard";
 
 type DrawTool =
   | "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "arc3" | "rectangle" | "rectcenter" | "rect3" | "beam" | "arcbeam"
@@ -106,12 +112,13 @@ type Pending =
   | { tool: "balloon"; anchor: Snap };
 
 type DragState =
+  | { kind: "balloon-tip"; id: Id; startScreen: V; startModel: V; origin: V; centre: V; moved: boolean }
   | { kind: "gradient"; id: Id; end: 0 | 1; startScreen: V; moved: boolean }
   /** `quiet`: the press already confirmed a typed value, so releasing does nothing more. */
   | { kind: "pan"; last: V; moved: boolean; quiet: boolean }
   /** `click`: what to select if the press turns out to be a click, not a drag. */
   | { kind: "box"; a: V; b: V; additive: boolean; click?: Id }
-  | { kind: "move"; grabbed: Id; startScreen: V; startModel: V; targets: { id: Id; x: number; y: number }[]; rim?: Id; moved: boolean; collapse: boolean }
+  | { kind: "move"; grabbed: Id; startScreen: V; startModel: V; targets: { id: Id; x: number; y: number }[]; positions?: { id: Id; x: number; y: number }[]; rim?: Id; group?: boolean; moved: boolean; collapse: boolean }
   /** `onText`: the press was on the number, so a plain click opens it for typing. */
   | { kind: "dim"; id: Id; startScreen: V; moved: boolean; onText: boolean }
   /** `origin`: where the symbol was when the drag began (a position, or the offset of a balloon or a name). */
@@ -284,12 +291,9 @@ const ELEMENT_PITCH_RANGE: [number, number] = [1 / 150, 1 / 2];
 const EXPORT_NAME_KEY = "mech-sketch.exportName";
 const SKETCH_NAME_KEY = "mech-sketch.sketchName";
 /** Range of the line thickness slider, in points. */
-const WEIGHT_MIN = 0.1, WEIGHT_MAX = 3;
+const WEIGHT_MIN = 0, WEIGHT_MAX = 3;
 /** What is written to a file: the exported figure, or the sketch itself. Each remembers its own name and folder. */
 type SaveSlot = "figure" | "sketch" | "plot";
-const EDIT_SCALE_KEY = "mech-sketch.editScale";
-/** Range of the slider for the size of annotations while editing, in percent. */
-const EDIT_SCALE_MIN = 50, EDIT_SCALE_MAX = 250;
 
 /** Range of the dimension size slider, in percent. */
 const DIM_SCALE_MIN = 30, DIM_SCALE_MAX = 300;
@@ -297,11 +301,8 @@ const DIM_SCALE_MIN = 30, DIM_SCALE_MAX = 300;
 const LIVE_AUTOSAVE_KEY = "mech-sketch.autosave";
 /** The beta keeps its own: a sketch with something new in it would not open whole in the released app. */
 const AUTOSAVE_KEY = BETA ? "mech-sketch-beta.autosave" : LIVE_AUTOSAVE_KEY;
-/**
- * Screen pixels per annotation mm while editing. Text, arrowheads and symbols
- * keep this size however far the view is zoomed, as in a CAD sketcher.
- */
-const EDIT_PX_PER_MM = 5;
+/** Reference density for choosing the initial printed lengths of new loads. */
+const LOAD_REFERENCE_PX_PER_MM = 5;
 const POINT_TOL = 10;  // px
 const CURVE_TOL = 7;   // px
 const DEFAULT_SCALE = 40;
@@ -345,7 +346,6 @@ export class App {
   private customPalette = sharedColorPalette();
   private gradientStop: "start" | "end" = "start";
   private copiedObjects: ObjectClipboard | null = null;
-  private pasteCount = 0;
   /** Construction is switched on: the lines, circles and arcs drawn are construction lines, left out of the figure. */
   private constructing = false;
   private tips = new TipBook();
@@ -361,8 +361,6 @@ export class App {
   private diagramPlotId: Id | null = null;
   /** Print preview: only what is exported is drawn, with annotations at their size in print. */
   private preview = false;
-  /** How large annotations are on screen while editing, against the standard size. A setting of this browser, not of the sketch. */
-  private editScale = 1;
   /** The view to go back to when the print preview is left. */
   private viewBeforePreview: View | null = null;
   /** File name, without extension, offered for the next export. */
@@ -554,16 +552,15 @@ export class App {
   // ---- state ----------------------------------------------------------------
 
   /**
-   * Annotation mm per model unit for what is on screen. While editing it
-   * follows the zoom, which is what keeps annotations one size on screen; in
-   * the print preview it is the scale of the exported figure.
+   * Use the exported annotation proportions in both sketching and print preview.
+   * Zoom changes geometry and annotations together.
    */
   private mm(): number {
-    return this.preview ? printMm(this.sk) : this.view.scale / (EDIT_PX_PER_MM * this.editScale);
+    return printMm(this.sk);
   }
 
-  private solve(drags: Drag[] = []): SolveResult {
-    this.result = this.solver.solve(this.sk, drags);
+  private solve(drags: Drag[] = [], group = false): SolveResult {
+    this.result = group ? solveGroupMove(this.sk, this.solver, drags) : this.solver.solve(this.sk, drags);
     return this.result;
   }
 
@@ -590,11 +587,6 @@ export class App {
       if (saved) this.sk = deserialize(saved);
       this.exportName = localStorage.getItem(EXPORT_NAME_KEY) || this.exportName;
       this.sketchName = localStorage.getItem(SKETCH_NAME_KEY) || this.sketchName;
-      const scale = Number(localStorage.getItem(EDIT_SCALE_KEY));
-      if (scale >= EDIT_SCALE_MIN / 100 && scale <= EDIT_SCALE_MAX / 100) {
-        this.editScale = scale;
-        this.showEditScale();
-      }
     } catch {
       this.sk = emptySketch();
     }
@@ -737,6 +729,9 @@ export class App {
     else if (s.type === "frame") {
       const tips = frameTips(this.sk, s, mm);
       at = [tips.x, tips.y].filter((t): t is V => t !== null);
+    } else if (s.type === "balloon") {
+      const tip = balloonTipGrip(this.sk, s, this.view.scale);
+      if (tip) at = [mul(tip, mm)];
     } else if (s.type === "centermark") at = centerMarkEnds(this.sk, s, mm);
     else if (s.type === "lineload") {
       const f = lineLoadFrame(this.sk, s, mm);
@@ -787,7 +782,7 @@ export class App {
     const done = "Middle-click or Esc when done.";
     switch (this.tool) {
       case "select":
-        return "Click to select, drag to move. Shift-click adds to the selection. Wheel zooms; middle-drag pans.";
+        return "Click to select, drag to move. Shift-click adds to the selection. Scroll zooms; Shift+scroll or middle-drag pans.";
       case "point": return `Click to place a point. ${done}`;
       case "spring":
       case "damper":
@@ -1674,6 +1669,7 @@ export class App {
     // Sized for the figure as it prints, where it stands beside the supports and the arrowheads; a long one is a little wider.
     const look: ElementLook = like?.look ? { across: like.look.across, pitch: like.look.pitch } : defaultLook(Math.max(ELEMENT_ACROSS / printMm(this.sk), length / 14));
     if (like?.look?.coil) look.coil = true;
+    if (like?.look?.lead !== undefined) look.lead = like.look.lead;
     if (length > 0) {
       const most = length * (e.element === "damper" ? 0.5 : 0.6);
       if (look.across > most) {
@@ -1697,8 +1693,8 @@ export class App {
 
     if (tool === "frame") {
       const snap = this.snapAt(sp);
-      // A handy length on screen to start with; from then on it belongs to the drawing.
-      const size = this.preview ? 10 / printMm(this.sk) : 56 / this.view.scale;
+      // Start at the same printed length regardless of the editing zoom.
+      const size = 10 / this.mm();
       const f = addFrame(this.sk, snap.pos[0], snap.pos[1], snap.pointId, size);
       this.commit();
       this.setTool("select");
@@ -1772,7 +1768,7 @@ export class App {
       }
       const d = addSymbol(this.sk, tool === "mass"
         ? { type: "datum", at, color: MASS_COLOR, label: MASS_NAME, dx: MASS_LABEL_OFFSET[0], dy: MASS_LABEL_OFFSET[1], mass: true }
-        : { type: "datum", at, color: this.datumColor, label: nextDatumName(this.sk), dx: DATUM_LABEL_OFFSET[0], dy: DATUM_LABEL_OFFSET[1] });
+        : { type: "datum", at, color: this.datumColor, label: nextDatumName(this.sk, true), labelMode: "text", dx: DATUM_LABEL_OFFSET[0], dy: DATUM_LABEL_OFFSET[1] });
       this.finishDrawing(autos);
       this.selection = new Set([d.id]);
       return;
@@ -1890,12 +1886,12 @@ export class App {
 
   /**
    * Gives a kind of load its scale if it has none: the first one, of magnitude
-   * 1, comes out a handy size for the view as it is. From then on the scale
+   * 1, starts at a useful printed length. From then on the scale
    * belongs to the sketch, and every load of the kind is drawn at it.
    */
   private startLoadScale(kind: LoadKind): void {
     if (this.sk.loadScale?.[kind]) return;
-    const perPx = this.preview ? EDIT_PX_PER_MM / printMm(this.sk) : 1 / this.view.scale;
+    const perPx = 1 / (LOAD_REFERENCE_PX_PER_MM * this.mm());
     this.sk.loadScale = { ...this.sk.loadScale, [kind]: LOAD_START[kind] * perPx };
   }
 
@@ -2253,6 +2249,13 @@ export class App {
     // The ends of a selected spread load are handles, grabbed before whatever lies under them:
     // where the load runs down to nothing, its end is on the line itself.
     const chosen = this.selectedSymbol();
+    if (chosen?.type === "balloon" && !ev.shiftKey) {
+      const tip = balloonTipGrip(this.sk, chosen, this.view.scale);
+      if (tip && dist(toScreen(this.view, tip), sp) < 10) {
+        this.drag = { kind: "balloon-tip", id: chosen.id, startScreen: sp, startModel: toModel(this.view, sp), origin: tip, centre: add(tip, [chosen.dx, chosen.dy]), moved: false };
+        return this.touch();
+      }
+    }
     const end = chosen && !ev.shiftKey ? this.lineLoadEndAt(chosen, sp) : null;
     if (chosen && end !== null) {
       this.drag = { kind: "span", id: chosen.id, end, startScreen: sp, moved: false };
@@ -2266,8 +2269,13 @@ export class App {
     }
 
     const hit = this.pickAt(sp, ev.timeStamp, !ev.shiftKey);
-    if (!hit || hit.kind === "fill") {
-      // On a fill, a drag still draws a selection box; only a plain click picks the fill.
+    const belongsToSelection = hit && (this.selection.has(hit.id) || selectionGeometry(this.sk, this.selection).has(hit.id));
+    if (hit && !ev.shiftKey && belongsToSelection && (this.selection.size > 1 || hit.kind === "fill")) {
+      this.drag = this.startMove(hit.id, sp, false);
+      this.touch();
+      return;
+    }
+    if (!hit || (hit.kind === "fill" && ev.shiftKey)) {
       this.drag = { kind: "box", a: sp, b: sp, additive: ev.shiftKey, click: hit?.id };
       return;
     }
@@ -2280,7 +2288,9 @@ export class App {
     const wasSelected = this.selection.has(hit.id);
     if (!wasSelected) this.selection = new Set([hit.id]);
 
-    if (hit.kind === "dim") {
+    if (hit.kind === "fill") {
+      this.drag = this.startMove(hit.id, sp, false);
+    } else if (hit.kind === "dim") {
       this.drag = { kind: "dim", id: hit.id, startScreen: sp, moved: false, onText: hit.text === true };
     } else if (hit.kind === "sym") {
       const s = symbol(this.sk, hit.id)!;
@@ -2317,11 +2327,13 @@ export class App {
   }
 
   private startMove(grabbed: Id, sp: V, collapse: boolean): DragState {
+    const geometry = selectionGeometry(this.sk, this.selection);
     const ids = new Set<Id>();
     let rim: Id | undefined;
-    const selected = [...this.selection].map((id) => entity(this.sk, id)).filter((e) => e !== undefined);
-    if (selected.length === 1 && (selected[0].type === "circle" || selected[0].type === "arc")) {
-      rim = selected[0].id;
+    const selected = [...geometry].map((id) => entity(this.sk, id)!).filter((e) => e !== undefined);
+    const only = this.selection.size === 1 ? entity(this.sk, [...this.selection][0]) : undefined;
+    if (only && (only.type === "circle" || only.type === "arc")) {
+      rim = only.id;
     } else {
       for (const e of selected) {
         if (e.type === "point") ids.add(e.id);
@@ -2329,7 +2341,9 @@ export class App {
       }
     }
     const targets = [...ids].map((id) => { const p = point(this.sk, id); return { id, x: p.x, y: p.y }; });
-    return { kind: "move", grabbed, startScreen: sp, startModel: toModel(this.view, sp), targets, rim, moved: false, collapse };
+    const positions = this.sk.symbols.flatMap((s) => this.selection.has(s.id) && (s.type === "note" || s.type === "frame" || s.type === "balloon") ? [{ id: s.id, x: s.x, y: s.y }] : []);
+    const group = this.selection.size > 1 || [...this.selection].some((id) => symbol(this.sk, id)?.type === "fill");
+    return { kind: "move", grabbed, startScreen: sp, startModel: toModel(this.view, sp), targets, positions, rim, group, moved: false, collapse };
   }
 
   private onPointerMove(ev: PointerEvent): void {
@@ -2347,6 +2361,17 @@ export class App {
       d.last = sp;
     } else if (d?.kind === "box") {
       d.b = sp;
+    } else if (d?.kind === "balloon-tip") {
+      if (!d.moved && dist(sp, d.startScreen) < 3) return;
+      const balloon = symbol(this.sk, d.id);
+      if (balloon?.type !== "balloon") return;
+      d.moved = true;
+      const target = this.snapDraggedPosition(add(d.origin, sub(toModel(this.view, sp), d.startModel)), d.origin);
+      let snap = this.snapAt(toScreen(this.view, target));
+      if (this.dragAxisLock && dist(lockDragToAxis(snap.pos, d.origin, this.dragAxisLock), snap.pos) > 1e-9) snap = { pos: target };
+      moveBalloonTip(this.sk, balloon, snap, d.centre);
+      this.snapMark = this.markFor(snap);
+      this.render();
     } else if (d?.kind === "gradient") {
       const fill = symbol(this.sk, d.id);
       if (fill?.type !== "fill" || !fill.gradient) return;
@@ -2369,13 +2394,17 @@ export class App {
       d.moved = true;
       const m = toModel(this.view, sp);
       let delta = sub(m, d.startModel);
-      const reference = d.targets.find((p) => p.id === d.grabbed) ?? d.targets[0];
+      const reference = d.targets.find((p) => p.id === d.grabbed) ?? d.targets[0] ?? d.positions?.[0];
       if (!d.rim && reference) delta = sub(this.snapDraggedPosition(add([reference.x, reference.y], delta), [reference.x, reference.y]), [reference.x, reference.y]);
       const rimTarget = d.rim ? this.dragModel(sp) : m;
       const drags: Drag[] = d.rim
         ? [{ kind: "rim", id: d.rim, x: rimTarget[0], y: rimTarget[1] }]
         : d.targets.map((t) => ({ kind: "point", id: t.id, x: t.x + delta[0], y: t.y + delta[1] }));
-      this.solve(drags);
+      const result = this.solve(drags, d.group);
+      if (result.ok) for (const p of d.positions ?? []) {
+        const s = symbol(this.sk, p.id);
+        if (s && (s.type === "note" || s.type === "frame" || s.type === "balloon")) { s.x = p.x + delta[0]; s.y = p.y + delta[1]; }
+      }
       this.chromeDirty = true;
     } else if (d?.kind === "dim") {
       if (!d.moved && dist(sp, d.startScreen) < 3) return;
@@ -2484,7 +2513,7 @@ export class App {
     } else if ((d.kind === "sym" || d.kind === "axis" || d.kind === "label") && !d.moved && d.edit && ev.type === "pointerup") {
       // The same for a name: a click on it, and it is typed where it stands.
       this.openEditor(d.edit);
-    } else if ((d.kind === "gradient" || d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label" || d.kind === "reach" || d.kind === "span" || d.kind === "height") && d.moved) {
+    } else if ((d.kind === "balloon-tip" || d.kind === "gradient" || d.kind === "dim" || d.kind === "sym" || d.kind === "axis" || d.kind === "label" || d.kind === "reach" || d.kind === "span" || d.kind === "height") && d.moved) {
       this.commit();
     }
     this.touch();
@@ -2524,6 +2553,13 @@ export class App {
 
   private onWheel(ev: WheelEvent): void {
     ev.preventDefault();
+    const pan = wheelPanDelta(ev, [this.view.w, this.view.h]);
+    if (pan) {
+      this.view.cx += pan[0] / this.view.scale;
+      this.view.cy -= pan[1] / this.view.scale;
+      this.render();
+      return;
+    }
     const sp = this.screenPos(ev);
     const before = toModel(this.view, sp);
     const unit = ev.deltaMode === 1 ? 32 : 1; // lines vs pixels
@@ -2890,7 +2926,9 @@ export class App {
     const t = this.editing;
     if (!t) return;
     // Names are math already, so dollar signs around them are dropped. In a note they mark the math.
-    const text = t.kind === "note" ? this.dimEditor.value.trim() : this.dimEditor.value.trim().replace(/^\$+|\$+$/g, "");
+    const editedSymbol = symbol(this.sk, t.id);
+    const plainText = t.kind === "note" || (t.kind === "datum" && editedSymbol?.type === "datum" && editedSymbol.labelMode === "text");
+    const text = plainText ? this.dimEditor.value.trim() : this.dimEditor.value.trim().replace(/^\$+|\$+$/g, "");
     const unchanged = text === this.editingInitial.trim();
     this.closeEditor(text !== "");
     if (unchanged || this.editValue(t) === null) return this.touch();
@@ -3182,7 +3220,6 @@ export class App {
     const copied = copyObjects(this.sk, this.selection);
     if (!copied) return this.toast("Select an object or filled region to copy.");
     this.copiedObjects = copied;
-    this.pasteCount = 0;
     try { await navigator.clipboard.writeText(JSON.stringify(copied)); } catch { /* The in-app copy still works when clipboard access is unavailable. */ }
     this.toast("Copied objects and their fills. Paste with Ctrl+V.");
   }
@@ -3192,11 +3229,9 @@ export class App {
     let copied = incoming ?? this.copiedObjects;
     if (!copied) try { copied = readObjectClipboard(await navigator.clipboard.readText()); } catch { /* Keyboard paste can provide data without clipboard-read permissions. */ }
     if (!copied) return this.toast("Copy an object in Mech Sketch first.");
-    if (JSON.stringify(copied) !== JSON.stringify(this.copiedObjects)) this.pasteCount = 0;
     this.copiedObjects = copied;
     const before = clone(this.sk);
-    const step = this.sk.snapToGrid ? this.sk.backgroundSpacingMm ?? 1 : 24 / this.view.scale;
-    const offset: V = [step * (this.pasteCount + 1), -step * (this.pasteCount + 1)];
+    const offset = pasteOffsetAtCursor(copied, toModel(this.view, this.cursor));
     const made = pasteObjects(this.sk, copied, offset);
     const result = this.solver.solve(this.sk);
     if (!result.ok || result.conflicting.length > this.result.conflicting.length) {
@@ -3206,7 +3241,6 @@ export class App {
       return this.toast("The copied geometry could not be pasted with its constraints.");
     }
     this.result = result;
-    this.pasteCount++;
     this.setTool("select");
     this.selection = new Set(made);
     this.commit();
@@ -3424,7 +3458,7 @@ export class App {
     // Keep the figure clear of the title block in the bottom corner.
     const reserved = Math.min(this.titleblock.offsetHeight + 20, this.view.h / 3);
     const usable = this.view.h - reserved;
-    // Twice: how much room axes take in the drawing depends on the zoom being worked out.
+    // Include annotation margins at the same proportions as the exported figure.
     for (let pass = 0; pass < 2; pass++) {
       const mm = this.mm();
       const b = geometryBox(this.sk);
@@ -3444,16 +3478,8 @@ export class App {
         break;
       }
       const bw = b.x1 - b.x0, bh = b.y1 - b.y0;
-      if (this.preview) {
-        // Annotations grow with the view here, so the room they need is a share of the figure.
-        const margin = 18 / mm;
-        this.view.scale = Math.min(this.view.w / (bw + 2 * margin), usable / (bh + 2 * margin));
-      } else {
-        // While editing they keep their size on screen, so the room is a fixed number of pixels.
-        const pad = 18 * EDIT_PX_PER_MM * this.editScale;
-        const fitTo = (px: number, extent: number) => (extent > 1e-9 ? Math.max(px - 2 * pad, px * 0.25) / extent : Infinity);
-        this.view.scale = Math.min(fitTo(this.view.w, bw), fitTo(usable, bh));
-      }
+      const margin = 18 / mm;
+      this.view.scale = Math.min(this.view.w / (bw + 2 * margin), usable / (bh + 2 * margin));
       this.view.cx = (b.x0 + b.x1) / 2;
       this.view.cy = (b.y0 + b.y1) / 2 - reserved / 2 / this.view.scale;
     }
@@ -3502,9 +3528,9 @@ export class App {
       `<label class="pop-row"><span>Background spacing (mm)</span><input id="background-spacing" type="number" min="0.1" max="1000" step="any" value="1" aria-describedby="background-note"></label>` +
       `<p class="pop-note" id="background-note">One drawing unit is treated as 1 mm. Every tenth gridline is heavier. Backgrounds are saved with the sketch and hidden in print.</p>` +
       `<label class="check pop-check" title="Press S while sketching to toggle. Hold Alt to temporarily bypass snapping."><input id="snap-to-grid" type="checkbox"><span>Snap to grid (S)</span></label>` +
-      `<label class="pop-row" title="Double-click for 100%."><span>Dimension size while editing</span>` +
-      `<span class="pop-ctl"><input id="edit-scale" type="range" min="${EDIT_SCALE_MIN}" max="${EDIT_SCALE_MAX}" step="5" value="100"><output id="edit-scale-out" for="edit-scale">100%</output></span></label>` +
-      `<p class="pop-note">How large text, arrows and symbols look on screen while you draw. The size in print is set in the corner box.</p>` +
+      `<label class="check pop-check"><input id="preserve-math-spaces" type="checkbox" checked aria-describedby="math-spaces-note"><span>Preserve spaces in math labels</span></label>` +
+      `<p class="pop-note" id="math-spaces-note">Keep typed spaces visible. Turn off for standard LaTeX math spacing. Applies to labels and exports; remembered in this browser.</p>` +
+      `<p class="pop-note">Text, arrows and symbols use their print proportions while you draw. Set their size with Dimension size in print in the corner box.</p>` +
       `<label class="check pop-check pop-rule"><input id="tips-on" type="checkbox"><span>Show a tip the first time a tool is used</span></label>` +
       `<button type="button" class="linkish" data-act="tips-reset">Show the tips again from the start</button>` +
       `<p class="pop-note pop-build">${esc(buildLabel())}</p>` +
@@ -3515,29 +3541,7 @@ export class App {
       (REPORT_EMAIL ? `<button type="button" class="icon-btn" data-act="report" aria-label="Report a bug or suggest something" title="Report a bug or suggest something">${icon("report")}</button>` : "") +
       `<button type="button" class="icon-btn" data-act="help" aria-label="Help" title="How to use Mech Sketch">${icon("help")}</button>`;
     this.buildRibbon();
-    this.showEditScale();
     this.showTipsSetting();
-  }
-
-  /** Puts the editing size on its slider. */
-  private showEditScale(): void {
-    const percent = Math.round(this.editScale * 100);
-    $<HTMLInputElement>("#edit-scale").value = String(percent);
-    $("#edit-scale-out").textContent = `${percent}%`;
-  }
-
-  /** Sets how large annotations are on screen while editing, from the slider's percentage. */
-  private setEditScale(percent: number, save: boolean): void {
-    if (!Number.isFinite(percent)) return;
-    this.editScale = Math.max(EDIT_SCALE_MIN, Math.min(EDIT_SCALE_MAX, percent)) / 100;
-    this.showEditScale();
-    // It only shows while editing, so the print preview is left.
-    if (this.preview) this.setPreview(false);
-    if (save) {
-      try { localStorage.setItem(EDIT_SCALE_KEY, String(this.editScale)); } catch { /* storage unavailable */ }
-    }
-    this.closeEditor();
-    this.render();
   }
 
   /** The ribbon shows the tools of the open tab, in groups. */
@@ -3599,6 +3603,7 @@ export class App {
   }
 
   private updateButtons(): void {
+    $<HTMLInputElement>("#preserve-math-spaces").checked = preserveMathSpaces();
     $<HTMLInputElement>("#snap-to-grid").checked = this.sk.snapToGrid ?? false;
     $<HTMLSelectElement>("#background-style").value = this.sk.backgroundStyle ?? "dots";
     const spacing = $<HTMLInputElement>("#background-spacing");
@@ -3751,7 +3756,7 @@ export class App {
         const frames: [BalloonFrame, string][] = [["circle", "Circle"], ["box", "Box"], ["underline", "Underline"], ["none", "None"]];
         html += `<div class="field"><span id="frame-label">Around the text</span><div class="segmented wrap" role="group" aria-labelledby="frame-label">${frames.map(([f, name]) =>
           `<button type="button" data-frame="${f}" aria-pressed="${(s.frame ?? "circle") === f}">${name}</button>`).join("")}</div></div>`;
-        html += `<p class="muted note-block">Drag the balloon to move it; its leader keeps pointing at the same spot.</p>`;
+        html += `<p class="muted note-block">Drag the balloon to move it. To change what it points at, drag the handle at its leader tip; the balloon stays in place. The tip snaps to joints, curves and the grid; hold Alt for free placement.</p>`;
         break;
       }
       case "fill": {
@@ -3865,7 +3870,8 @@ export class App {
         html += `<h2>${s.mass ? "Centre of mass" : "Datum point"}</h2>`;
         html += `<div class="field"><span id="mark-label">Marked with</span><div class="segmented" role="group" aria-labelledby="mark-label">` +
           `<button type="button" data-mass="0" aria-pressed="${!s.mass}">A dot</button><button type="button" data-mass="1" aria-pressed="${!!s.mass}">Centre of mass</button></div></div>`;
-        html += text("Name", "sym-label", s.label, "Written as TeX math. Leave empty for none. On the drawing, click the name to type it there and drag it to move it.", true);
+        html += `<label class="field"><span>Label style</span><select data-field="sym-label-mode"><option value="text"${s.labelMode === "text" ? " selected" : ""}>Plain text</option><option value="math"${s.labelMode !== "text" ? " selected" : ""}>Math</option></select></label>`;
+        html += text("Name", "sym-label", s.label, `${s.labelMode === "text" ? "Upright text. New points are named A, B, C…" : "Written as TeX math."} Leave empty for none. Click the name to edit it; drag it to move it.`, s.labelMode !== "text");
         html += `<p class="muted note-block">The ${s.mass ? "mark" : "dot"} and its name are part of the exported figure. The point under it is constrained and dimensioned like any other.</p>`;
         html += `<button type="button" class="plain" data-act="undatum">Back to a plain point</button>`;
         break;
@@ -4022,7 +4028,7 @@ export class App {
         const weight = cs[0].weight ?? standardWeight(cs[0]);
         const own = cs.some((c) => c.weight !== undefined);
         html += `<label class="field"><span>Line thickness</span><span class="slider-row"><input data-field="weight" type="range" min="${WEIGHT_MIN}" max="${WEIGHT_MAX}" step="0.1" value="${weight}"><output>${this.weightLabel(weight)}</output></span>` +
-          `<small>In points, as LaTeX counts line widths${own ? "" : "; this is the standard thickness"}. It grows and shrinks with the dimension size in print. Double-click the slider to go back to the standard.</small></label>`;
+          `<small>In points, as LaTeX counts line widths${own ? "" : "; this is the standard thickness"}. Set to 0 to hide the stroke while keeping geometry, fills and labels. It grows and shrinks with the dimension size in print. Double-click to restore the standard.</small></label>`;
         const only = cs.length === 1 ? cs[0] : undefined;
         const named = isNamed(only) ? only : null;
         if (named?.element) {
@@ -4032,8 +4038,8 @@ export class App {
         if (arrow) {
           html += arrowStylePanel(arrow);
           const heads: [ArrowEnds, string][] = arrow.type === "line"
-            ? [["end", "End"], ["start", "Start"], ["both", "Both"]]
-            : [["end", "Anticlockwise"], ["start", "Clockwise"], ["both", "Both"]];
+            ? [["none", "None"], ["end", "End"], ["start", "Start"], ["both", "Both"]]
+            : [["none", "None"], ["end", "Anticlockwise"], ["start", "Clockwise"], ["both", "Both"]];
           html += `<label class="field"><span>Name</span><input data-field="arrow-label" type="text" spellcheck="false" placeholder="${arrow.type === "line" ? "F, \\vec{v}_0" : "M, \\omega"}" value="${esc(arrow.label ?? "")}" data-tex="math"><small>Written as TeX math. On the drawing, click the name to type it there and drag it to move it; double-click the arrow to give it one.</small></label>`;
           html += `<div class="field"><span id="head-label">${arrow.type === "line" ? "Arrowhead at the" : "Points"}</span><div class="segmented wrap" role="group" aria-labelledby="head-label">${heads.map(([h, name]) =>
             `<button type="button" data-head="${h}" aria-pressed="${arrow.arrow === h}">${name}</button>`).join("")}</div></div>`;
@@ -4063,6 +4069,8 @@ export class App {
           `<li><b>Annotate.</b> Supports, loads, balloons, fills and hatching are on the Annotate tab.</li></ol>`;
       }
     }
+    const textObjects = this.tool === "select" ? this.selectedTextObjects() : [];
+    if (textObjects.length) html += textSizePanel(textObjects[0]);
     this.panel.innerHTML = html;
     showTexFields(this.panel);
     if (focusField) this.panel.querySelector<HTMLElement>(`[data-field="${focusField}"]`)?.focus();
@@ -4202,8 +4210,10 @@ export class App {
     this.panel.addEventListener("dblclick", (e) => {
       const input = e.target as HTMLInputElement;
       const field = input.dataset?.field;
-      if (field !== "weight" && field !== "support-scale" && field !== "arrow-head-scale") return;
+      if (field !== "weight" && field !== "support-scale" && field !== "arrow-head-scale" && field !== "el-lead" && field !== "text-size") return;
       input.blur();
+      if (field === "text-size") { this.selectedTextObjects().forEach((object) => setTextSize(object, 100)); return this.commit(); }
+      if (field === "el-lead") return this.editElements((look) => { delete look.lead; });
       if (field === "arrow-head-scale") {
         const arrow = this.selectedArrow();
         if (arrow) { delete arrow.headScale; this.commit(); }
@@ -4218,12 +4228,12 @@ export class App {
       const input = e.target as HTMLInputElement;
       if (input.type === "range") input.blur();
     });
-    const editScale = $<HTMLInputElement>("#edit-scale");
-    editScale.addEventListener("input", () => this.setEditScale(Number(editScale.value), false));
-    editScale.addEventListener("change", () => this.setEditScale(Number(editScale.value), true));
-    editScale.addEventListener("dblclick", () => this.setEditScale(100, true));
-
     $<HTMLInputElement>("#snap-to-grid").addEventListener("change", () => this.toggleGridSnap());
+    const mathSpaces = $<HTMLInputElement>("#preserve-math-spaces");
+    mathSpaces.addEventListener("change", () => {
+      setPreserveMathSpaces(mathSpaces.checked);
+      this.touch();
+    });
 
     const backgroundStyle = $<HTMLSelectElement>("#background-style");
     backgroundStyle.addEventListener("change", () => {
@@ -4247,7 +4257,7 @@ export class App {
       if (e.key === "Enter") commitBackgroundSpacing();
     });
 
-    // The slider acts as it moves. What it changes only shows in print, so the preview comes on with it.
+    // The slider updates print proportions directly while sketching.
     this.titleblock.addEventListener("input", (e) => {
       const input = e.target as HTMLInputElement;
       if (input.dataset.scale !== "dim") return;
@@ -4465,6 +4475,16 @@ export class App {
     this.commit();
   }
 
+  private selectedTextObjects(): (TextSize & { id: Id })[] {
+    const objects = new Map<Id, TextSize & { id: Id }>();
+    for (const id of this.selection) {
+      const e = entity(this.sk, id);
+      const object = symbol(this.sk, id) ?? constraint(this.sk, id) ?? (e?.type === "point" ? this.datumOn(id) : e);
+      if (object && bearsText(object)) objects.set(object.id, object as TextSize & { id: Id });
+    }
+    return [...objects.values()];
+  }
+
   /** One of an element's sizes as it is shown beside its slider, in the drawing's units. */
   private elementSizeLabel(e: Line | Arc, what: "across" | "pitch"): string {
     return formatNumber(Number(lookOf(this.sk, e)[what].toPrecision(3)));
@@ -4485,6 +4505,10 @@ export class App {
       html += slider("Width", "el-across", ELEMENT_ACROSS_RANGE, look.across, "across", "Across the spring, in the drawing's units.");
       html += slider("Turns apart", "el-pitch", ELEMENT_PITCH_RANGE, look.pitch, "pitch",
         `${springTurns(length, look)} turns now. Their spacing stays as it is set: a spring pulled longer gets more turns.`);
+      const lead = springLead(length, look);
+      html += `<label class="field" title="Double-click to restore automatic end lengths."><span>Straight ends</span>` +
+        `<span class="slider-row"><input data-field="el-lead" type="range" min="0" max="45" step="0.5" value="${lead / length * 100}"><output>${formatNumber(lead)}</output></span>` +
+        `<small>Length of each end before the zigzag or coil starts, in drawing units. Both ends change together. Double-click to reset.</small></label>`;
     } else if (e.element === "damper") {
       html += slider("Size", "el-across", ELEMENT_ACROSS_RANGE, look.across, "across", "How wide the cylinder is, in the drawing's units; its length goes with it.");
       html += `<button type="button" class="plain" data-act="el-flip">Turn it round</button>`;
@@ -4567,10 +4591,6 @@ export class App {
     this.sk.dimScale = Math.max(DIM_SCALE_MIN, Math.min(DIM_SCALE_MAX, percent)) / 100;
     const out = this.titleblock.querySelector("#dim-scale-out");
     if (out) out.textContent = `${Math.round(this.sk.dimScale * 100)}%`;
-    if (!this.preview) {
-      this.setPreview(true, false);
-      this.toast("Showing the print preview, where the dimension size applies. Press Q to go back to editing.");
-    }
     this.render();
   }
 
@@ -4667,6 +4687,15 @@ export class App {
       return live ? this.render() : this.commit();
     };
 
+    if (field === "text-size") {
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) return;
+      const objects = this.selectedTextObjects();
+      if (!objects.length) return;
+      objects.forEach((object) => setTextSize(object, value));
+      return slide(`${Math.max(25, Math.min(300, value))}%`);
+    }
+
     if (field.startsWith("sym-")) {
       const s = this.selectedSymbol();
       if (!s) return;
@@ -4699,7 +4728,8 @@ export class App {
         if (!input.value.trim()) { this.toast("A note needs some text. Delete removes it."); return this.touch(); }
         s.text = input.value.trim();
       }
-      else if ((s.type === "datum" || isLoad(s)) && field === "sym-label") s.label = label;
+      else if (s.type === "datum" && field === "sym-label-mode") s.labelMode = input.value === "text" ? "text" : "math";
+      else if ((s.type === "datum" || isLoad(s)) && field === "sym-label") s.label = s.type === "datum" && s.labelMode === "text" ? input.value.trim() : label;
       else if (isLoad(s) && field === "sym-size") {
         const magnitude = s.type === "lineload" ? Math.max(s.q1, s.q2) : s.value;
         if (!Number.isFinite(v) || magnitude <= 0) return;
@@ -4817,6 +4847,15 @@ export class App {
       const c = this.selection.size === 1 ? constraint(this.sk, [...this.selection][0]) : undefined;
       if (c?.type === "turn") this.setTurnAngle(c.id, parseNumber(input.value));
       return this.touch();
+    }
+
+    if (field === "el-lead") {
+      const els = this.selectedElements();
+      const value = Number(input.value);
+      if (!els.length || els[0].element !== "spring" || !Number.isFinite(value)) return;
+      const lead = elementLength(this.sk, els[0]) * Math.max(0, Math.min(45, value)) / 100;
+      this.editElements((look) => { look.lead = lead; }, false);
+      return slide(formatNumber(lead));
     }
 
     if (field === "el-across" || field === "el-pitch") {
@@ -4959,16 +4998,16 @@ export class App {
       return;
     }
 
-    if (this.tab === "plot") {
-      // The sketcher's shortcuts are for the sketcher; the plot has a few of its own.
-      if (this.plots.key(e)) e.preventDefault();
-      return;
-    }
     if (e.code === "Space") {
       // Space on a focused button should press it, not start a pan.
       if (target.tagName === "BUTTON") return;
       e.preventDefault();
       if (!this.spaceKey) { this.spaceKey = true; this.render(); }
+      return;
+    }
+    if (this.tab === "plot") {
+      // The sketcher's shortcuts are for the sketcher; the plot has a few of its own.
+      if (this.plots.key(e)) e.preventDefault();
       return;
     }
     if (e.key === "Escape") return this.cancel();

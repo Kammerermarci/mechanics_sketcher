@@ -84,11 +84,11 @@ function attachedTo(s: Sym, hosts: Set<Id>): boolean {
 }
 
 /** The next free name for a datum point: A, B, C and so on, then A_1, B_1. */
-export function nextDatumName(sk: Sketch): string {
+export function nextDatumName(sk: Sketch, plainText = false): string {
   const used = new Set(sk.symbols.flatMap((s) => (s.type === "datum" ? [s.label.trim()] : [])));
   for (let round = 0; round < 50; round++) {
     for (let i = 0; i < 26; i++) {
-      const name = String.fromCharCode(65 + i) + (round ? `_{${round}}` : "");
+      const name = String.fromCharCode(65 + i) + (round ? plainText ? String(round) : `_{${round}}` : "");
       if (!used.has(name)) return name;
     }
   }
@@ -157,7 +157,7 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
       const [p1, p2] = move.flips ? [image(e.p2), image(e.p1)] : [image(e.p1), image(e.p2)];
       const arc = addArc(sk, image(e.c), p1, p2);
       if (e.arrow) {
-        const swap: Record<ArrowEnds, ArrowEnds> = { end: "start", start: "end", both: "both" };
+        const swap: Record<ArrowEnds, ArrowEnds> = { end: "start", start: "end", both: "both", none: "none" };
         arc.arrow = move.flips ? swap[e.arrow] : e.arrow;
       }
       if (e.element) {
@@ -175,6 +175,7 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
     if (e.centre) made.centre = true;
     if (e.dashed) made.dashed = true;
     if (e.weight !== undefined) made.weight = e.weight;
+    if (e.type !== "circle" && made.type !== "circle" && e.textScale !== undefined) made.textScale = e.textScale;
     if (e.type !== "circle" && made.type !== "circle") {
       if (e.color !== undefined) made.color = e.color;
       if (e.headScale !== undefined) made.headScale = e.headScale;
@@ -233,7 +234,7 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
       if (at && at !== s.at) {
         const [dx, dy] = move.vec([s.dx, s.dy]);
         // A datum point gets the next name; the mark of a centre of mass keeps the one it has.
-        made = addSymbol(sk, { type: "datum", at, color: s.color, label: s.mass ? s.label : s.label.trim() ? nextDatumName(sk) : "", dx, dy, ...(s.mass ? { mass: true } : {}) });
+        made = addSymbol(sk, { type: "datum", at, color: s.color, label: s.mass ? s.label : s.label.trim() ? nextDatumName(sk, s.labelMode === "text") : "", dx, dy, ...(s.labelMode ? { labelMode: s.labelMode } : {}), ...(s.textScale !== undefined ? { textScale: s.textScale } : {}), ...(s.mass ? { mass: true } : {}) });
       }
     } else if (s.type === "load" || s.type === "moment") {
       const at = pmap.get(s.at);

@@ -1,11 +1,21 @@
 // Self-contained selection snapshots; pasted geometry never shares IDs with the source.
 import {
   type Sketch, type Id, type Sym, type Entity, type Constraint, ORIGIN, clone, deserialize,
-  entity, curvePoints, symbolRefs, constraintRefs, isLink, newId,
+  entity, curvePoints, symbolRefs, constraintRefs, isLink, newId, geometryBox,
 } from "./model";
-import type { V } from "./geom";
+import { type V, grow, boxIsEmpty } from "./geom";
 
 export interface ObjectClipboard { format: "mech-sketch-objects"; version: 1; sketch: Sketch }
+
+/** Put the centre of the copied collection at the pointer, preserving its spacing. */
+export function pasteOffsetAtCursor(clipboard: ObjectClipboard, cursor: V): V {
+  const box = geometryBox(clipboard.sketch);
+  for (const s of clipboard.sketch.symbols) {
+    if (s.type === "note" || s.type === "frame" || s.type === "balloon") grow(box, [s.x, s.y]);
+  }
+  if (boxIsEmpty(box)) return cursor;
+  return [cursor[0] - (box.x0 + box.x1) / 2, cursor[1] - (box.y0 + box.y1) / 2];
+}
 
 export function copyObjects(sk: Sketch, selected: Iterable<Id>): ObjectClipboard | null {
   const requested = new Set(selected), entities = new Set<Id>(), symbols = new Set<Id>();
@@ -91,7 +101,8 @@ export function pasteObjects(sk: Sketch, clipboard: ObjectClipboard, offset: V):
   const symbols = source.symbols.map((s) => remap(s, ids));
   for (const s of symbols) if (s.type === "note" || s.type === "frame" || s.type === "balloon") { s.x += offset[0]; s.y += offset[1]; }
   sk.entities.push(...entities);
-  sk.constraints.push(...source.constraints.map((c) => remap<Constraint>(c, ids)));
+  // Absolute pins belong to the source placement, not to an independent copy.
+  sk.constraints.push(...source.constraints.filter((c) => c.type !== "fixed").map((c) => remap<Constraint>(c, ids)));
   sk.symbols.push(...symbols);
   if (source.plots?.length) sk.plots = [...sk.plots ?? [], ...source.plots.map((p) => remap(p, ids))];
   if (source.zOrder?.length) sk.zOrder = [...oldOrder, ...source.zOrder.map((id) => ids.get(id)!).filter(Boolean)];

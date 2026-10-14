@@ -21,8 +21,8 @@ describe("copy and paste objects", () => {
     const target = emptySketch(), commit = vi.fn(), readText = vi.fn();
     vi.stubGlobal("navigator", { clipboard: { readText } });
     const app = Object.assign(Object.create(App.prototype), {
-      sk: target, tab: "sketch", copiedObjects: copied, pasteCount: 0, solver,
-      result: solver.solve(target), view: { scale: 40 }, setTool: vi.fn(), commit,
+      sk: target, tab: "sketch", copiedObjects: copied, solver,
+      result: solver.solve(target), view: { scale: 40, cx: 0, cy: 0, w: 800, h: 600 }, cursor: [400, 300], setTool: vi.fn(), commit,
     }) as { pasteSelection(): Promise<void> };
     await app.pasteSelection();
     expect(readText).not.toHaveBeenCalled();

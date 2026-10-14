@@ -3,9 +3,10 @@
 // on screen without the editing aids.
 
 import type { Sketch } from "./model";
+import { textSize } from "./text-size";
 import {
   type Prim, type StrokeStyle, type Outline, type Anchor, type LinePrim, type ArcPrim,
-  PAPER, PT_MM, STROKE_DASH, dashOf, strokeWidth, printMm, buildPrims, arrowHeads, strokedEnds, strokedSweep, textBox, textCorners, outlinePolygon,
+  PAPER, PT_MM, STROKE_DASH, dashOf, strokeWidth, invisibleStroke, printMm, buildPrims, arrowHeads, strokedEnds, strokedSweep, textBox, textCorners, outlinePolygon,
 } from "./prims";
 import { type V, type Box, emptyBox, grow, boxIsEmpty, polar, wrap, TWO_PI } from "./geom";
 import { texEngine } from "./tex";
@@ -26,6 +27,7 @@ export function figurePrims(sk: Sketch): Prim[] {
 export function figureBounds(prims: Prim[]): Box {
   const b = emptyBox();
   for (const p of prims) {
+    if (invisibleStroke(p)) continue;
     if (p.k === "text") {
       for (const q of textCorners(p)) grow(b, q);
     } else if (p.k === "region") {
@@ -77,6 +79,7 @@ export function primsToSvg(prims: Prim[], k = 1): string | null {
 
   const body: string[] = [];
   for (const p of prims) {
+    if (invisibleStroke(p)) continue;
     if (p.k === "region") {
       const id = `export-gradient-${prims.indexOf(p)}`;
       if (p.gradient) body.push(svgGradient(p.outlines, p.gradient, p.color, id, M, 1));
@@ -88,7 +91,7 @@ export function primsToSvg(prims: Prim[], k = 1): string | null {
       const corner = M([t.x0, t.y1]);
       // currentColor would depend on where the file is placed; make it black outright.
       const ink = p.ink ?? "#000";
-      const glyphs = engine.svg(p.tex, corner[0], corner[1], PAPER.em, "label").replace(/currentColor/g, ink).replace(' class="label"', ` fill="${ink}" stroke="none"`);
+      const glyphs = engine.svg(p.tex, corner[0], corner[1], PAPER.em * textSize(p), "label").replace(/currentColor/g, ink).replace(' class="label"', ` fill="${ink}" stroke="none"`);
       if (p.rot && glyphs) {
         // Counter-clockwise on paper is a negative angle once y points down.
         const at = M(p.at);
@@ -236,7 +239,8 @@ export function tikzParts(prims: Prim[], k = 1): { styles: string[]; lines: stri
     p.stroke + (p.width === undefined ? "" : `, line width=${num((p.width / PT_MM) * k, 2)}pt`) +
     // An arrow tip takes the colour of its line.
     (p.ink ? `, draw=${tikzColor(p.ink)}` : "") +
-    (p.dash ? pattern(p.dash) : "");
+    (p.dash ? pattern(p.dash) : "") +
+    (p.width === 0 ? ", draw=none" : "");
   const lines: string[] = [];
   /** Plain line segments of one style and symbol in a row share a \draw. */
   let run: { style: string; ref: string | undefined; parts: string[] } | null = null;
@@ -246,6 +250,7 @@ export function tikzParts(prims: Prim[], k = 1): { styles: string[]; lines: stri
   };
 
   for (const p of prims) {
+    if (invisibleStroke(p)) continue;
     if (p.k !== "text" && p.k !== "region") used.add(p.stroke);
     if (p.k === "line" && !p.arrowA && !p.arrowB) {
       if (!run || run.style !== style(p) || run.ref !== p.ref || run.parts.length >= 8) {
@@ -264,7 +269,8 @@ export function tikzParts(prims: Prim[], k = 1): { styles: string[]; lines: stri
         (p.rot ? `, rotate=${deg(p.rot)}` : "") +
         // A node breaks its text into lines only once it is told how to align them.
         (p.lines ? ", align=left" : "") +
-        (p.ink ? `, text=${tikzColor(p.ink)}` : "");
+        (p.ink ? `, text=${tikzColor(p.ink)}` : "") +
+        (textSize(p) !== 1 ? `, scale=${num(textSize(p), 3)}` : "");
       if (p.anchor !== "c") needLabel = true;
       // A note is text with math in it, a label is math; LaTeX takes accented letters in text only.
       const body = p.latex !== undefined ? latexAccents(p.latex, "text") : `$${latexAccents(p.tex, "math")}$`;
@@ -286,7 +292,7 @@ export function tikzParts(prims: Prim[], k = 1): { styles: string[]; lines: stri
     } else {
       const fill = p.fill ? `, fill=${p.fill === "ink" ? (p.color ? tikzColor(p.color) : "black") : "white"}` : "";
       const shape = p.k === "circle" ? `${co(p.c)} circle[radius=${num(p.r, 2)}]` : `${p.pts.map(co).join(" -- ")} -- cycle`;
-      lines.push(`  \\draw[${p.k === "circle" ? style(p) : style({ stroke: p.stroke, ink: p.ink })}${fill}] ${shape};`);
+      lines.push(`  \\draw[${style(p)}${fill}] ${shape};`);
     }
   }
   flush();

@@ -26,7 +26,11 @@ export function springTurns(length: number, look: ElementLook): number {
 }
 
 /** The straight piece at each end of a spring. A short spring gives up its ends before its turns. */
-function springLead(length: number, look: ElementLook): number {
+export function springLead(length: number, look: ElementLook): number {
+  if (typeof look.lead === "number" && Number.isFinite(look.lead) && look.lead >= 0) {
+    // Always leave room for the spring body when its endpoints move closer.
+    return Math.min(look.lead, length * 0.45);
+  }
   return Math.min(look.across * LEAD, length * 0.2);
 }
 

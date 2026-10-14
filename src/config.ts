@@ -18,7 +18,8 @@ export const SUPPORT_URL = "https://ko-fi.com/mech_sketch";
  * before the file can be saved or the TikZ copied. 0 exports at once. There
  * is no wait while SUPPORT_URL is empty, nor in the beta.
  */
-export const EXPORT_WAIT_SECONDS = BETA ? 0 : 10;
+// Temporarily disabled; set this back to BETA ? 0 : 10 to restore the countdown.
+export const EXPORT_WAIT_SECONDS = 0;
 
 /**
  * Where bug reports and suggestions are sent. The report form writes an

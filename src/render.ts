@@ -5,8 +5,9 @@ import {
   type Sketch, type Id, type Constraint, type Curve, ORIGIN, entity, point, isDimension, arcRadius, isFixed,
 } from "./model";
 import { type V, add, sub, mul, norm, perp, mid, polar, wrap, projectOnSegment, TWO_PI } from "./geom";
-import { type Prim, type StrokeStyle, type Outline, PAPER, dashOf, strokeWidth, arrowHeads, strokedEnds, strokedSweep, textBox } from "./prims";
+import { type Prim, type StrokeStyle, type Outline, PAPER, dashOf, strokeWidth, invisibleStroke, arrowHeads, strokedEnds, strokedSweep, textBox } from "./prims";
 import type { Overlaps } from "./regions";
+import { textSize } from "./text-size";
 import { texEngine } from "./tex";
 import { ICONS } from "./icons";
 import { backgroundPattern } from "./background";
@@ -236,6 +237,7 @@ function primClass(s: PrimScene, p: Prim): string {
 }
 
 function strokePx(p: { stroke: StrokeStyle; width?: number }, pxPerMm: number): number {
+  if (strokeWidth(p) === 0) return 0;
   // Never so thin that it is hard to see or to hit; a member at its standard thickness a little bolder.
   return Math.max(p.stroke === "member" && p.width === undefined ? 1.5 : 0.9, strokeWidth(p) * pxPerMm);
 }
@@ -282,6 +284,7 @@ export function drawPrims(s: PrimScene): string {
   const engine = texEngine();
   let out = "";
   for (const p of s.prims) {
+    if (invisibleStroke(p)) continue;
     const cls = primClass(s, p);
     if (p.k === "region") {
       const id = `screen-gradient-${s.prims.indexOf(p)}`;
@@ -292,7 +295,7 @@ export function drawPrims(s: PrimScene): string {
     if (p.k === "text") {
       const b = textBox(p);
       const topLeft = M([b.x0, b.y1]);
-      let glyphs = engine.svg(p.tex, topLeft[0], topLeft[1], PAPER.em * pxPerMm, cls);
+      let glyphs = engine.svg(p.tex, topLeft[0], topLeft[1], PAPER.em * textSize(p) * pxPerMm, cls);
       // Its colour goes in as a variable on a group around it, so the highlight rules still win.
       if (p.ink && glyphs) glyphs = `<g style="--ink:${p.ink}">${glyphs}</g>`;
       if (p.rot && glyphs) {

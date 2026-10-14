@@ -2,6 +2,7 @@
 // Coordinates are y-up, in unitless model units.
 
 import { type Box, emptyBox, grow, boxIsEmpty, inSweep, polar, TWO_PI } from "./geom";
+import type { TextSize } from "./text-size";
 
 export type Id = string;
 
@@ -13,7 +14,7 @@ export interface Point {
   /** Placed with the Point tool, so it survives when nothing else uses it. */
   standalone?: boolean;
 }
-export interface Line {
+export interface Line extends TextSize {
   id: Id;
   type: "line";
   p1: Id;
@@ -45,7 +46,7 @@ export interface Line {
   lx?: number;
   ly?: number;
 }
-export type ArrowEnds = "end" | "start" | "both";
+export type ArrowEnds = "end" | "start" | "both" | "none";
 export type LineElement = "spring" | "damper" | "spiral";
 export type ArcElement = "spring" | "damper";
 /**
@@ -58,6 +59,8 @@ export interface ElementLook {
   across: number;
   /** A spring: how far apart its turns are. A spiral spring: how far apart its windings are. */
   pitch: number;
+  /** Length of each spring's straight end, in model units. Unset: automatic. */
+  lead?: number;
   /** A spring drawn as the loops of a coil. Unset: a zigzag. */
   coil?: boolean;
   /** A damper: the cylinder is at the start, not the end. A spiral spring: wound clockwise on its way out. */
@@ -78,7 +81,7 @@ export interface Circle {
   dashed?: boolean;
 }
 /** Counter-clockwise from p1 to p2 around c. */
-export interface Arc {
+export interface Arc extends TextSize {
   id: Id;
   type: "arc";
   c: Id;
@@ -155,7 +158,7 @@ export interface Shift extends LinkBase { type: "shift" }
 export interface Turn extends LinkBase { type: "turn"; c: Id; angle: number }
 export type Link = Mirror | Shift | Turn;
 
-interface DimBase {
+interface DimBase extends TextSize {
   id: Id;
   /** Driving value. Angles are in radians. */
   value: number;
@@ -214,7 +217,7 @@ export interface Support {
   angle: number;
 }
 /** A pair of coordinate axes, placed anywhere as an annotation. */
-export interface Frame {
+export interface Frame extends TextSize {
   /** Axis and label colour. Unset: standard ink. */
   color?: string;
   id: Id;
@@ -251,7 +254,7 @@ export interface CenterMark {
 }
 export type LeaderEnd = "arrow" | "dot" | "none";
 /** A circled number (or any TeX) with a leader, for naming parts. */
-export interface Balloon {
+export interface Balloon extends TextSize {
   /** Text, frame and leader colour. Unset: standard ink. */
   color?: string;
   id: Id;
@@ -313,15 +316,17 @@ export interface Hatch {
   lean?: 1 | -1;
 }
 /** A point marked with a coloured dot and a name, such as a joint called A. It is part of the figure. */
-export interface Datum {
+export interface Datum extends TextSize {
   id: Id;
   type: "datum";
   /** The point it marks. */
   at: Id;
   /** CSS hex colour of the dot. */
   color: string;
-  /** Name as TeX math; empty for none. */
+  /** Name; empty for none. New datum points use plain text. */
   label: string;
+  /** Unset preserves math labels in older sketches. */
+  labelMode?: "text" | "math";
   /** Centre of the name relative to the point, in annotation mm. */
   dx: number;
   dy: number;
@@ -329,7 +334,7 @@ export interface Datum {
   mass?: boolean;
 }
 /** Text placed freely on the figure. */
-export interface Note {
+export interface Note extends TextSize {
   /** Text colour. Unset: standard ink. */
   color?: string;
   id: Id;
@@ -344,7 +349,7 @@ export interface Note {
  * A force on a point, drawn as an arrow. How long the arrow is follows the
  * magnitude, at the scale the sketch keeps for forces.
  */
-export interface Load {
+export interface Load extends TextSize {
   id: Id;
   type: "load";
   /** The point it acts on. */
@@ -367,7 +372,7 @@ export interface Load {
  * A load spread along a line: a row of arrows under a straight envelope,
  * growing from magnitude q1 at one end of its span to q2 at the other.
  */
-export interface LineLoad {
+export interface LineLoad extends TextSize {
   id: Id;
   type: "lineload";
   on: Id;
@@ -392,7 +397,7 @@ export interface LineLoad {
   dy?: number;
 }
 /** A moment about a point: an arc with a head, whose radius follows the magnitude. */
-export interface Moment {
+export interface Moment extends TextSize {
   id: Id;
   type: "moment";
   at: Id;
@@ -412,7 +417,7 @@ export interface Moment {
  * and the values of its functions are set off square to it. It stays tied to
  * the plot: change a function there and the diagram follows.
  */
-export interface Diagram {
+export interface Diagram extends TextSize {
   id: Id;
   type: "diagram";
   /** The plot whose functions it draws. */
@@ -448,7 +453,7 @@ export interface Diagram {
  * a point as the origin of the plot's coordinates: a path, an orbit, a circle
  * about a joint. It stays tied to the plot and to the point.
  */
-export interface Trace {
+export interface Trace extends TextSize {
   id: Id;
   type: "trace";
   /** The plot whose curves it draws. */
@@ -495,8 +500,8 @@ export function symbolRefs(s: Sym): Id[] {
  * Sizes come in two kinds. Geometry, where a dimension or balloon sits, how
  * long a pair of axes is and how hatching is spaced are in model units. The size of what annotates it (text, arrowheads,
  * supports, the gaps of a dimension) is in "annotation mm": the size it has
- * on paper when dimScale is 1. While editing, annotations keep one size on
- * screen however far the view is zoomed; in print they are scaled by dimScale.
+ * on paper when dimScale is 1. Editing uses the same proportions as print,
+ * so zoom scales annotations and geometry together.
  */
 export interface Sketch {
   version: 4;
@@ -541,7 +546,7 @@ export interface Sketch {
 export interface PlotPiece { expr: string; from?: number; to?: number; x?: string }
 export type PlotDash = "dashed" | "dotted";
 /** A function drawn in a plot, in one piece or several, as an internal force diagram is. */
-export interface PlotCurve {
+export interface PlotCurve extends TextSize {
   id: Id;
   pieces: PlotPiece[];
   /** A curve given by a parameter, x(t) and y(t), instead of a function of x: a circle, a path, a phase portrait. */
@@ -560,7 +565,7 @@ export interface PlotCurve {
   lx?: number;
   ly?: number;
 }
-export interface PlotAxis {
+export interface PlotAxis extends TextSize {
   min: number;
   max: number;
   /** Written as TeX math. */
@@ -569,7 +574,7 @@ export interface PlotAxis {
   step?: number;
 }
 /** Text placed on a plot. It starts at x, y in the plot's own coordinates: the middle of its left edge. */
-export interface PlotNote {
+export interface PlotNote extends TextSize {
   color?: string;
   id: Id;
   x: number;
@@ -578,7 +583,7 @@ export interface PlotNote {
   text: string;
 }
 /** A balloon on a plot: its text in a frame, with a leader to the spot x, y it points at, in the plot's own coordinates. */
-export interface PlotBalloon {
+export interface PlotBalloon extends TextSize {
   color?: string;
   id: Id;
   x: number;

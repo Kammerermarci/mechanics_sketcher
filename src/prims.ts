@@ -16,6 +16,8 @@ import {
   distToSegment, intersectLines, TWO_PI,
 } from "./geom";
 import { texEngine } from "./tex";
+import { labelTex } from "./math-labels";
+import { textSize, sizedText, type TextSize } from "./text-size";
 import { baseline, diagramShape, traceShape } from "./diagram";
 import { PLOT, PLOT_DASH } from "./plotmath";
 
@@ -129,7 +131,7 @@ export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a
  * `anchor` names the side of the text box that sits at `at`, as in TikZ.
  * `rot` turns the text about `at`, counter-clockwise in radians.
  */
-export interface TextPrim extends Base {
+export interface TextPrim extends Base, TextSize {
   k: "text"; at: V; tex: string; anchor: Anchor; rot?: number;
   /** Plain LaTeX to put in the TikZ picture in place of the math in `tex`: a note's text, set as text. */
   latex?: string;
@@ -147,6 +149,11 @@ export type OutlineSeg =
 /** A filled area with no outline of its own. Later outlines cut holes (even-odd). */
 export interface RegionPrim extends Base { k: "region"; outlines: Outline[]; color: string; gradient?: FillGradient }
 export type Prim = LinePrim | CirclePrim | PolyPrim | PathPrim | ArcPrim | TextPrim | RegionPrim;
+
+/** Zero-width geometry stays in the model and hit testing, but paints no stroke. */
+export function invisibleStroke(p: Prim): boolean {
+  return p.k !== "text" && p.k !== "region" && strokeWidth(p) === 0 && !((p.k === "circle" || p.k === "poly") && p.fill);
+}
 
 // ---- scale ------------------------------------------------------------------
 
@@ -176,26 +183,7 @@ export function formatNumber(v: number): string {
  * "\ " and shows; the one space that ends a command name (\alpha b) is kept
  * as it is.
  */
-export function labelTex(typed: string): string {
-  // One character for each accented letter, however it was typed or pasted.
-  const s = typed.trim().normalize("NFC");
-  let out = "";
-  for (let i = 0; i < s.length;) {
-    if (s[i] === "\\") {
-      let j = i + 1;
-      if (j < s.length && /[a-zA-Z]/.test(s[j])) {
-        while (j < s.length && /[a-zA-Z]/.test(s[j])) j++;
-        if (s[j] === " ") j++;
-      } else j++; // a control symbol such as "\ " or "\,"
-      out += s.slice(i, j);
-      i = j;
-    } else {
-      out += s[i] === " " ? "\\ " : s[i];
-      i++;
-    }
-  }
-  return out;
-}
+export { labelTex } from "./math-labels";
 
 /** The lines of a note, each cut into text and math by turns: even pieces are text, odd ones math. */
 function noteLines(typed: string): string[][] {
@@ -414,7 +402,7 @@ export function dimensionPrims(sk: Sketch, d: Dimension, mm: number): Prim[] {
     : d.type === "angle" ? anglePrims(sk, d, mm)
     : radiusPrims(sk, d, mm);
   if (d.hidden) prims.forEach((p) => { p.ghost = true; });
-  return prims;
+  return sizedText(prims, d);
 }
 
 // ---- symbols ----------------------------------------------------------------
@@ -634,9 +622,10 @@ export function centerMarkEnds(sk: Sketch, s: CenterMark, mm: number): V[] {
  * leader coming in along `dir` (a unit vector from the centre): on the
  * circle, on the side of the box, or just clear of bare text.
  */
-function balloonFrame(s: Pick<Balloon, "text" | "frame">, dir: V): { hw: number; hh: number; r: number; reach: number } {
+function balloonFrame(s: Pick<Balloon, "text" | "frame" | "textScale">, dir: V): { hw: number; hh: number; r: number; reach: number } {
   const m = texEngine().measure(labelTex(s.text) || "0");
-  const hw = (m.w * PAPER.em) / 2, hh = ((m.asc + m.desc) * PAPER.em) / 2;
+  const em = PAPER.em * textSize(s);
+  const hw = (m.w * em) / 2, hh = ((m.asc + m.desc) * em) / 2;
   const half = Math.hypot(hw, hh);
   const frame = s.frame ?? "circle";
   if (frame === "box") {
@@ -655,7 +644,7 @@ function balloonPrims(sk: Sketch, s: Balloon, mm: number): Prim[] {
 }
 
 /** A balloon whose text is centred at `centre`, with its leader to `anchor`, both in paper mm. */
-export function balloonShape(ref: Id, anchor: V, centre: V, s: Pick<Balloon, "text" | "end" | "frame" | "color">): Prim[] {
+export function balloonShape(ref: Id, anchor: V, centre: V, s: Pick<Balloon, "text" | "end" | "frame" | "color" | "textScale">): Prim[] {
   const base = { ref, layer: "sym" as const, ...(s.color && /^#[0-9a-f]{6}$/i.test(s.color) ? { ink: s.color } : {}) };
   const frame = s.frame ?? "circle";
   const out: Prim[] = [];
@@ -682,7 +671,7 @@ export function balloonShape(ref: Id, anchor: V, centre: V, s: Pick<Balloon, "te
       out.push({ ...base, k: "poly", pts: [[x - f.hw, y - f.hh], [x + f.hw, y - f.hh], [x + f.hw, y + f.hh], [x - f.hw, y + f.hh]], stroke: "symbol", fill: "paper" });
     }
   }
-  if (s.text.trim()) out.push({ ...base, k: "text", at: centre, tex: labelTex(s.text), anchor: "c" });
+  if (s.text.trim()) out.push({ ...base, k: "text", at: centre, tex: labelTex(s.text), anchor: "c", ...(s.textScale !== undefined ? { textScale: textSize(s) } : {}) });
   return out;
 }
 
@@ -700,7 +689,9 @@ function datumPrims(sk: Sketch, s: Datum, mm: number): Prim[] {
       out.push({ ...base, k: "poly", pts, stroke: "symbol", fill: "ink", color: s.color, ink: s.color });
     }
   } else out.push({ ...base, k: "circle", c: at, r: PAPER.datumRadius, stroke: "symbol", fill: "ink", color: s.color });
-  if (s.label.trim()) out.push({ ...base, k: "text", at: [at[0] + s.dx, at[1] + s.dy], tex: labelTex(s.label), anchor: "c", part: "label" });
+  if (s.label.trim()) out.push({ ...base, k: "text", at: [at[0] + s.dx, at[1] + s.dy],
+    tex: s.labelMode === "text" ? noteTex(s.label) : labelTex(s.label),
+    ...(s.labelMode === "text" ? { latex: noteLatex(s.label).latex } : {}), anchor: "c", part: "label" });
   return out;
 }
 
@@ -1025,6 +1016,10 @@ function fillPrims(sk: Sketch, f: FillSym, mm: number): Prim[] {
 }
 
 export function symbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
+  return sizedText(rawSymbolPrims(sk, s, mm), s as TextSize);
+}
+
+function rawSymbolPrims(sk: Sketch, s: Sym, mm: number): Prim[] {
   switch (s.type) {
     case "support": return supportPrims(sk, s, mm);
     case "frame": return framePrims(sk, s, mm);
@@ -1067,7 +1062,7 @@ export function arrowLabelAt(sk: Sketch, e: Line | Arc, mm: number, always = fal
     const a = P(sk, e.p1, mm), b = P(sk, e.p2, mm);
     n = len(sub(a, b)) < 1e-9 ? [0, 1] : norm(sub(a, b));
     const t = texEngine().measure(tex || "F");
-    const reach = (Math.abs(n[0]) * t.w + Math.abs(n[1]) * (t.asc + t.desc)) * PAPER.em / 2;
+    const reach = (Math.abs(n[0]) * t.w + Math.abs(n[1]) * (t.asc + t.desc)) * PAPER.em * textSize(e) / 2;
     return add(m, mul(n, len(sub(a, b)) + reach + PAPER.textSep + 0.6));
   }
   if (e.type === "line") {
@@ -1082,7 +1077,7 @@ export function arrowLabelAt(sk: Sketch, e: Line | Arc, mm: number, always = fal
   }
   // Just clear of the stroke, or of the coils of a spring, however wide the name is.
   const t = texEngine().measure(tex || "F");
-  const reach = (Math.abs(n[0]) * t.w + Math.abs(n[1]) * (t.asc + t.desc)) * PAPER.em / 2;
+  const reach = (Math.abs(n[0]) * t.w + Math.abs(n[1]) * (t.asc + t.desc)) * PAPER.em * textSize(e) / 2;
   return add(m, mul(n, reach + PAPER.textSep + 0.6 + elementReach(sk, e) * mm));
 }
 
@@ -1112,7 +1107,7 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
     const named = isNamed(e) ? e : null;
     const name = (): void => {
       const at = named ? arrowLabelAt(sk, named, mm) : null;
-      if (at) out.push({ ref: e.id, layer: "geom", k: "text", at, tex: labelTex(named?.label ?? ""), anchor: "c", part: "label", ...(base.ink ? { ink: base.ink } : {}) });
+      if (at) out.push({ ref: e.id, layer: "geom", k: "text", at, tex: labelTex(named?.label ?? ""), anchor: "c", part: "label", ...(named?.textScale !== undefined ? { textScale: textSize(named) } : {}), ...(base.ink ? { ink: base.ink } : {}) });
     };
     if (e.type !== "circle" && e.element && !e.construction) {
       // A spring or a damper: drawn in its place, from one end to the other.
@@ -1131,8 +1126,8 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
       const line: LinePrim = { ...base, k: "line", a: P(sk, e.p1, mm), b: P(sk, e.p2, mm) };
       if (arrow) {
         line.head = head;
-        if (arrow !== "end") line.arrowA = true;
-        if (arrow !== "start") line.arrowB = true;
+        if (arrow === "start" || arrow === "both") line.arrowA = true;
+        if (arrow === "end" || arrow === "both") line.arrowB = true;
       }
       out.push(line);
       name();
@@ -1143,8 +1138,8 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
       const arc: ArcPrim = { ...base, k: "arc", c: P(sk, e.c, mm), r: arcRadius(sk, e) * mm, a0, a1 };
       if (arrow) {
         arc.head = head;
-        if (arrow !== "end") arc.arrowA = true;
-        if (arrow !== "start") arc.arrowB = true;
+        if (arrow === "start" || arrow === "both") arc.arrowA = true;
+        if (arrow === "end" || arrow === "both") arc.arrowB = true;
       }
       out.push(arc);
       name();
@@ -1199,6 +1194,7 @@ export function strokedSweep(p: ArcPrim): [number, number] {
 /** Arrowhead outlines for a line or arc primitive. */
 export function arrowHeads(p: LinePrim | ArcPrim): V[][] {
   const heads: V[][] = [];
+  if (strokeWidth(p) === 0) return heads;
   if (p.k === "line") {
     if (len(sub(p.b, p.a)) < 1e-9) return heads;
     if (p.arrowA) heads.push(arrowHead(p.a, sub(p.a, p.b), p.head));
@@ -1222,7 +1218,7 @@ export function arrowHeads(p: LinePrim | ArcPrim): V[][] {
  * Box of a text primitive in paper mm (y-up), including the part of the text
  * that hangs below its baseline.
  */
-export function textBox(p: TextPrim, em = PAPER.em): Box {
+export function textBox(p: TextPrim, em = PAPER.em * textSize(p)): Box {
   const m = texEngine().measure(p.tex);
   const w = m.w * em;
   const h = (m.asc + m.desc) * em;

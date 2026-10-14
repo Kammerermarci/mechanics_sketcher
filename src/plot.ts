@@ -12,6 +12,7 @@ import { type V } from "./geom";
 import { texEngine } from "./tex";
 import { latexAccents } from "./accents";
 import { num, tikzColor, primsToSvg, tikzParts } from "./export";
+import { textSize, sizedText } from "./text-size";
 import {
   type Stretch, type ParamStretch, PLOT, PLOT_DASH, PLOT_COLORS, PARAM_RANGE, readFormula, pieceError, formulaError, stretches, runs,
   restrictX, restrictY, uprights, paramStretches, paramRuns, drawable,
@@ -265,8 +266,8 @@ function layout(plot: Plot): Layout {
   const yNumbers = !numbered ? [] : ys.filter((v) => marked(plot, "y", v)).map((v) => ({ v, tex: tickTex(v, yStep) }));
   const tick = plot.ticks === "none" ? 0 : box ? PLOT.tickBox : PLOT.tickCross;
   const engine = texEngine();
-  const tall = Math.max(0, ...xNumbers.map((n) => { const m = engine.measure(n.tex); return (m.asc + m.desc) * PAPER.em; }));
-  const wide = Math.max(0, ...yNumbers.map((n) => engine.measure(n.tex).w * PAPER.em));
+  const tall = Math.max(0, ...xNumbers.map((n) => { const m = engine.measure(n.tex); return (m.asc + m.desc) * PAPER.em * textSize(plot.x); }));
+  const wide = Math.max(0, ...yNumbers.map((n) => engine.measure(n.tex).w * PAPER.em * textSize(plot.y)));
   return {
     xs, ys, X0, Y0, xNumbers, yNumbers, tick,
     below: tick + (xNumbers.length ? tall + 2 * PAPER.textSep : 0),
@@ -363,7 +364,11 @@ export function plotPrims(given: Plot): Prim[] {
   for (const c of plot.curves) {
     const tex = labelTex(c.label ?? "");
     const at = tex ? curveLabelAt(plot, c) : null;
-    if (at) out.push({ layer: "sym", ref: c.id, k: "text", at: P(at), tex, anchor: "c", ink: c.color, part: "label" });
+    if (at) out.push(...sizedText([{ layer: "sym", ref: c.id, k: "text", at: P(at), tex, anchor: "c", ink: c.color, part: "label" }], c));
+  }
+  for (const p of out) if (p.k === "text") {
+    const axis = p.part === "xlabel" || p.part === "xtick" ? plot.x : p.part === "ylabel" || p.part === "ytick" ? plot.y : null;
+    if (axis && textSize(axis) !== 1) p.textScale = textSize(axis);
   }
   out.push(...annotationPrims(plot));
   return out;
@@ -381,7 +386,7 @@ export function balloonPlace(plot: Plot, b: PlotBalloon): { anchor: V; centre: V
  */
 export function annotationPrims(plot: Plot): Prim[] {
   const out: Prim[] = [];
-  for (const n of plot.notes ?? []) out.push(...noteShape(n.id, toPaper(plot, [n.x, n.y]), n.text, n.color).map((p) => ({ ...p, part: "note" })));
+  for (const n of plot.notes ?? []) out.push(...sizedText(noteShape(n.id, toPaper(plot, [n.x, n.y]), n.text, n.color), n).map((p) => ({ ...p, part: "note" })));
   for (const b of plot.balloons ?? []) {
     const { anchor, centre } = balloonPlace(plot, b);
     out.push(...balloonShape(b.id, anchor, centre, b).map((p) => ({ ...p, part: p.part ?? "balloon" })));
@@ -422,21 +427,22 @@ export function plotTikz(given: Plot): string {
   const share = (v: number) => num(v, 5);
   const [cx, cy] = axisCross(plot);
   const opts: string[] = [];
+  const labelScale = (axis: PlotAxis) => textSize(axis) === 1 ? "" : `, scale=${num(textSize(axis), 3)}`;
   opts.push(`width=${mm(W)}, height=${mm(H)}, scale only axis`);
   opts.push(`xmin=${n(plot.x.min)}, xmax=${n(plot.x.max)}, ymin=${n(plot.y.min)}, ymax=${n(plot.y.max)}`);
   const sep = `inner sep=${mm(PAPER.textSep)}`;
   const xLabel = plot.x.label.trim(), yLabel = plot.y.label.trim();
   if (box) {
     opts.push(`axis lines=box, axis line style={line width=0.4pt}`);
-    if (xLabel) opts.push(`xlabel={${math(xLabel)}}, every axis x label/.style={at={(axis description cs:0.5,${share(-L.below / H)})}, anchor=north, ${sep}}`);
-    if (yLabel) opts.push(`ylabel={${math(yLabel)}}, every axis y label/.style={at={(axis description cs:${share(-L.left / W)},0.5)}, rotate=90, anchor=south, ${sep}}`);
+    if (xLabel) opts.push(`xlabel={${math(xLabel)}}, every axis x label/.style={at={(axis description cs:0.5,${share(-L.below / H)})}, anchor=north, ${sep}${labelScale(plot.x)}}`);
+    if (yLabel) opts.push(`ylabel={${math(yLabel)}}, every axis y label/.style={at={(axis description cs:${share(-L.left / W)},0.5)}, rotate=90, anchor=south, ${sep}${labelScale(plot.y)}}`);
   } else {
     // Through the origin; along the edge it lies beyond when it is out of range.
     const side = (at: number, a: PlotAxis, low: string, high: string) => (at > a.min && at < a.max ? "middle" : at <= a.min ? low : high);
     opts.push(`axis x line=${side(cy, plot.y, "bottom", "top")}, axis y line=${side(cx, plot.x, "left", "right")}`);
     opts.push(`axis line style={line width=0.4pt, -{Stealth[length=${mm(PAPER.arrowLen)}, width=${mm(PAPER.arrowWidth)}, inset=${mm(PAPER.arrowLen * 0.28)}]}}`);
-    if (xLabel) opts.push(`xlabel={${math(xLabel)}}, every axis x label/.style={at={(axis description cs:1,${share(L.Y0 / H)})}, anchor=west, ${sep}}`);
-    if (yLabel) opts.push(`ylabel={${math(yLabel)}}, every axis y label/.style={at={(axis description cs:${share(L.X0 / W)},1)}, anchor=south, ${sep}}`);
+    if (xLabel) opts.push(`xlabel={${math(xLabel)}}, every axis x label/.style={at={(axis description cs:1,${share(L.Y0 / H)})}, anchor=west, ${sep}${labelScale(plot.x)}}`);
+    if (yLabel) opts.push(`ylabel={${math(yLabel)}}, every axis y label/.style={at={(axis description cs:${share(L.X0 / W)},1)}, anchor=south, ${sep}${labelScale(plot.y)}}`);
   }
   // The ticks carry the grid too, so they are listed even where no mark is drawn at them.
   const xs = L.xs.filter((v) => marked(plot, "x", v)), ys = L.ys.filter((v) => marked(plot, "y", v));
@@ -446,6 +452,8 @@ export function plotTikz(given: Plot): string {
   opts.push(`ytick=${list(ys)}, yticklabels=${labels(L.yNumbers)}`);
   // "scaled ticks" would pull a power of ten out of the numbers and print it at the end of the axis.
   opts.push(`tick align=${box ? "outside" : "center"}, ${box ? "tick pos=left, " : ""}major tick length=${mm(L.tick)}, tick style={line width=0.3pt, black}, ticklabel style={${sep}}, scaled ticks=false`);
+  if (textSize(plot.x) !== 1) opts.push(`xticklabel style={${sep}${labelScale(plot.x)}}`);
+  if (textSize(plot.y) !== 1) opts.push(`yticklabel style={${sep}${labelScale(plot.y)}}`);
   if (plot.grid === "lines") opts.push(`grid=major, grid style={line width=${num(PLOT.gridWidth / PT_MM, 2)}pt, draw=${tikzColor(PLOT.gridInk)}}`);
   const [lo, hi] = restrictY(plot);
   opts.push(`restrict y to domain=${n(lo)}:${n(hi)}, unbounded coords=jump`);
@@ -472,7 +480,7 @@ export function plotTikz(given: Plot): string {
     const list = stretches(plot, c, 1), turns = paramStretches(plot, c);
     if (!list.length && !turns.length) continue;
     const dash = c.dash ? `, dash pattern=on ${mm(PLOT_DASH[c.dash][0])} off ${mm(PLOT_DASH[c.dash][1])}${c.dash === "dotted" ? ", line cap=round" : ""}` : "";
-    const pen = `draw=${tikzColor(c.color)}, line width=${num(c.weight ?? PLOT.weight, 2)}pt${dash}`;
+    const pen = c.weight === 0 ? "draw=none" : `draw=${tikzColor(c.color)}, line width=${num(c.weight ?? PLOT.weight, 2)}pt${dash}`;
     const where = (s: Stretch) => `domain=${n(s.from)}:${n(s.to)}, samples=${s.samples}`;
     if (c.fill) {
       for (const s of list) body.push(`\\addplot[draw=none, fill=${tikzColor(tint(c.color, PLOT.shade))}, ${where(s)}, on layer=axis background] {${toPgf(s.expr)}} \\closedcycle;`);
@@ -500,7 +508,7 @@ export function plotTikz(given: Plot): string {
     const at = c.label?.trim() ? curveLabelAt(plot, c) : null;
     if (!at) continue;
     const [X, Y] = toPaper(plot, at);
-    names.push(`\\node[inner sep=0pt, text=${tikzColor(c.color)}] at (${mm(X)},${mm(Y)}) {${math(c.label!)}};`);
+    names.push(`\\node[inner sep=0pt, text=${tikzColor(c.color)}${textSize(c) !== 1 ? `, scale=${num(textSize(c), 3)}` : ""}] at (${mm(X)},${mm(Y)}) {${math(c.label!)}};`);
   }
   // Notes and balloons as well, drawn as they are in a sketch: in a scope whose unit is a millimetre from the corner of the axes.
   const marks = annotationPrims(plot);

@@ -10,7 +10,7 @@ const view: View = { cx: -2, cy: 3, scale: 40, w: 800, h: 600 };
 function appFor(sk: Sketch) {
   return Object.assign(Object.create(App.prototype), {
     sk, view: { ...view }, altKey: false, tool: "select", drag: null, snapMark: null,
-    cursor: [0, 0], render: vi.fn(), solve: vi.fn(), mm: () => 2,
+    cursor: [0, 0], render: vi.fn(), solve: vi.fn(() => ({ ok: true })), mm: () => 2,
     screenPos: (event: { pos: V }) => event.pos,
   }) as {
     view: View; drag: unknown; solve: ReturnType<typeof vi.fn>; snapMark: { kind: string } | null;
