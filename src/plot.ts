@@ -12,6 +12,7 @@ import { type V } from "./geom";
 import { texEngine } from "./tex";
 import { latexAccents } from "./accents";
 import { num, tikzColor, primsToSvg, tikzParts } from "./export";
+import { tikzOpacity } from "./color-channels";
 import { textSize, sizedText } from "./text-size";
 import {
   type Stretch, type ParamStretch, PLOT, PLOT_DASH, PLOT_COLORS, PARAM_RANGE, readFormula, pieceError, formulaError, stretches, runs,
@@ -480,10 +481,10 @@ export function plotTikz(given: Plot): string {
     const list = stretches(plot, c, 1), turns = paramStretches(plot, c);
     if (!list.length && !turns.length) continue;
     const dash = c.dash ? `, dash pattern=on ${mm(PLOT_DASH[c.dash][0])} off ${mm(PLOT_DASH[c.dash][1])}${c.dash === "dotted" ? ", line cap=round" : ""}` : "";
-    const pen = c.weight === 0 ? "draw=none" : `draw=${tikzColor(c.color)}, line width=${num(c.weight ?? PLOT.weight, 2)}pt${dash}`;
+    const pen = c.weight === 0 ? "draw=none" : `draw=${tikzColor(c.color)}${tikzOpacity(c.color, "draw")}, line width=${num(c.weight ?? PLOT.weight, 2)}pt${dash}`;
     const where = (s: Stretch) => `domain=${n(s.from)}:${n(s.to)}, samples=${s.samples}`;
     if (c.fill) {
-      for (const s of list) body.push(`\\addplot[draw=none, fill=${tikzColor(tint(c.color, PLOT.shade))}, ${where(s)}, on layer=axis background] {${toPgf(s.expr)}} \\closedcycle;`);
+      for (const s of list) body.push(`\\addplot[draw=none, fill=${tikzColor(tint(c.color, PLOT.shade))}${tikzOpacity(c.color, "fill")}, ${where(s)}, on layer=axis background] {${toPgf(s.expr)}} \\closedcycle;`);
     }
     for (const s of list) body.push(`\\addplot[${pen}, ${where(s)}] {${toPgf(s.expr)}};`);
     // A curve given by a parameter: pgfplots calls the parameter x, and drops what is far outside on either axis.
@@ -493,7 +494,7 @@ export function plotTikz(given: Plot): string {
     if (c.fill) {
       // A function of a flipped plot is shaded across to the axis it is drawn from; any other curve inside itself.
       const close = (s: ParamStretch) => (turned(c) ? ` -- (axis cs:0,${n(s.to)}) -- (axis cs:0,${n(s.from)})` : "");
-      for (const s of turns) body.push(`\\addplot[draw=none, fill=${tikzColor(tint(c.color, PLOT.shade))}, ${along(s)}, on layer=axis background] ${point(s)}${close(s)} -- cycle;`);
+      for (const s of turns) body.push(`\\addplot[draw=none, fill=${tikzColor(tint(c.color, PLOT.shade))}${tikzOpacity(c.color, "fill")}, ${along(s)}, on layer=axis background] ${point(s)}${close(s)} -- cycle;`);
     }
     for (const s of turns) body.push(`\\addplot[${pen}, ${along(s)}] ${point(s)};`);
     // The upright lines go in after the axis, in mm from its lower left corner like the names: inside it,
@@ -508,7 +509,7 @@ export function plotTikz(given: Plot): string {
     const at = c.label?.trim() ? curveLabelAt(plot, c) : null;
     if (!at) continue;
     const [X, Y] = toPaper(plot, at);
-    names.push(`\\node[inner sep=0pt, text=${tikzColor(c.color)}${textSize(c) !== 1 ? `, scale=${num(textSize(c), 3)}` : ""}] at (${mm(X)},${mm(Y)}) {${math(c.label!)}};`);
+    names.push(`\\node[inner sep=0pt, text=${tikzColor(c.color)}${tikzOpacity(c.color, "text")}${textSize(c) !== 1 ? `, scale=${num(textSize(c), 3)}` : ""}] at (${mm(X)},${mm(Y)}) {${math(c.label!)}};`);
   }
   // Notes and balloons as well, drawn as they are in a sketch: in a scope whose unit is a millimetre from the corner of the axes.
   const marks = annotationPrims(plot);

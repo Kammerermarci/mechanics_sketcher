@@ -14,6 +14,7 @@ import { SketchSolver, type Drag, type SolveResult, type Freedom } from "./solve
 import { History } from "./history";
 import { solveGroupMove } from "./group-move";
 import { selectionGeometry } from "./selection-move";
+import { rotationSelection, rotateSelection, rotationHandles, rotationOverlay, selectionKey, type RotationMode, type RotationSelection } from "./selection-rotation";
 import { wheelPanDelta } from "./wheel-pan";
 import { balloonTipGrip, moveBalloonTip } from "./balloon-tip";
 import { textSizePanel, setTextSize, bearsText, type TextSize } from "./text-size";
@@ -40,6 +41,10 @@ import { regionAt, findOverlaps } from "./regions";
 import { type TrimPlan, planTrim, applyTrim, strokeHits } from "./trim";
 import { type CopyResult, PATTERN_MAX, mirrorCopy, linearCopy, circularCopy, nextDatumName } from "./pattern";
 import { toSvg, toTikz } from "./export";
+import { svgToPdf } from "./pdf-export";
+import { selectedColorCurves, setStrokeColor } from "./stroke-colors";
+import { addSpline, joinSplines, closeSpline, openSpline, reverseSpline, subdivideSpline, splitSpline, smoothSplineNode, splineControlIds, visibleSplineControls } from "./splines";
+import type { Spline } from "./model";
 import { icon } from "./icons";
 import { showTexFields } from "./texfield";
 import { BETA, EXPORT_WAIT_SECONDS, REPORT_EMAIL, SUPPORT_URL } from "./config";
@@ -51,11 +56,13 @@ import { baseline, beamAxis, diagramShape, plotPeak, traceShape, traceReach } fr
 import { defaultLook, lookOf, elementLength, springTurns, springLead } from "./element";
 import { rectangleCorners, rectangleParts, arcThrough, threePointArc, type RectangleMode } from "./primitive-geometry";
 import { PrimitiveModes } from "./primitive-menus";
+import { SupportModes, type SupportTool } from "./support-menus";
 import { colorPanel, PALETTE_COLORS, showColorPalette, showCustomColor, sharedColorPalette } from "./custom-colors";
 import { defaultGradient, gradientPoints, gradientPosition } from "./gradient-fill";
 import { copyObjects, pasteObjects, pasteOffsetAtCursor, readObjectClipboard, type ObjectClipboard } from "./object-clipboard";
 
 type DrawTool =
+  | "spline" | "join-splines"
   | "point" | "line" | "centerline" | "arrow" | "arcarrow" | "circle" | "arc" | "arc3" | "rectangle" | "rectcenter" | "rect3" | "beam" | "arcbeam"
   /** A line or an arc drawn as something else: a spring, a damper, a spiral spring, a damper bent round a joint. */
   | "spring" | "damper" | "spiral" | "arcdamper";
@@ -99,6 +106,7 @@ interface Snap {
 }
 
 type Pending =
+  | { tool: "spline"; start: Snap; outgoing?: V; id?: Id }
   | { tool: "line"; start: Snap }
   | { tool: "circle"; center: Snap }
   | { tool: "arc"; center: Snap; start?: Snap; sweep: number; lastAng: number }
@@ -111,7 +119,10 @@ type Pending =
   /** A balloon whose leader has been anchored and whose circle is still to be placed. */
   | { tool: "balloon"; anchor: Snap };
 
-type DragState =
+type DragState = (
+  | { kind: "rotation-pivot"; startScreen: V; startModel: V; origin: V; moved: boolean }
+  | { kind: "rotation"; startScreen: V; snapshot: RotationSelection; pivot: V; lastAngle: number; sweep: number; baseAngle: number; moved: boolean; changed: boolean; blocked: boolean }
+  | { kind: "spline-node"; anchor: Snap; handle: V; startScreen: V; moved: boolean }
   | { kind: "balloon-tip"; id: Id; startScreen: V; startModel: V; origin: V; centre: V; moved: boolean }
   | { kind: "gradient"; id: Id; end: 0 | 1; startScreen: V; moved: boolean }
   /** `quiet`: the press already confirmed a typed value, so releasing does nothing more. */
@@ -134,7 +145,8 @@ type DragState =
   /** Trimming with the button held: everything the pointer passes over goes. `cut`: something has been trimmed. */
   | { kind: "trim"; last: V; cut: boolean; trail: V[] }
   /** Moving the name of an arrow; `origin` is its offset from the arrow's middle when the drag began. */
-  | { kind: "label"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean; edit?: EditTarget };
+  | { kind: "label"; id: Id; startScreen: V; startModel: V; origin: V; moved: boolean; edit?: EditTarget }
+) & { rotateClick?: boolean };
 // `edit`, where present: the press was on a piece of text, so a plain click opens it for typing.
 
 /** Something whose text can be typed where it stands on the drawing. */
@@ -179,6 +191,7 @@ const TOOLS: ToolDef[] = [
   { id: "centerline", label: "Centre line", icon: "centerline", tab: "sketch", group: 1 },
   { id: "circle", label: "Circle", key: "C", icon: "circle", tab: "sketch", group: 1 },
   { id: "arc", label: "Arc", key: "A", icon: "arc", tab: "sketch", group: 1 },
+  { id: "spline", label: "Spline", key: "J", icon: "spline", tab: "sketch", group: 1 },
   { id: "arc3", label: "3-point arc", icon: "arc3", tab: "sketch", group: 1 },
   { id: "rectangle", label: "2-point rectangle", icon: "rectangle", tab: "sketch", group: 1 },
   { id: "rectcenter", label: "Center-point rectangle", icon: "rectcenter", tab: "sketch", group: 1 },
@@ -186,6 +199,7 @@ const TOOLS: ToolDef[] = [
   { id: "beam", label: "Beam", icon: "beam", tab: "sketch", group: 1 },
   { id: "arcbeam", label: "Curved beam", short: "Curved", icon: "arcbeam", tab: "sketch", group: 1 },
   { id: "trim", label: "Trim", key: "X", icon: "trim", tab: "sketch", group: 2 },
+  { id: "join-splines", label: "Join splines", short: "Join", icon: "join-splines", tab: "sketch", group: 2 },
   { id: "mirror", label: "Mirror", icon: "mirror", tab: "sketch", group: 2 },
   { id: "shift", label: "Linear pattern", short: "Linear", icon: "shift", tab: "sketch", group: 2 },
   { id: "turn", label: "Circular pattern", short: "Circular", icon: "turn", tab: "sketch", group: 2 },
@@ -336,6 +350,7 @@ export class App {
 
   private view: View = { cx: 0, cy: 0, scale: DEFAULT_SCALE, w: 800, h: 600 };
   private tool: Tool = "select";
+  private splineSegment = 0;
   private tab: Tab = "sketch";
   /** What can still move, worked out after each edit; null until then or when it cannot be told. */
   private freedom: Freedom | null = null;
@@ -343,6 +358,7 @@ export class App {
   private fillColor = FILL_COLORS[0];
   private beamEnds: BeamEnds = "round";
   private primitiveModes = new PrimitiveModes();
+  private supportModes = new SupportModes();
   private customPalette = sharedColorPalette();
   private gradientStop: "start" | "end" = "start";
   private copiedObjects: ObjectClipboard | null = null;
@@ -373,6 +389,7 @@ export class App {
   private trimPlan: TrimPlan | null = null;
   /** What is selected; while a command is active, the geometry picked for it so far. */
   private selection = new Set<Id>();
+  private selectionRotation: RotationMode | null = null;
   private hover: Id | null = null;
   private pending: Pending | null = null;
   private drag: DragState | null = null;
@@ -607,6 +624,7 @@ export class App {
   }
 
   private replaceSketch(sk: Sketch): void {
+    this.selectionRotation = null;
     this.sk = sk;
     this.freedomStale = true;
     this.pruneSelection();
@@ -661,6 +679,8 @@ export class App {
       box: this.drag?.kind === "box" ? { a: this.drag.a, b: this.drag.b } : null,
       grips: this.grips(mm), plain: this.preview,
     });
+    const rotation = this.activeSelectionRotation();
+    if (rotation) this.svg.innerHTML += rotationOverlay(this.view, rotation);
 
     this.emptyEl.hidden = !this.isBlank() || this.pending !== null || this.tool !== "select";
     this.svg.dataset.tool = this.tool === "select" ? "select" : isCommand(this.tool) || this.tool === "mirror" ? "pick" : "draw";
@@ -781,8 +801,11 @@ export class App {
     const p = this.pending;
     const done = "Middle-click or Esc when done.";
     switch (this.tool) {
+      case "spline": return p?.tool!=="spline" ? "Click to start a continuous spline. Click-drag to set its tangent. Enter or double-click finishes." : "Click the next anchor; drag to curve the spline smoothly through it. Click the first anchor to close. Enter or double-click finishes; Esc cancels the preview.";
+      case "join-splines": return "Click two open splines to join their nearest endpoints. A straight segment bridges any gap.";
       case "select":
-        return "Click to select, drag to move. Shift-click adds to the selection. Scroll zooms; Shift+scroll or middle-drag pans.";
+        return this.activeSelectionRotation() ? "Drag the rotation handle or selection to rotate. Drag the center to move the pivot. Shift snaps to 15°. Click the selection again or press Esc to return to moving."
+          : "Click to select, drag to move. Click a selected object again for rotation controls. Shift-click adds to the selection. Scroll zooms; Shift+scroll or middle-drag pans.";
       case "point": return `Click to place a point. ${done}`;
       case "spring":
       case "damper":
@@ -874,9 +897,23 @@ export class App {
       };
     }
     const p = this.pending;
+    if(!p&&this.drag?.kind==="spline-node") {
+      const d=this.drag;
+      return {lines:d.moved?[[d.anchor.pos,d.handle]]:[],circles:[],arcs:[],points:d.moved?[d.anchor.pos,d.handle]:[d.anchor.pos]};
+    }
     if (!p || this.drag?.kind === "pan") return null;
     const snap = this.snapAt(this.cursor, this.snapAnchor());
     const pv: Preview = { lines: [], circles: [], arcs: [], points: [] };
+    if(p.tool==="spline") {
+      pv.points.push(p.start.pos);
+      const dragging=this.drag?.kind==="spline-node"?this.drag:null;
+      const end=dragging?.anchor.pos??snap.pos, outgoing=p.outgoing??p.start.pos;
+      const incoming=dragging?.moved?sub(mul(end,2),dragging.handle):end;
+      pv.cubics=[[p.start.pos,outgoing,incoming,end]];
+      pv.lines.push([p.start.pos,outgoing]);
+      if(dragging?.moved){pv.lines.push([incoming,dragging.handle]);pv.points.push(incoming,dragging.handle);}
+      return pv;
+    }
     if (p.tool === "rectangle") {
       pv.points.push(p.a.pos);
       if (p.mode === "rect3" && !p.b) pv.lines.push([p.a.pos, snap.pos]);
@@ -997,7 +1034,9 @@ export class App {
       if (!old || rank < old.rank || (rank === old.rank && d < old.d)) found.set(h.id, { ...h, rank, d });
     };
 
+    const splineControls=splineControlIds(this.sk), visibleControls=visibleSplineControls(this.sk,this.selection);
     for (const p of points(this.sk)) {
+      if(splineControls.has(p.id)&&!visibleControls.has(p.id)) continue;
       const d = dist(toScreen(this.view, [p.x, p.y]), sp);
       if (d < POINT_TOL) offer({ id: p.id, kind: "point" }, 0, d);
     }
@@ -1056,6 +1095,7 @@ export class App {
   /** The point a drawing tool's next click is measured from, for H/V inference. */
   private snapAnchor(): V | undefined {
     const p = this.pending;
+    if(p?.tool==="spline") return p.start.pos;
     if (p?.tool === "line") return p.start.pos;
     if (p?.tool === "beam" && !p.b) return p.a.pos;
     if (p?.tool === "rectangle" && p.mode === "rect3" && !p.b) return p.a.pos;
@@ -1081,7 +1121,9 @@ export class App {
     let bestD = POINT_TOL;
     let hitPoint: Point | null = null;
     const pointTarget = lockedAxis ? toScreen(this.view, raw) : sp;
+    const hiddenControls=splineControlIds(this.sk);
     for (const p of points(this.sk)) {
+      if(hiddenControls.has(p.id)) continue;
       if (!allowed([p.x, p.y])) continue;
       const d = dist(toScreen(this.view, [p.x, p.y]), pointTarget);
       if (d < bestD) { bestD = d; hitPoint = p; }
@@ -1379,6 +1421,7 @@ export class App {
   }
 
   private setTool(t: Tool): void {
+    if(t==="join-splines" && this.selectedSplines().length===2){this.splineAction("join");return;}
     this.drawingAxisLock = null;
     this.drawingLockOrigin = null;
     if (t === "rectangle" || t === "arc" || t === "gradient") t = this.primitiveModes[t];
@@ -1396,13 +1439,107 @@ export class App {
     this.snapMark = null;
     this.trimPlan = null;
     // A copy tool works on what is selected, so the selection stays.
-    if (t !== "select" && !isCopyTool(t)) this.selection.clear();
+    if (t !== "select" && !isCopyTool(t) && t!=="join-splines") this.selection.clear();
     if (t !== "select") this.hover = null;
     this.closeEditor();
     this.touch();
   }
 
   // ---- beams ---------------------------------------------------------------------
+  private selectedSplines(): Spline[] {
+    return this.sk.entities.filter((e):e is Spline=>e.type==="spline"&&this.selection.has(e.id));
+  }
+
+  private appendSplineNode(snap: Snap, outgoing?: V): void {
+    const p=this.pending;
+    if(!p||p.tool!=="spline") {this.pending={tool:"spline",start:snap,outgoing};this.touch();return;}
+    // A double-click at the last anchor finishes without adding a zero-length segment.
+    if(dist(p.start.pos,snap.pos)*this.view.scale<3)return;
+    const autos:ConstraintDraft[]=[],start=this.materialize(p.start,autos),end=this.materialize(snap,autos);
+    let s=p.id?entity(this.sk,p.id):undefined;
+    if(s?.type!=="spline")s=addSpline(this.sk,[]);
+    const closing=s.segments.length>0&&end===s.segments[0].p1;
+    let tangent=outgoing;
+    if(closing){
+      const first=point(this.sk,s.segments[0].c1);
+      if(outgoing&&!isFixed(this.sk,first.id)){first.x=outgoing[0];first.y=outgoing[1];}
+      tangent=[first.x,first.y];
+    }
+    const incoming=tangent?sub(mul(snap.pos,2),tangent):snap.pos;
+    const c1=addPoint(this.sk,...(p.outgoing??p.start.pos)),c2=addPoint(this.sk,...incoming);
+    s.segments.push({p1:start,c1:c1.id,c2:c2.id,p2:end});
+    if(this.constructing)s.construction=true;
+    this.selection=new Set([s.id]);
+    if(closing){s.closed=true;this.pending=null;}
+    else this.pending={tool:"spline",id:s.id,start:{pos:snap.pos,pointId:end},outgoing};
+    this.finishDrawing(autos);
+  }
+
+  private splineContext(): Spline | undefined {
+    const direct=this.selectedSplines();
+    if(direct.length===1) return direct[0];
+    if(direct.length) return undefined;
+    return this.sk.entities.find((e):e is Spline=>e.type==="spline"&&curvePoints(e).some((id)=>this.selection.has(id)));
+  }
+
+  private splinePanel(): string {
+    const selected=this.selectedSplines(), s=this.splineContext();
+    const button=(act:string,label:string,disabled=false)=>`<button type="button" class="plain" data-act="spline-${act}"${disabled?" disabled":""}>${label}</button>`;
+    if(selected.length>1) return `<h2>${selected.length} splines</h2>${button("join","Join nearest endpoints",selected.length!==2)}<p class="muted">Any gap is bridged by a straight segment; both original curves keep their shape.</p>${this.weightPanel(this.weightTargets())}${colorPanel(selected[0].color)}<button class="danger" data-act="delete">Delete selection</button>`;
+    if(!s) return this.tool==="spline" ? `<h2>Continuous spline</h2><ol class="steps"><li>Click to place the first anchor, or click-drag to set its tangent.</li><li>Keep clicking anchors to extend the same spline. Click-drag for smooth curves; click without dragging for corners.</li><li>Press Enter or double-click to finish, or click the first anchor to close.</li></ol><p class="muted">Esc cancels the preview. Select the curve to drag its anchors and handles.</p>` : this.tool==="join-splines" ? `<h2>Join splines</h2><p class="muted">Click two open splines to connect their nearest endpoints. A straight segment bridges any gap.</p>` : "";
+    const index=Math.min(this.splineSegment,s.segments.length-1);
+    const node=[...this.selection].find((id)=>s.segments.some((c)=>c.p1===id||c.p2===id));
+    const anchor=!!node&&s.segments.some((c)=>c.p1===node)&&s.segments.some((c)=>c.p2===node);
+    return `<h2>${s.closed?"Closed":"Open"} spline</h2><p class="muted">${s.segments.length} cubic Bézier ${s.segments.length===1?"segment":"segments"}. Drag the anchors or control points to reshape it. Select an interior anchor for Smooth or Split.</p>`+
+      `<label class="field"><span>Segment</span><select data-field="spline-segment">${s.segments.map((_,i)=>`<option value="${i}"${i===index?" selected":""}>${i+1}</option>`).join("")}</select></label>`+
+      button("continue","Continue drawing",!!s.closed)+button("insert","Add midpoint node")+button("smooth","Smooth selected node",!anchor)+button("split","Split at selected node",!anchor||!!s.closed)+button(s.closed?"open":"close",s.closed?"Open spline":"Close spline")+button("reverse","Reverse direction")+button("fill","Fill closed spline",!s.closed)+
+      `<label class="check"><input data-field="spline-construction" type="checkbox"${s.construction?" checked":""}><span>Construction</span></label><label class="check"><input data-field="spline-dashed" type="checkbox"${s.dashed?" checked":""}><span>Dashed</span></label>`+
+      `${this.weightPanel(this.weightTargets())}<p class="muted">Use Fill or Gradient inside a closed spline. Spline points support point constraints; curve-level constraints and Trim currently apply to lines, circles and arcs.</p>${this.selection.has(s.id) ? colorPanel(s.color) : ""}<button class="danger" data-act="delete">Delete selection</button>`;
+  }
+
+  private splineAction(action: string): void {
+    const s=this.splineContext(),selected=this.selectedSplines();
+    if(action==="fill") {
+      if(!s?.closed)return;
+      const existing=this.sk.symbols.find((f)=>f.type==="fill"&&f.curves.length===1&&f.curves[0]===s.id);
+      const fill=existing??addSymbol(this.sk,{type:"fill",color:this.fillColor,points:[],arcs:[],curves:[s.id],holes:[]});
+      this.selection=new Set([fill.id]);this.pending=null;this.setTool("select");this.commit();return;
+    }
+    if(action==="continue") {
+      if(!s||s.closed)return;
+      const last=s.segments.at(-1)!,p=point(this.sk,last.p2),c=point(this.sk,last.c2);
+      this.setTool("spline");this.selection=new Set([s.id]);
+      this.pending={tool:"spline",id:s.id,start:{pos:[p.x,p.y],pointId:p.id},outgoing:[2*p.x-c.x,2*p.y-c.y]};
+      this.touch();return;
+    }
+    const before=clone(this.sk);
+    if(action==="join") {
+      if(selected.length!==2) return this.toast("Select two open splines, or use the Join tool to pick them.");
+      const result=joinSplines(this.sk,selected[0],selected[1]);
+      if(typeof result==="string")return this.toast(result);
+      this.selection=new Set([result.id]);
+    } else {
+      if(!s)return;
+      const node=[...this.selection].find((id)=>s.segments.some((c)=>c.p1===id||c.p2===id));
+      if(action==="close")closeSpline(this.sk,s);
+      else if(action==="open")openSpline(this.sk,s);
+      else if(action==="reverse")reverseSpline(s);
+      else if(action==="insert")subdivideSpline(this.sk,s,Math.min(this.splineSegment,s.segments.length-1));
+      else if(action==="split"){
+        const result=splitSpline(this.sk,s,node??"");
+        if(typeof result==="string")return this.toast(result);
+        this.selection=new Set([s.id,result.id]);
+      } else if(action==="smooth"){
+        const handles=s.segments.flatMap((c)=>c.p2===node?[c.c2]:c.p1===node?[c.c1]:[]);
+        if(handles.some((id)=>isFixed(this.sk,id)))return this.toast("Release fixed control points before smoothing this node.");
+        if(!node||!smoothSplineNode(this.sk,s,node))return this.toast("Select an interior node with distinct neighboring anchors to smooth it.");
+      } else return;
+    }
+    this.pending=null;
+    const result=this.solve();
+    if(!result.ok||result.conflicting.length){this.sk=before;this.solve();this.toast("That edit conflicts with the spline's point constraints.");return this.touch();}
+    this.commit();
+  }
 
   /**
    * A beam around the centres a and b, as wide as the pointer at q is far from
@@ -1740,6 +1877,7 @@ export class App {
       }
       const same = (f: Sym) => f.type === "fill" && (region.kind === "circle"
         ? f.circle === region.circle
+        : region.kind==="spline" ? f.curves.length===1&&f.curves[0]===region.spline
         : !f.circle && f.points.length === region.face.points.length && region.face.points.every((id) => f.points.includes(id)));
       const existing = this.sk.symbols.find(same);
       if (existing && existing.type === "fill") {
@@ -1751,6 +1889,7 @@ export class App {
       }
       const f = region.kind === "circle"
         ? addSymbol(this.sk, { type: "fill", color: this.fillColor, circle: region.circle, points: [], arcs: [], curves: [], holes: [] })
+        : region.kind==="spline" ? addSymbol(this.sk,{type:"fill",color:this.fillColor,points:[],arcs:[],curves:[region.spline],holes:region.holes})
         : addSymbol(this.sk, { type: "fill", color: this.fillColor, points: region.face.points, arcs: region.face.arcs, curves: region.face.curves, holes: region.holes });
       this.selection = new Set([f.id]);
       if (tool !== "fill") f.gradient = defaultGradient(tool === "gradient" ? "linear" : "radial");
@@ -1859,7 +1998,7 @@ export class App {
         this.selection = new Set([c.id]);
         return this.commit();
       }
-      if (!e || e.type === "point") return this.toast("Click a line, an arc or a circle.");
+      if (!e || e.type === "point" || e.type === "spline") return this.toast("Hatching currently needs a line, an arc or a circle.");
       // The hatching goes on the side of the curve the click was on.
       const side = sideOfCurve(this.sk, e.id, raw) >= 0 ? 1 : -1;
       // Sized like a support's ground as the view is now; from then on it belongs to the drawing.
@@ -1880,7 +2019,8 @@ export class App {
     const at = this.materialize(snap, autos, true);
     // One support per joint: a new one replaces what was there.
     this.sk.symbols = this.sk.symbols.filter((s) => !(s.type === "support" && s.at === at));
-    addSupport(this.sk, kind, at, this.supportAngle(kind, at));
+    const support = addSupport(this.sk, kind, at, this.supportAngle(kind, at));
+    if (this.supportModes?.style(tool as SupportTool) === "custom") support.style = "custom";
     this.finishDrawing(autos);
   }
 
@@ -2157,6 +2297,28 @@ export class App {
 
   // ---- pointer --------------------------------------------------------------
 
+  private activeSelectionRotation(): RotationMode | null {
+    const mode = this.selectionRotation;
+    if (mode && (mode.key !== selectionKey(this.selection) || this.tool !== "select" || this.tab === "plot" || this.preview)) this.selectionRotation = null;
+    return this.selectionRotation ?? null;
+  }
+
+  private toggleSelectionRotation(): void {
+    if (this.activeSelectionRotation()) this.selectionRotation = null;
+    else {
+      const selected = rotationSelection(this.sk, this.selection);
+      if (selected) this.selectionRotation = { key: selectionKey(this.selection), pivot: selected.pivot, angle: Math.PI / 2 };
+    }
+  }
+
+  private startSelectionRotation(sp: V, mode: RotationMode): DragState | null {
+    const snapshot = rotationSelection(this.sk, this.selection);
+    if (!snapshot) return null;
+    const q = sub(toModel(this.view, sp), mode.pivot);
+    if (Math.hypot(...q) * this.view.scale < 3) return null;
+    return { kind: "rotation", startScreen: sp, snapshot, pivot: [...mode.pivot], lastAngle: angleOf(q), sweep: 0, baseAngle: mode.angle, moved: false, changed: false, blocked: false };
+  }
+
   /** Applies the drawing grid to the actual position a handle or object will take. */
   private snapDraggedPosition(position: V, origin?: V): V {
     if (this.ctrlKey && this.drag && "startScreen" in this.drag) {
@@ -2206,9 +2368,33 @@ export class App {
       return;
     }
     if (ev.button !== 0) return;
+    const rotation = this.activeSelectionRotation();
+    if (rotation) {
+      const handles = rotationHandles(this.view, rotation);
+      if (dist(sp, handles.pivot) < 13) {
+        this.drag = { kind: "rotation-pivot", startScreen: sp, startModel: toModel(this.view, sp), origin: [...rotation.pivot], moved: false };
+        return this.touch();
+      }
+      if (dist(sp, handles.handle) < 13 || Math.abs(dist(sp, handles.pivot) - 60) < 6) {
+        this.drag = this.startSelectionRotation(sp, rotation);
+        return this.touch();
+      }
+    }
+    if(this.tool==="spline") {
+      const anchor=this.snapAt(sp,this.snapAnchor());
+      this.drag={kind:"spline-node",anchor,handle:anchor.pos,startScreen:sp,moved:false};
+      this.touch();return;
+    }
+    if(this.tool==="join-splines") {
+      const hit=this.hitTest(sp,true),e=hit?entity(this.sk,hit.id):undefined;
+      const spline=e?.type==="spline"?e:e?.type==="point"?this.sk.entities.find((s):s is Spline=>s.type==="spline"&&s.segments.some((c)=>c.p1===e.id||c.p2===e.id)):undefined;
+      if(!spline||spline.closed) this.toast("Choose an open spline.");
+      else {this.selection.add(spline.id);if(this.selectedSplines().length===2)this.splineAction("join");}
+      this.touch();return;
+    }
 
     const gradientFill = this.selectedSymbol();
-    if (gradientFill?.type === "fill" && gradientFill.gradient && ["select", "gradient", "radialgradient"].includes(this.tool)) {
+    if (!rotation && gradientFill?.type === "fill" && gradientFill.gradient && ["select", "gradient", "radialgradient"].includes(this.tool)) {
       const handles = gradientPoints(fillOutlines(this.sk, gradientFill, 1), gradientFill.gradient).map((p) => toScreen(this.view, p));
       const handle = handles.findIndex((p) => dist(p, sp) < 10);
       if (handle >= 0) {
@@ -2248,7 +2434,7 @@ export class App {
 
     // The ends of a selected spread load are handles, grabbed before whatever lies under them:
     // where the load runs down to nothing, its end is on the line itself.
-    const chosen = this.selectedSymbol();
+    const chosen = rotation ? undefined : this.selectedSymbol();
     if (chosen?.type === "balloon" && !ev.shiftKey) {
       const tip = balloonTipGrip(this.sk, chosen, this.view.scale);
       if (tip && dist(toScreen(this.view, tip), sp) < 10) {
@@ -2270,8 +2456,14 @@ export class App {
 
     const hit = this.pickAt(sp, ev.timeStamp, !ev.shiftKey);
     const belongsToSelection = hit && (this.selection.has(hit.id) || selectionGeometry(this.sk, this.selection).has(hit.id));
+    if (hit && belongsToSelection && rotation && !ev.shiftKey && hit.kind !== "glyph" && hit.kind !== "dim") {
+      this.drag = this.startSelectionRotation(sp, rotation);
+      if (this.drag) this.drag.rotateClick = true;
+      return this.touch();
+    }
     if (hit && !ev.shiftKey && belongsToSelection && (this.selection.size > 1 || hit.kind === "fill")) {
       this.drag = this.startMove(hit.id, sp, false);
+      this.drag.rotateClick = true;
       this.touch();
       return;
     }
@@ -2323,6 +2515,7 @@ export class App {
     } else if (hit.kind !== "glyph") {
       this.drag = this.startMove(hit.id, sp, wasSelected && this.selection.size > 1);
     }
+    if (this.drag && wasSelected && hit.kind !== "dim" && hit.kind !== "glyph") this.drag.rotateClick = true;
     this.touch();
   }
 
@@ -2340,9 +2533,14 @@ export class App {
         else curvePoints(e).forEach((p) => ids.add(p));
       }
     }
+    // Moving an anchor carries its adjacent handles so their offsets stay intact.
+    if(only?.type==="point") for(const e of this.sk.entities) if(e.type==="spline") for(const c of e.segments){
+      if(c.p1===only.id)ids.add(c.c1);
+      if(c.p2===only.id)ids.add(c.c2);
+    }
     const targets = [...ids].map((id) => { const p = point(this.sk, id); return { id, x: p.x, y: p.y }; });
     const positions = this.sk.symbols.flatMap((s) => this.selection.has(s.id) && (s.type === "note" || s.type === "frame" || s.type === "balloon") ? [{ id: s.id, x: s.x, y: s.y }] : []);
-    const group = this.selection.size > 1 || [...this.selection].some((id) => symbol(this.sk, id)?.type === "fill");
+    const group = this.selection.size > 1 || only?.type==="spline" || (only?.type==="point"&&ids.size>1) || [...this.selection].some((id) => symbol(this.sk, id)?.type === "fill");
     return { kind: "move", grabbed, startScreen: sp, startModel: toModel(this.view, sp), targets, positions, rim, group, moved: false, collapse };
   }
 
@@ -2353,7 +2551,31 @@ export class App {
     this.ctrlKey = ev.ctrlKey;
     const d = this.drag;
 
-    if (d?.kind === "pan") {
+    if (d?.kind === "rotation-pivot") {
+      const mode = this.activeSelectionRotation();
+      if (!mode || (!d.moved && dist(sp, d.startScreen) < 3)) return;
+      d.moved = true;
+      mode.pivot = this.snapDraggedPosition(add(d.origin, sub(toModel(this.view, sp), d.startModel)), d.origin);
+    } else if (d?.kind === "rotation") {
+      if (!d.moved && dist(sp, d.startScreen) < 3) return;
+      const q = sub(toModel(this.view, sp), d.pivot);
+      if (Math.hypot(...q) * this.view.scale < 3) return;
+      d.moved = true;
+      const angle = angleOf(q);
+      d.sweep += wrap(angle - d.lastAngle + Math.PI) - Math.PI;
+      d.lastAngle = angle;
+      const by = ev.shiftKey ? Math.round(d.sweep / (Math.PI / 12)) * Math.PI / 12 : d.sweep;
+      const turned = rotateSelection(d.snapshot, this.solver, d.pivot, by);
+      d.blocked = !turned;
+      if (turned) {
+        this.sk = turned.sketch;
+        this.result = turned.result;
+        d.changed = Math.abs(by) > 1e-9;
+        const mode = this.activeSelectionRotation();
+        if (mode) mode.angle = d.baseAngle + by;
+        this.chromeDirty = true;
+      }
+    } else if (d?.kind === "pan") {
       const dx = sp[0] - d.last[0], dy = sp[1] - d.last[1];
       if (Math.abs(dx) + Math.abs(dy) > 0) d.moved = true;
       this.view.cx -= dx / this.view.scale;
@@ -2387,6 +2609,9 @@ export class App {
         fill.gradient.to = gradientPosition(outlines, add(points[1], delta));
       } else fill.gradient.to = gradientPosition(outlines, next);
       this.render();
+    } else if(d?.kind==="spline-node") {
+      d.moved=dist(sp,d.startScreen)>=3;
+      d.handle=add(d.anchor.pos,sub(toModel(this.view,sp),toModel(this.view,d.startScreen)));
     } else if (d?.kind === "trim") {
       this.trimStroke(d, sp);
     } else if (d?.kind === "move") {
@@ -2488,6 +2713,30 @@ export class App {
     this.snapMark = null;
     if (this.svg.hasPointerCapture(ev.pointerId)) this.svg.releasePointerCapture(ev.pointerId);
     if (!d) return;
+    if (d.kind === "rotation-pivot") {
+      if (ev.type === "pointercancel" && this.selectionRotation) this.selectionRotation.pivot = d.origin;
+      return this.touch();
+    }
+    if (d.kind === "rotation") {
+      if (ev.type === "pointercancel") {
+        this.sk = d.snapshot.source;
+        this.solve();
+        if (this.selectionRotation) this.selectionRotation.angle = d.baseAngle;
+      } else if (!d.moved && d.rotateClick) this.toggleSelectionRotation();
+      else {
+        if (d.changed) this.commit();
+        if (d.blocked) this.toast("Constraints prevent that rotation. Fixed points and directions must stay satisfied.");
+      }
+      return this.touch();
+    }
+    if (d.rotateClick && "moved" in d && !d.moved && ev.type === "pointerup") {
+      this.toggleSelectionRotation();
+      return this.touch();
+    }
+    if(d.kind==="spline-node") {
+      if(ev.type!=="pointercancel")this.appendSplineNode(d.anchor,d.moved?d.handle:undefined);
+      this.touch();return;
+    }
 
     if (d.kind === "pan") {
       if (!d.moved) {
@@ -2572,6 +2821,7 @@ export class App {
   }
 
   private onDoubleClick(ev: MouseEvent): void {
+    if(this.tool==="spline"){this.setTool("select");return;}
     if (this.tool !== "select") return;
     const hit = this.hitTest(this.screenPos(ev));
     if (!hit) return;
@@ -2600,7 +2850,13 @@ export class App {
 
   /** Esc and right-click: back out one level at a time. */
   private cancel(): void {
-    if (this.editing) this.closeEditor();
+    if (this.drag?.kind === "rotation" || this.drag?.kind === "rotation-pivot") {
+      if (this.drag.kind === "rotation") { this.sk = this.drag.snapshot.source; this.solve(); }
+      this.drag = null;
+      this.selectionRotation = null;
+    }
+    else if (this.activeSelectionRotation()) this.selectionRotation = null;
+    else if (this.editing) this.closeEditor();
     else if (this.pending) this.pending = null;
     else if (isCommand(this.tool) && this.selection.size) this.selection.clear();
     else if (this.tool !== "select") return this.setTool("select");
@@ -3003,7 +3259,7 @@ export class App {
       const e = entity(this.sk, id);
       if (e?.type === "point") pts.push(e);
       else if (e?.type === "line") lines.push(e);
-      else if (e) rounds.push(e);
+      else if (e?.type==="circle" || e?.type==="arc") rounds.push(e);
       else {
         const c = constraint(this.sk, id);
         if (c) cons.push(c);
@@ -3011,11 +3267,12 @@ export class App {
         if (s) syms.push(s);
       }
     }
-    return { pts, lines, rounds, cons, syms, entities: pts.length + lines.length + rounds.length };
+    return { pts, lines, rounds, cons, syms, entities: pts.length + lines.length + rounds.length + this.selectedSplines().length };
   }
 
   /** True when the picked geometry is exactly what the command needs. */
   private canApply(cmd: Command): boolean {
+    if(this.selectedSplines().length) return false;
     const { pts, lines, rounds } = this.picked();
     const P = pts.length, L = lines.length, R = rounds.length;
     switch (cmd) {
@@ -3284,7 +3541,7 @@ export class App {
     void this.saveAs(serialize(this.sk), ".json", "application/json", "Mech Sketch drawing", "sketch");
   }
 
-  private download(name: string, text: string, type: string): void {
+  private download(name: string, text: string | Blob, type: string): void {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([text], { type }));
     a.download = name;
@@ -3299,7 +3556,7 @@ export class App {
    * pick a folder, so the name is asked for here and the file is downloaded
    * to wherever the browser puts downloads.
    */
-  private async saveAs(text: string, ext: string, mime: string, what: string, slot: SaveSlot = "figure"): Promise<void> {
+  private async saveAs(text: string | (() => Promise<Blob>), ext: string, mime: string, what: string, slot: SaveSlot = "figure"): Promise<void> {
     // A plot is offered its own name each time; the other two remember the name used last.
     const last = slot === "sketch" ? this.sketchName : slot === "plot" ? this.plots.fileName() : this.exportName;
     const clean = (name: string) => {
@@ -3313,30 +3570,35 @@ export class App {
       else this.exportName = base;
       try { localStorage.setItem(slot === "sketch" ? SKETCH_NAME_KEY : EXPORT_NAME_KEY, base); } catch { /* storage unavailable */ }
     };
-    type SaveHandle = { name: string; createWritable(): Promise<{ write(data: string): Promise<void>; close(): Promise<void> }> };
+    type SaveHandle = { name: string; createWritable(): Promise<{ write(data: string | Blob): Promise<void>; close(): Promise<void> }> };
     const picker = (window as unknown as { showSaveFilePicker?: (o: object) => Promise<SaveHandle> }).showSaveFilePicker;
     if (picker) {
+      let handle: SaveHandle | undefined;
       try {
         // The id is what the browser remembers the folder by, so sketches and figures each keep their own.
-        const handle = await picker.call(window, {
+        handle = await picker.call(window, {
           id: `mech-sketch-${slot}`, startIn: "documents", suggestedName: last + ext,
           types: [{ description: what, accept: { [mime]: [ext] } }],
         });
-        const out = await handle.createWritable();
-        await out.write(text);
-        await out.close();
-        remember(clean(handle.name) || last);
-        return this.toast(`Saved ${handle.name}.`);
       } catch (err) {
         if ((err as DOMException)?.name === "AbortError") return; // the dialog was cancelled
         // The dialog is not allowed here (an embedded page, say): fall through to a download.
+      }
+      if (handle) {
+        // Open the picker before conversion so it can use the user's click.
+        const data = typeof text === "function" ? await text() : text;
+        const out = await handle.createWritable();
+        try { await out.write(data); } finally { await out.close(); }
+        remember(clean(handle.name) || last);
+        return this.toast(`Saved ${handle.name}.`);
       }
     }
     const typed = await this.askName(ext, slot === "sketch" ? "Save sketch" : `Export ${what}`, last);
     if (typed === null) return;
     const base = clean(typed) || slot;
+    const data = typeof text === "function" ? await text() : text;
+    this.download(base + ext, data, mime);
     remember(base);
-    this.download(base + ext, text, mime);
   }
 
   /** Asks for a file name in a small dialog. Resolves to null when it is cancelled. */
@@ -3398,14 +3660,23 @@ export class App {
   }
 
   /** Exports the figure. `how` picks the format and whether it is saved or copied. */
-  private async exportFigure(how: "svg" | "tikz" | "copy-tikz"): Promise<void> {
+  private async exportFigure(how: "svg" | "pdf" | "tikz" | "copy-tikz"): Promise<void> {
     // Each workspace exports what it shows: the figure, or the plot.
     const plotting = this.tab === "plot";
-    const text = plotting ? this.plots.exported(how === "svg" ? "svg" : "tikz") : how === "svg" ? toSvg(this.sk) : toTikz(this.sk);
+    const vector = how === "svg" || how === "pdf";
+    const text = plotting ? this.plots.exported(vector ? "svg" : "tikz") : vector ? toSvg(this.sk) : toTikz(this.sk);
     if (!text) return this.toast(plotting ? "There is no plot to export yet." : "There is nothing to export yet.");
-    const title = how === "svg" ? "Export SVG" : how === "tikz" ? "Export TikZ" : "Copy TikZ";
+    const title = how === "svg" ? "Export SVG" : how === "pdf" ? "Export PDF" : how === "tikz" ? "Export TikZ" : "Copy TikZ";
     if (!(await this.waitToExport(title, how === "copy-tikz" ? "Copy" : "Save"))) return;
     const slot: SaveSlot = plotting ? "plot" : "figure";
+    if (how === "pdf") {
+      try {
+        await this.saveAs(() => svgToPdf(text), ".pdf", "application/pdf", "PDF figure", slot);
+      } catch (err) {
+        this.toast(`Could not save PDF: ${err instanceof Error ? err.message : "Please try again."}`);
+      }
+      return;
+    }
     if (how === "svg") return this.saveAs(text, ".svg", "image/svg+xml", "SVG image", slot);
     if (how === "tikz") return this.saveAs(text, ".tex", "text/x-tex", plotting ? "pgfplots picture" : "TikZ picture", slot);
     try {
@@ -3559,6 +3830,10 @@ export class App {
     for (const t of tools) {
       if (group !== null && t.group !== group) html += `<span class="ribbon-rule"></span>`;
       group = t.group;
+      if (t.id === "pin" || t.id === "roller" || t.id === "wall") {
+        html += this.supportModes.button(t.id);
+        continue;
+      }
       if (t.id === "rectangle" || t.id === "arc" || t.id === "gradient") {
         html += this.primitiveModes.button(t.id);
         continue;
@@ -3720,6 +3995,7 @@ export class App {
       case "support": {
         const kinds: [SupportKind, string][] = [["pin", "Pin"], ["roller", "Roller"], ["fixed", "Fixed"]];
         html += `<h2>${SUPPORT_NAMES[s.kind]}</h2>`;
+        html += `<label class="field"><span>Style</span><select data-field="sym-support-style"><option value="classic"${s.style !== "custom" ? " selected" : ""}>Classic</option><option value="custom"${s.style === "custom" ? " selected" : ""}>Custom filled</option></select></label>`;
         html += `<div class="field"><span id="kind-label">Kind</span><div class="segmented" role="group" aria-labelledby="kind-label">${kinds.map(([k, name]) =>
           `<button type="button" data-kind="${k}" aria-pressed="${s.kind === k}">${name}</button>`).join("")}</div></div>`;
         html += number("Rotation (degrees)", "sym-angle", degrees(s.angle), "At 0 the ground is below the joint. Dragging the support around its joint turns it too.");
@@ -3888,7 +4164,9 @@ export class App {
     const { pts, lines, rounds, cons, syms, entities } = this.picked();
     let html = "";
 
-    if (this.tool === "arcbeam") {
+    if(this.splinePanel()) {
+      html+=this.splinePanel();
+    } else if (this.tool === "arcbeam") {
       html += `<h2>Curved beam</h2>`;
       html += `<div class="field"><span id="beam-label">Ends</span><div class="segmented" role="group" aria-labelledby="beam-label">` +
         `<button type="button" data-beam="round" aria-pressed="${this.beamEnds === "round"}">Round</button>` +
@@ -4025,10 +4303,7 @@ export class App {
         }
         html += this.elementPanel();
         // One slider for all of them; it shows the thickness of the first.
-        const weight = cs[0].weight ?? standardWeight(cs[0]);
-        const own = cs.some((c) => c.weight !== undefined);
-        html += `<label class="field"><span>Line thickness</span><span class="slider-row"><input data-field="weight" type="range" min="${WEIGHT_MIN}" max="${WEIGHT_MAX}" step="0.1" value="${weight}"><output>${this.weightLabel(weight)}</output></span>` +
-          `<small>In points, as LaTeX counts line widths${own ? "" : "; this is the standard thickness"}. Set to 0 to hide the stroke while keeping geometry, fills and labels. It grows and shrinks with the dimension size in print. Double-click to restore the standard.</small></label>`;
+        html += this.weightPanel(cs);
         const only = cs.length === 1 ? cs[0] : undefined;
         const named = isNamed(only) ? only : null;
         if (named?.element) {
@@ -4052,8 +4327,8 @@ export class App {
         html += `<h3>Constraints on the selection</h3>`;
         html += attached.length ? this.constraintRows(attached) : `<p class="muted">None yet.</p>`;
       }
-      const arrow = this.selectedArrow();
-      if (arrow) html += colorPanel(arrow.color);
+      const coloredCurves = selectedColorCurves(this.sk, this.selection);
+      if (coloredCurves.length) html += colorPanel(coloredCurves[0].color);
       html += `<button type="button" class="danger" data-act="delete">Delete selection</button>`;
     } else {
       html += `<h2>Nothing selected</h2>`;
@@ -4115,6 +4390,14 @@ export class App {
       if (menuBtn) return this.setMenu(menuBtn, menuBtn.getAttribute("aria-expanded") !== "true", e.detail === 0);
       if (ds.pact) return this.plots.act(ds.pact, ds);
       if (ds.tab) this.setTab(ds.tab as Tab);
+      else if (ds.supportMode) {
+        const tool = this.supportModes.select(ds.supportMode);
+        if (tool) {
+          this.buildRibbon();
+          this.setTool(tool);
+          $("#ribbon").querySelector<HTMLElement>(`[data-tool="${tool}"]`)?.focus();
+        }
+      }
       else if (ds.primitive && this.primitiveModes.select(ds.primitive)) {
         this.buildRibbon();
         this.setTool(ds.primitive);
@@ -4340,8 +4623,8 @@ export class App {
       case "gradient-reverse": return this.editSymbol((s) => { if (s.type === "fill" && s.gradient) [s.color, s.gradient.color] = [s.gradient.color, s.color]; });
       case "gradient-reset": return this.editSymbol((s) => { if (s.type === "fill" && s.gradient) s.gradient = { ...defaultGradient(s.gradient.type), color: s.gradient.color }; });
       case "color-palette": {
-        const arrow = this.selectedArrow();
-        if (arrow) return showColorPalette(arrow.color ?? "#17201b", (color, save) => {
+        const coloredCurves = selectedColorCurves(this.sk, this.selection);
+        if (coloredCurves.length) return showColorPalette(coloredCurves[0].color ?? "#17201b", (color, save) => {
           if (save) this.customPalette.add(color);
           this.setColor(color);
         });
@@ -4368,6 +4651,16 @@ export class App {
       case "open": return this.fileInput.click();
       case "save": return this.save();
       case "export-svg": return void this.exportFigure("svg");
+      case "export-pdf": return void this.exportFigure("pdf");
+      case "spline-join": return this.splineAction("join");
+      case "spline-continue": return this.splineAction("continue");
+      case "spline-fill": return this.splineAction("fill");
+      case "spline-close": return this.splineAction("close");
+      case "spline-open": return this.splineAction("open");
+      case "spline-reverse": return this.splineAction("reverse");
+      case "spline-insert": return this.splineAction("insert");
+      case "spline-split": return this.splineAction("split");
+      case "spline-smooth": return this.splineAction("smooth");
       case "export-tikz": return void this.exportFigure("tikz");
       case "copy-tikz": return void this.exportFigure("copy-tikz");
       case "shift": return void this.linearPattern();
@@ -4465,7 +4758,7 @@ export class App {
    */
   private toggleConstruction(): void {
     const { lines, rounds } = this.picked();
-    const plain = [...lines, ...rounds].filter((c) => !isNamed(c));
+    const plain = [...lines, ...rounds, ...this.selectedSplines()].filter((c) => !isNamed(c));
     if (!plain.length) return;
     const on = !plain.every((c) => c.construction);
     for (const c of plain) {
@@ -4520,6 +4813,23 @@ export class App {
     return html;
   }
 
+  /** Selected curves, or the spline whose node is being edited. */
+  private weightTargets(): (Curve | Spline)[] {
+    const curves = selectedColorCurves(this.sk, this.selection);
+    if (curves.length) return curves;
+    const spline = this.splineContext();
+    return spline ? [spline] : [];
+  }
+
+  /** The same thickness control for every selected line, arc, circle or spline. */
+  private weightPanel(curves: (Curve | Spline)[]): string {
+    if (!curves.length) return "";
+    const weight = curves[0].weight ?? standardWeight(curves[0]);
+    const own = curves.some((c) => c.weight !== undefined);
+    return `<label class="field"><span>Line thickness</span><span class="slider-row"><input data-field="weight" type="range" min="${WEIGHT_MIN}" max="${WEIGHT_MAX}" step="0.1" value="${weight}"><output>${this.weightLabel(weight)}</output></span>` +
+      `<small>In points, as LaTeX counts line widths${own ? "" : "; this is the standard thickness"}. Set to 0 to hide the stroke while keeping geometry, fills and labels. It grows and shrinks with the dimension size in print. Double-click to restore the standard.</small></label>`;
+  }
+
   /** A line thickness as it is shown beside its slider. */
   private weightLabel(points: number): string {
     return `${formatNumber(Number(points.toFixed(2)))} pt`;
@@ -4527,8 +4837,7 @@ export class App {
 
   /** Puts the selected curves back to the standard thickness for how they are drawn. */
   private resetWeight(): void {
-    const { lines, rounds } = this.picked();
-    for (const c of [...lines, ...rounds]) delete c.weight;
+    for (const c of this.weightTargets()) delete c.weight;
     this.commit();
   }
 
@@ -4624,11 +4933,10 @@ export class App {
     this.commit();
   }
 
-  /** Colours the selected fill or datum point, and remembers the colour for the next one of its kind. */
+  /** Colors selected curve strokes or an annotation; annotation defaults remember the chosen color. */
   private setColor(color: string): void {
-    if (!/^#[0-9a-f]{6}$/i.test(color)) return;
-    const arrow = this.selectedArrow();
-    if (arrow) { arrow.color = color; return this.commit(); }
+    if (!/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(color)) return;
+    if (setStrokeColor(selectedColorCurves(this.sk, this.selection), color)) return this.commit();
     const s = this.selectedSymbol();
     if (s?.type === "fill" && s.gradient && this.gradientStop === "end") { s.gradient.color = color; return this.commit(); }
     if (s?.type === "note" || s?.type === "balloon" || s?.type === "frame") { s.color = color; return this.commit(); }
@@ -4680,6 +4988,21 @@ export class App {
   private onPanelChange(input: HTMLInputElement, live = false): void {
     const field = input.dataset.field;
     if (!field) return;
+    if (field === "arrow-foot") {
+      const arrow = this.selectedArrow();
+      if (!arrow) return;
+      if (input.checked) arrow.foot = true;
+      else delete arrow.foot;
+      return this.commit();
+    }
+    if(field.startsWith("spline-")) {
+      const s=this.splineContext();if(!s)return;
+      if(field==="spline-segment"){this.splineSegment=Number(input.value);this.touch();return;}
+      if(field==="spline-construction")s.construction=input.checked;
+      else if(field==="spline-dashed")s.dashed=input.checked;
+      else return;
+      this.commit();return;
+    }
     /** Shows a slider's new value beside it and redraws, without rebuilding the panel under the pointer. */
     const slide = (shown: string) => {
       const out = input.parentElement?.querySelector("output");
@@ -4704,6 +5027,10 @@ export class App {
       if (field === "sym-angle" && (s.type === "support" || s.type === "frame" || s.type === "centermark" || s.type === "load" || s.type === "moment" || s.type === "trace")) {
         if (!Number.isFinite(v)) { this.toast("Type the rotation as a number of degrees."); return this.touch(); }
         s.angle = v * DEG;
+      } else if (s.type === "support" && field === "sym-support-style") {
+        if (input.value === "custom") s.style = "custom";
+        else if (input.value === "classic") delete s.style;
+        else return;
       } else if (s.type === "centermark" && field === "sym-scale") {
         if (!Number.isFinite(v) || v < 0.2 || v > 10) { this.toast("The size must be between 0.2 and 10."); return this.touch(); }
         if (Math.abs(v - 1) < 1e-9) delete s.scale;
@@ -4831,8 +5158,7 @@ export class App {
     if (field === "weight") {
       const v = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, Number(input.value)));
       if (!Number.isFinite(v)) return;
-      const { lines, rounds } = this.picked();
-      for (const c of [...lines, ...rounds]) c.weight = Number(v.toFixed(2));
+      for (const c of this.weightTargets()) c.weight = Number(v.toFixed(2));
       return slide(this.weightLabel(v));
     }
 
@@ -5011,6 +5337,7 @@ export class App {
       return;
     }
     if (e.key === "Escape") return this.cancel();
+    if(e.key==="Enter" && this.tool==="spline") {e.preventDefault();this.setTool("select");return;}
     if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); return this.deleteSelection(); }
     if (e.key === "0" || e.key === "Home") return this.fit();
     if (e.key === "Enter" && this.tool === "select") {

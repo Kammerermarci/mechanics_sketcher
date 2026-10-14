@@ -2,7 +2,7 @@
 
 A constraint sketcher for truss and beam figures. Draw roughly, then constrain
 and dimension; changing a dimension re-solves the whole drawing. Figures are
-meant for LaTeX: they export to TikZ and to SVG.
+meant for LaTeX: they export to TikZ, SVG and PDF.
 
 **Use it at [mech-sketch.org](https://mech-sketch.org).** It is free; if it saves
 you time, you can [support it on Ko-fi](https://ko-fi.com/mech_sketch).
@@ -21,6 +21,16 @@ from disk by double-click.
 
 ## Using it
 
+In **Annotate**, open the arrow beside **Pin**, **Roller**, or **Fixed** and
+choose **Custom filled** for the supplied filled support artwork, or **Classic**
+for the original symbols. Each tool remembers its style. Select an existing
+support and change **Style** in its panel to switch its appearance. Both styles
+use the support-size slider and retain their appearance in SVG and TikZ exports.
+
+For a ready-made pendulum drawing, choose **Open** and select
+[`drawings/pendulum.json`](drawings/pendulum.json). The [drawing files](drawings/README.md)
+also include SVG, PNG, and TikZ versions.
+
 Select an object and press **Page Up** to raise it one step in the stacking
 order, or **Page Down** to lower it. A filled shape and its boundary strokes
 always move together. This order is saved with the sketch and used in exports.
@@ -35,6 +45,18 @@ Editing dimensions, creating copies or patterns, and editing plot ranges keeps
 the camera position and zoom fixed. Use **Zoom to fit**, **0**, or **Home** to
 bring the whole figure into view when needed.
 
+To rotate a selection, click an already selected object again without dragging.
+A crosshair marks the **center of rotation**; drag it to choose another pivot
+(grid snapping and **Alt** for free placement apply). Drag the round rotation
+handle or a selected object to rotate the whole selection around that pivot.
+Hold **Shift** to snap to 15° steps. Click the selection again or press **Esc**
+to return to ordinary movement; double-click labels to edit their text.
+Each rotation drag is one Undo step, and moving the pivot does not edit the
+sketch. Geometry, attached symbols, filled regions, holes and spline controls
+rotate together; text remains upright for readability. Constraints are preserved:
+fixed points or horizontal/vertical directions can block a rotation. The camera
+stays fixed, and the rotation controls never appear in exports.
+
 **Rectangle** has a dropdown for **2-point**, **Center-point**, and **3-point**
 rectangles. Click opposite corners for 2-point; center then corner for
 Center-point; or the ends of a first edge, then its width, for 3-point.
@@ -46,6 +68,19 @@ Construction, live previews, constraints, dimensions, and Undo.
 For annotation colours, click the multicolour swatch to choose a custom colour.
 **OK** applies it; **OK and Add** also saves it in the fill, load, and datum
 palettes for future use in this browser. **Cancel** leaves the colour unchanged.
+
+Select a line, circle, arc or spline and use **Colour → Change colour** in the
+side panel to color its stroke. Select several curves to recolor them together.
+The same palette, custom RGB/HSL/HSV controls and opacity are available.
+Colors survive saving, copying, patterns, trimming and SVG, TikZ and PDF export;
+construction geometry retains its usual editor colors and stays out of exports.
+
+In **Change colour → Another colour**, choose **RGB**, **HSL** or **HSV**;
+the dialog remembers your last system. Each channel has a slider and a numeric
+input. **Opacity** ranges from 0% (transparent) to 100% (opaque), with a
+checkerboard preview. Hex input also accepts alpha, such as `#1565c080`.
+Opacity is saved with the sketch and palette and included in SVG, PDF and TikZ
+exports, including gradient endpoints.
 
 **Gradient Fill**, immediately after Fill on Annotate, offers **Linear** and
 **Radial** modes. Click a closed region, then drag its square handle to move
@@ -117,6 +152,31 @@ of mass.
    near-vertical lines snap and get that constraint; hold Alt to switch
    snapping off. *Centre line* draws the same way but gives a thin
    dash-dotted line that is exported and does not close shapes for fills.
+   **Spline (J)** draws one continuous curve: click successive anchors, or
+   click-drag an anchor to set its tangent and curve smoothly through it.
+   A click without dragging makes a corner. **Enter** or double-click finishes;
+   clicking the first anchor closes the spline. **Esc** discards the preview
+   while keeping completed parts. Select a spline to show its control handles;
+   drag a handle to reshape the curve, or drag an anchor to move it together
+   with its adjacent handles. The side panel offers **Continue drawing**,
+   **Add midpoint node**, **Smooth selected node**, **Split at selected node**,
+   **Close/Open spline**, and **Reverse direction**. Choose a section in the
+   panel before adding a midpoint; Smooth aligns the handles at an interior
+   anchor, and Split makes two independent curves there.
+   **Join** connects two open splines at their nearest endpoints. Select both
+   first, or pick Join and click the two curves. A straight section bridges
+   any gap without changing the original curves.
+   Closed splines work with **Fill** and **Gradient Fill** on the Annotate tab;
+   click inside the curve, or use **Fill closed spline** in its panel. Fills
+   follow node edits, save with the drawing, and appear in SVG, TikZ and PDF.
+   Opening a filled spline hides its fill until it is closed again.
+   Spline anchors and handles support point constraints; Trim and curve-level
+   constraints such as radius and tangent currently apply to lines, circles
+   and arcs. Splines support Construction, dashed strokes, line thickness,
+   copying, patterns, Undo/Redo and all three export formats.
+   Their **Line thickness** control uses the same 0–3 pt slider as other curves,
+   with live preview, 0.1 pt steps and double-click to reset. Multiple selected
+   splines can have their thickness changed together.
    *Construction (G)*, the first button on the Sketch tab, is a switch:
    while it is on, the lines, circles and arcs drawn are construction lines,
    dashed in the editor, pink while they can still move and dark purple once
@@ -132,8 +192,14 @@ of mass.
    keeping the geometry, any fill, and text labels. Invisible geometry still
    supports selection, snapping, constraints, and editing. Plot curves also
    accept zero thickness to keep their shading and labels without an outline.
-   Select a straight or curved arrow to adjust its **Arrowhead size** from
-   50% to 300% in steps of 25%, relative to the standard head for that thickness.
+   Select a straight or curved arrow and enable **Tail foot** in its side panel
+   for a short perpendicular bar at
+   the unheaded end. On curved arrows the bar is radial, perpendicular to the
+   curve. It follows direction, color, thickness and head size, survives copying
+   and saving, and appears in SVG, TikZ and PDF. The foot is shown only when
+   there is a head at one end; the setting is retained when choosing Both or None.
+   Adjust **Arrowhead size** from 50% to 300% in steps of 25%, relative to the
+   standard head for that thickness.
    Double-click this slider to reset it to 100%.
    Set the selected arrow's arrowheads to **None** to use it as a straight or
    curved line with a text label. Its colour, thickness, and movable label remain
@@ -363,6 +429,10 @@ geometry, the origin, constraint markers or hidden dimensions.
 
 - **SVG** saves an `.svg` file sized in millimetres. Labels are outlines, so
   it needs no fonts.
+- **PDF** saves a vector `.pdf` in both the Sketch and Plot workspaces, with
+  the page cropped to the figure at the same physical size as the SVG export.
+  Lines and outlined labels stay sharp at any zoom; no LaTeX installation is
+  needed. Choose **Export → PDF**, then select a file name and destination.
 - **TikZ** saves a `.tex` file with a `tikzpicture` to `\input`. **Copy
   TikZ** puts the same text on the clipboard. Labels are passed on as typed,
   so LaTeX sets them in the document's own font.
@@ -531,6 +601,11 @@ the curve stops, so the two sides of an asymptote are not joined.
   regions and text, at a given number of annotation millimetres per model
   unit. The screen and both exporters draw from this list.
 - `src/export.ts`: writes that list as SVG and as TikZ.
+- `src/pdf-export.ts`: converts the SVG output to a vector PDF in the browser.
+- `src/bezier.ts` and `src/splines.ts`: cubic curve geometry, bounds, continuous
+  spline paths and node editing; Bézier paths stay exact in exports.
+- `src/stroke-colors.ts`: shared color selection for lines, circles, arcs and
+  splines, including multiple selected curves.
 - `src/regions.ts`: finds the closed regions for fills, and the stretches
   where curves overlap.
 - `src/trim.ts`: where curves cross, and cutting a curve between crossings.

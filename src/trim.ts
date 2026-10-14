@@ -122,7 +122,7 @@ export function strokeHits(sk: Sketch, a: V, b: V): { id: Id; at: V }[] {
 /** Works out what a click on `curveId` near `at` would trim away. */
 export function planTrim(sk: Sketch, curveId: Id, at: V): TrimPlan | null {
   const target = entity(sk, curveId);
-  if (!target || target.type === "point") return null;
+  if (!target || target.type === "point" || target.type === "spline") return null;
   const eps = scaleOf(sk);
   const s = shapeOf(sk, target);
   const length = s.kind === "line" ? dist(s.a, s.b) : s.r * s.sweep;
@@ -174,7 +174,7 @@ export function planTrim(sk: Sketch, curveId: Id, at: V): TrimPlan | null {
  */
 export function applyTrim(sk: Sketch, plan: TrimPlan): ConstraintDraft[] {
   const target = entity(sk, plan.curve);
-  if (!target || target.type === "point") return [];
+  if (!target || target.type === "point" || target.type === "spline") return [];
   if (plan.whole) {
     remove(sk, [target.id]);
     return [];
@@ -194,6 +194,7 @@ export function applyTrim(sk: Sketch, plan: TrimPlan): ConstraintDraft[] {
     if (from.centre) to.centre = true;
     if (from.weight !== undefined) to.weight = from.weight;
     if (from.dashed) to.dashed = true;
+    if (from.color !== undefined) to.color = from.color;
   };
   // Horizontal and vertical are kept between a line's ends, so they follow the ends.
   const retarget = (oldA: Id, oldB: Id, newA: Id, newB: Id) => {

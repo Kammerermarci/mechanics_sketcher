@@ -7,6 +7,8 @@
 
 import { type Sketch, type Id, type Point, points, point, curves, curvePoints, arcRadius, isEdge } from "./model";
 import { type V, sub, dist, angleOf, polar, wrap, projectOnSegment, TWO_PI } from "./geom";
+import { splineCubics } from "./splines";
+import { flattenCubic } from "./bezier";
 
 /** A bounded region: corners in counter-clockwise order, and what joins each to the next. */
 export interface Face {
@@ -174,6 +176,7 @@ export function findFaces(sk: Sketch): Face[] {
 }
 
 export type Region =
+  | { kind: "spline"; spline: Id; holes: Id[] }
   | { kind: "circle"; circle: Id }
   | { kind: "face"; face: Face; holes: Id[] };
 
@@ -182,6 +185,14 @@ export function regionAt(sk: Sketch, q: V): Region | null {
   let best: Region | null = null;
   let bestArea = Infinity;
   const faces = findFaces(sk);
+  const splinePolygons=new Map<Id,V[]>();
+  for(const s of sk.entities) if(s.type==="spline"&&s.closed&&!s.construction&&!s.centre){
+    const poly=splineCubics(sk,s).flatMap((c)=>flattenCubic(c,0.002).slice(0,-1));
+    splinePolygons.set(s.id,poly);
+    const area=Math.abs(signedArea(poly))||poly.reduce((sum,p,i)=>{const q=poly[(i+1)%poly.length];return sum+Math.abs(p[0]*q[1]-p[1]*q[0]);},0)/2;
+    if(area<1e-12)continue;
+    if(insidePolygon(q,poly)&&area<bestArea){best={kind:"spline",spline:s.id,holes:[]};bestArea=area;}
+  }
   for (const f of faces) {
     if (f.area < bestArea && insidePolygon(q, f.polygon)) {
       best = { kind: "face", face: f, holes: [] };
@@ -198,9 +209,9 @@ export function regionAt(sk: Sketch, q: V): Region | null {
       bestArea = area;
     }
   }
-  if (best?.kind === "face") {
+  if (best?.kind === "face" || best?.kind==="spline") {
     // Circles lying wholly inside the region are left as holes.
-    const poly = best.face.polygon;
+    const poly = best.kind==="face"?best.face.polygon:splinePolygons.get(best.spline)!;
     for (const c of circles) {
       if (c.type !== "circle") continue;
       const ctr = point(sk, c.c);

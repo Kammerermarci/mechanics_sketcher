@@ -1,5 +1,16 @@
 # Mech Sketch TODO
 
+## Arrows with a tail foot (2026-10-14)
+
+- [x] Add an optional short perpendicular bar (a "foot") at the tail of an
+  arrow, matching the reference image. Support both straight and curved arrows;
+  on curved arrows, the foot should be perpendicular to the curve at its tail.
+  Include the foot in SVG, TikZ and PDF exports.
+
+Completed 2026-10-14: select a straight or curved arrow and enable **Tail foot**
+in its side panel. The foot follows the arrow's direction, color, thickness and
+head size. It is radial on curved arrows and included in all three exports.
+
 ## Next priority — Fix group movement after pasting (2026-10-13)
 
 - [x] Make multiple objects pasted with **Ctrl+V** move together when they are

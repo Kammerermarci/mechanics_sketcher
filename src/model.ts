@@ -3,6 +3,7 @@
 
 import { type Box, emptyBox, grow, boxIsEmpty, inSweep, polar, TWO_PI } from "./geom";
 import type { TextSize } from "./text-size";
+import { cubicBounds, type Cubic } from "./bezier";
 
 export type Id = string;
 
@@ -29,7 +30,9 @@ export interface Line extends TextSize {
   dashed?: boolean;
   /** An arrow annotation: which end carries the head. p1 is the start, p2 the end. */
   arrow?: ArrowEnds;
-  /** Arrow stroke, heads and label colour. Unset: standard ink. */
+  /** A short perpendicular bar at the tail of a single-headed arrow. */
+  foot?: boolean;
+  /** Stroke colour, including any arrowheads and label. Unset: standard ink. */
   color?: string;
   /** Arrowhead size multiplier relative to its standard size for the thickness. Unset: 1. */
   headScale?: number;
@@ -67,6 +70,8 @@ export interface ElementLook {
   flip?: boolean;
 }
 export interface Circle {
+  /** Stroke colour. Unset: standard ink. */
+  color?: string;
   id: Id;
   type: "circle";
   c: Id;
@@ -97,7 +102,9 @@ export interface Arc extends TextSize {
   dashed?: boolean;
   /** A curved arrow: which end carries the head. p1 is the start, p2 the end, counter-clockwise. */
   arrow?: ArrowEnds;
-  /** Arrow stroke, heads and label colour. Unset: standard ink. */
+  /** A short radial bar at the tail of a single-headed curved arrow. */
+  foot?: boolean;
+  /** Stroke colour, including any arrowheads and label. Unset: standard ink. */
   color?: string;
   /** Arrowhead size multiplier relative to its standard size for the thickness. Unset: 1. */
   headScale?: number;
@@ -110,7 +117,15 @@ export interface Arc extends TextSize {
   lx?: number;
   ly?: number;
 }
-export type Entity = Point | Line | Circle | Arc;
+export interface SplineSegment { p1: Id; c1: Id; c2: Id; p2: Id }
+/** A chain of cubic Bézier segments, with shared anchor points. */
+export interface Spline {
+  /** Stroke colour. Unset: standard ink. */
+  color?: string;
+  id: Id; type: "spline"; segments: SplineSegment[]; closed?: boolean;
+  construction?: boolean; centre?: boolean; weight?: number; dashed?: boolean;
+}
+export type Entity = Point | Line | Circle | Arc | Spline;
 export type Curve = Line | Circle | Arc;
 
 export interface Coincident { id: Id; type: "coincident"; a: Id; b: Id }
@@ -211,6 +226,8 @@ export interface Support {
   id: Id;
   type: "support";
   kind: SupportKind;
+  /** Custom filled artwork, or the original engineering symbol when unset. */
+  style?: "classic" | "custom";
   /** The joint it carries. */
   at: Id;
   /** Rotation in radians, counter-clockwise. At 0 the ground is below the joint. */
@@ -671,7 +688,11 @@ export function points(sk: Sketch): Point[] {
   return sk.entities.filter((e): e is Point => e.type === "point");
 }
 export function curves(sk: Sketch): Curve[] {
-  return sk.entities.filter((e): e is Curve => e.type !== "point");
+  return sk.entities.filter((e): e is Curve => e.type === "line" || e.type === "circle" || e.type === "arc");
+}
+
+export function splines(sk: Sketch): Spline[] {
+  return sk.entities.filter((e): e is Spline => e.type === "spline");
 }
 
 /** True for a line or arc that carries a name of its own: an arrow, a spring, a damper. */
@@ -692,7 +713,8 @@ export function dropIfUnused(sk: Sketch, pointId: Id): void {
 }
 
 /** Ids of the points a curve is built on. */
-export function curvePoints(e: Curve): Id[] {
+export function curvePoints(e: Curve | Spline): Id[] {
+  if (e.type === "spline") return [...new Set(e.segments.flatMap((s) => [s.p1, s.c1, s.c2, s.p2]))];
   if (e.type === "line") return [e.p1, e.p2];
   if (e.type === "circle") return [e.c];
   return [e.c, e.p1, e.p2];
@@ -756,7 +778,7 @@ export function isFixed(sk: Sketch, pointId: Id): boolean {
 
 /** True when a line, circle or arc is built on the point. */
 export function pointInUse(sk: Sketch, pointId: Id): boolean {
-  return curves(sk).some((e) => curvePoints(e).includes(pointId));
+  return [...curves(sk), ...splines(sk)].some((e) => curvePoints(e).includes(pointId));
 }
 
 export function arcRadius(sk: Sketch, a: Arc): number {
@@ -777,11 +799,19 @@ export function arcAngles(sk: Sketch, a: Arc): { a0: number; a1: number } {
 export function geometryBox(sk: Pick<Sketch, "entities">): Box {
   const all = sk as Sketch;
   const b = emptyBox();
+  const controls = new Set(splines(all).flatMap((s)=>s.segments.flatMap((c)=>[c.c1,c.c2])));
+  const anchors = new Set([...curves(all).flatMap(curvePoints),...splines(all).flatMap((s)=>s.segments.flatMap((c)=>[c.p1,c.p2]))]);
   // The origin counts only when something is drawn from it.
-  const originUsed = curves(all).some((c) => curvePoints(c).includes(ORIGIN));
+  const originUsed = [...curves(all), ...splines(all)].some((c) => curvePoints(c).includes(ORIGIN));
   for (const e of sk.entities) {
     if (e.type === "point") {
+      if(controls.has(e.id)&&!anchors.has(e.id)&&!e.standalone)continue;
       if (e.id !== ORIGIN || originUsed) grow(b, [e.x, e.y]);
+    } else if(e.type==="spline") {
+      for(const s of e.segments){
+        const cubic=[s.p1,s.c1,s.c2,s.p2].map((id):[number,number]=>{const p=point(all,id);return[p.x,p.y];}) as Cubic;
+        const box=cubicBounds(cubic);grow(b,[box.x0,box.y0]);grow(b,[box.x1,box.y1]);
+      }
     } else if (e.type === "circle") {
       const c = point(all, e.c);
       grow(b, [c.x, c.y], e.r);
@@ -875,7 +905,7 @@ export function remove(sk: Sketch, ids: Iterable<Id>): void {
 
   // Points that curves were using before this delete; candidates for cleanup.
   const candidates = new Set<Id>();
-  for (const e of curves(sk)) {
+  for (const e of [...curves(sk), ...splines(sk)]) {
     const pts = curvePoints(e);
     if (gone.has(e.id) || pts.some((p) => gone.has(p))) {
       gone.add(e.id);
@@ -885,7 +915,7 @@ export function remove(sk: Sketch, ids: Iterable<Id>): void {
   sk.entities = sk.entities.filter((e) => !gone.has(e.id));
 
   const used = new Set<Id>();
-  for (const e of curves(sk)) curvePoints(e).forEach((p) => used.add(p));
+  for (const e of [...curves(sk), ...splines(sk)]) curvePoints(e).forEach((p) => used.add(p));
   const orphans = new Set<Id>();
   for (const id of candidates) {
     const p = entity(sk, id);
@@ -918,7 +948,7 @@ function upgradeSymbol(s: Sym): Sym {
     const g = s.gradient;
     const vector = (p: unknown): p is [number, number] => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) < 1e6);
     if (!(g.type === "linear" || g.type === "radial") || !vector(g.from) || !vector(g.to) ||
-      !/^#[0-9a-f]{6}$/i.test(g.color) || Math.hypot(g.to[0] - g.from[0], g.to[1] - g.from[1]) < 1e-9) {
+      !/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(g.color) || Math.hypot(g.to[0] - g.from[0], g.to[1] - g.from[1]) < 1e-9) {
       const { gradient: _invalid, ...solid } = s;
       return solid;
     }
@@ -1003,6 +1033,8 @@ export function deserialize(text: string): Sketch {
   }
   // Files from before the origin existed get one.
   const entities = raw.entities.some((e) => e.id === ORIGIN) ? raw.entities : [originPoint(), ...raw.entities];
+  const pointIds=new Set(entities.filter((e)=>e.type==="point"&&Number.isFinite(e.x)&&Number.isFinite(e.y)).map((e)=>e.id));
+  for(const e of entities) if(e.type==="spline" && (!Array.isArray(e.segments)||!e.segments.length||!e.segments.every((c)=>c&&[c.p1,c.c1,c.c2,c.p2].every((id)=>pointIds.has(id))))) throw new Error("This file contains an invalid spline.");
   if (raw.version === 1) {
     return { version: 4, nextId: raw.nextId ?? 1, entities, ...upgradeV1(raw, entities), dimScale: 1, showOrigin: raw.showOrigin ?? true };
   }

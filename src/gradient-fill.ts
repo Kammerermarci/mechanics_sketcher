@@ -1,5 +1,7 @@
 import type { FillGradient } from "./model";
+import { colorAlpha } from "./color-channels";
 import type { Outline } from "./prims";
+import { cubicBounds } from "./bezier";
 import { type V, type Box, emptyBox, grow, polar, inSweep, sub, dist, norm, perp, dot, add, mul } from "./geom";
 
 export function defaultGradient(type: FillGradient["type"]): FillGradient {
@@ -16,11 +18,14 @@ export function fillBounds(outlines: Outline[]): Box {
     grow(box, [outline.c[0] + outline.r, outline.c[1] + outline.r]);
   } else {
     grow(box, outline.start);
+    let from=outline.start;
     for (const seg of outline.segs) {
       grow(box, seg.to);
+      if(seg.k==="C"){const b=cubicBounds([from,seg.c1,seg.c2,seg.to]);grow(box,[b.x0,b.y0]);grow(box,[b.x1,b.y1]);}
       if (seg.k === "A") for (const angle of [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2]) {
         if (inSweep(angle, seg.ccw ? seg.a0 : seg.a1, seg.ccw ? seg.a1 : seg.a0)) grow(box, polar(seg.c, seg.r, angle));
       }
+      from=seg.to;
     }
   }
   return box;
@@ -51,13 +56,20 @@ export function tikzGradient(outlines: Outline[], gradient: FillGradient, startC
   const corners: V[] = [[box.x0, box.y0], [box.x1, box.y0], [box.x1, box.y1], [box.x0, box.y1]];
   const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   const c0 = rgb(startColor), c1 = rgb(gradient.color);
-  const color = (t: number) => `{rgb,255:red,${Math.round(c0[0] + (c1[0] - c0[0]) * t)};green,${Math.round(c0[1] + (c1[1] - c0[1]) * t)};blue,${Math.round(c0[2] + (c1[2] - c0[2]) * t)}}`;
+  const alpha0 = colorAlpha(startColor), alpha1 = colorAlpha(gradient.color);
+  const transparent = alpha0 < 1 || alpha1 < 1;
+  const color = (t: number) => `{rgb,255:red,${Math.round(c0[0] + (c1[0] - c0[0]) * t)};green,${Math.round(c0[1] + (c1[1] - c0[1]) * t)};blue,${Math.round(c0[2] + (c1[2] - c0[2]) * t)}}${transparent ? `, fill opacity=${Number((alpha0 + (alpha1 - alpha0) * t).toFixed(6))}` : ""}`;
   const co = (p: V) => `(${p[0].toFixed(5)},${p[1].toFixed(5)})`;
   const parts = [`  \\begin{scope}`, `    \\path ${co(corners[0])} rectangle ${co(corners[2])};`, `    \\clip[even odd rule] ${path};`, `    \\begin{pgfinterruptboundingbox}`];
   const radius = Math.max(1e-9, dist(a, b)), count = 128;
   if (gradient.type === "radial") {
-    parts.push(`    \\fill[fill=${color(1)}] ${co(corners[0])} rectangle ${co(corners[2])};`);
-    for (let i = count; i > 0; i--) parts.push(`    \\fill[fill=${color((i - 0.5) / count)}] ${co(a)} circle[radius=${(radius * i / count).toFixed(5)}];`);
+    // Transparent rings must not overlap: stacking translucent disks changes their opacity.
+    const outerHole = transparent ? ` ${co(a)} circle[radius=${radius.toFixed(5)}]` : "";
+    parts.push(`    \\fill[fill=${color(1)}${transparent ? ", even odd rule" : ""}] ${co(corners[0])} rectangle ${co(corners[2])}${outerHole};`);
+    for (let i = count; i > 0; i--) {
+      const inner = transparent && i > 1 ? ` ${co(a)} circle[radius=${(radius * (i - 1) / count).toFixed(5)}]` : "";
+      parts.push(`    \\fill[fill=${color((i - 0.5) / count)}${transparent ? ", even odd rule" : ""}] ${co(a)} circle[radius=${(radius * i / count).toFixed(5)}]${inner};`);
+    }
   } else {
     const u = norm(sub(b, a)), n = perp(u);
     const projections = corners.map((p) => dot(sub(p, a), u) / radius);
@@ -67,8 +79,8 @@ export function tikzGradient(outlines: Outline[], gradient: FillGradient, startC
       parts.push(`    \\fill[fill=${color(t)}] ${at(lo, -across)} -- ${at(hi, -across)} -- ${at(hi, across)} -- ${at(lo, across)} -- cycle;`);
     };
     const lo = Math.min(0, ...projections) - 1, hi = Math.max(1, ...projections) + 1;
-    band(lo, 0.00001, 0);
-    for (let i = 0; i < count; i++) band(i / count, (i + 1) / count + 0.00001, (i + 0.5) / count);
+    band(lo, transparent ? 0 : 0.00001, 0);
+    for (let i = 0; i < count; i++) band(i / count, (i + 1) / count + (transparent ? 0 : 0.00001), (i + 0.5) / count);
     band(1, hi, 1);
   }
   parts.push("    \\end{pgfinterruptboundingbox}", "  \\end{scope}");

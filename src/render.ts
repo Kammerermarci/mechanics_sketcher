@@ -12,6 +12,8 @@ import { texEngine } from "./tex";
 import { ICONS } from "./icons";
 import { backgroundPattern } from "./background";
 import { svgGradient } from "./gradient-fill";
+import { cubicPath, type Cubic } from "./bezier";
+import { splineControlIds, visibleSplineControls } from "./splines";
 
 export interface View {
   /** Model point at the centre of the canvas. */
@@ -33,6 +35,7 @@ export interface Glyph { id: Id; icon: string; x: number; y: number }
 
 /** Shapes a drawing tool shows before the click that commits them. Model units. */
 export interface Preview {
+  cubics?: Cubic[];
   lines: [V, V][];
   circles: { c: V; r: number }[];
   arcs: { c: V; r: number; a0: number; a1: number }[];
@@ -172,7 +175,7 @@ export function layoutGlyphs(sk: Sketch, view: View, show: (c: Constraint) => bo
       case "turn": atPoint(c, c.c); break;
       case "tangent": {
         const l = entity(sk, c.l), round = entity(sk, c.c);
-        if (!l || !round || round.type === "point" || round.type === "line" || l.type === "point") break;
+        if (!l || !round || round.type === "point" || round.type === "line" || round.type === "spline" || l.type === "point" || l.type === "spline") break;
         if (l.type !== "line") {
           // Two circles or arcs: where they touch, on the rim of the second towards the first.
           const from = point(sk, round.c), to = point(sk, l.c);
@@ -264,6 +267,7 @@ export function outlinePath(outlines: Outline[], M: (p: V) => V, pxPerMm: number
     for (const seg of o.segs) {
       const to = M(seg.to);
       if (seg.k === "L") d += `L${n2(to[0])} ${n2(to[1])}`;
+      else if(seg.k==="C") {const a=M(seg.c1),b=M(seg.c2);d+=`C${a.map(n2).join(" ")} ${b.map(n2).join(" ")} ${to.map(n2).join(" ")}`;}
       else {
         const sweep = seg.ccw ? wrap(seg.a1 - seg.a0) : wrap(seg.a0 - seg.a1);
         const r = n2(seg.r * pxPerMm);
@@ -310,7 +314,9 @@ export function drawPrims(s: PrimScene): string {
     const sw = `stroke-width="${n2(strokePx(p, pxPerMm))}"` +
       (dash ? ` stroke-dasharray="${dash.map((d) => n2(d * pxPerMm)).join(" ")}"` : "") +
       (p.color || p.ink ? ` style="${p.color ? `--tint:${p.color};` : ""}${p.ink ? `--ink:${p.ink}` : ""}"` : "");
-    if (p.k === "line") {
+    if (p.k === "bezier") {
+      out += `<path class="${cls}" d="${cubicPath(p.segments,M)}${p.closed?"Z":""}" ${sw}/>`;
+    } else if (p.k === "line") {
       const [a, b] = strokedEnds(p).map(M);
       out += `<line class="${cls}" x1="${n2(a[0])}" y1="${n2(a[1])}" x2="${n2(b[0])}" y2="${n2(b[1])}" ${sw}/>`;
     } else if (p.k === "circle") {
@@ -335,11 +341,19 @@ export function drawPrims(s: PrimScene): string {
 
 function drawHandles(s: Scene): string {
   let out = "";
+  const controls=splineControlIds(s.sk), visible=visibleSplineControls(s.sk,s.selection);
+  for(const e of s.sk.entities) if(e.type==="spline" && e.segments.some((c)=>visible.has(c.c1))) {
+    for(const c of e.segments) for(const [a,b] of [[c.p1,c.c1],[c.p2,c.c2]]) {
+      const p=point(s.sk,a), q=point(s.sk,b), A=toScreen(s.view,[p.x,p.y]),B=toScreen(s.view,[q.x,q.y]);
+      out+=`<path class="spline-guide" d="M${A.join(" ")}L${B.join(" ")}"/>`;
+    }
+  }
   // A datum point shows its coloured dot, or the mark of a centre of mass: its handle is a ring around that, not a disc over it.
   const datums = new Map<Id, number>();
   for (const x of s.sk.symbols) if (x.type === "datum") datums.set(x.at, ((x.mass ? PAPER.massRadius : PAPER.datumRadius) * s.view.scale) / s.mm);
   for (const e of s.sk.entities) {
     if (e.type !== "point") continue;
+    if(controls.has(e.id)&&!visible.has(e.id)) continue;
     const p = toScreen(s.view, [e.x, e.y]);
     const cls = ["pt"];
     const lit = s.selection.has(e.id) || s.hover === e.id;
@@ -424,6 +438,7 @@ function drawPreview(s: Scene): string {
     out += `<circle class="${cls}" cx="${n2(p[0])}" cy="${n2(p[1])}" r="${n2(c.r * s.view.scale)}"/>`;
   }
   for (const a of pv.arcs) out += `<path class="${cls}" d="${arcPath(s.view, a.c, a.r, a.a0, a.a1)}"/>`;
+  if(pv.cubics) out+=`<path class="${cls}" d="${cubicPath(pv.cubics,(p)=>toScreen(s.view,p))}"/>`;
   if (pv.trail && pv.trail.length > 1) {
     out += `<polyline class="trail" points="${pv.trail.map((q) => toScreen(s.view, q).map(n2).join(",")).join(" ")}"/>`;
   }

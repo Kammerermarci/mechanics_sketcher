@@ -1,4 +1,5 @@
 // Saved annotation colours belong to this browser, independently of any sketch.
+import { colorAlpha, colorChannels, channelsColor, readColorMode, rememberColorMode, withAlpha, type ColorMode, type Channels } from "./color-channels";
 const KEY = "mech-sketch.customColors";
 
 /** One palette for fills, annotations and plots, followed by saved user colours. */
@@ -42,8 +43,8 @@ export function showColorPalette(initial: string, accept: (color: string, save: 
 
 export function normalizeColor(text: string): string | null {
   const hex = text.trim().replace(/^#/, "").toLowerCase();
-  if (/^[0-9a-f]{6}$/.test(hex)) return `#${hex}`;
-  if (/^[0-9a-f]{3}$/.test(hex)) return `#${[...hex].map((c) => c + c).join("")}`;
+  if (/^(?:[0-9a-f]{6}|[0-9a-f]{8})$/.test(hex)) return hex.endsWith("ff") && hex.length === 8 ? `#${hex.slice(0, 6)}` : `#${hex}`;
+  if (/^(?:[0-9a-f]{3}|[0-9a-f]{4})$/.test(hex)) return normalizeColor(`#${[...hex].map((c) => c + c).join("")}`);
   return null;
 }
 
@@ -74,24 +75,71 @@ export function showCustomColor(initial: string, accept: (color: string, save: b
   dialog.className = "custom-color-dialog";
   dialog.setAttribute("aria-labelledby", "custom-color-title");
   dialog.innerHTML = `<form><h2 id="custom-color-title">Custom colour</h2>` +
-    `<label class="field"><span>Choose a colour</span><input id="custom-color-picker" type="color"></label>` +
+    `<div class="custom-color-preview" aria-label="Colour preview"><span></span></div>` +
+    `<label class="field"><span>Colour system</span><select id="custom-color-mode"><option value="rgb">RGB</option><option value="hsl">HSL</option><option value="hsv">HSV</option></select></label>` +
+    `<div id="custom-color-channels"></div>` +
+    `<label class="field"><span>Opacity (%)</span><span class="color-channel-row"><input id="custom-color-alpha" type="range" min="0" max="100" step="1" aria-label="Opacity"><input id="custom-color-alpha-number" type="number" min="0" max="100" step="1" aria-label="Opacity percent"></span></label>` +
     `<label class="field"><span>Hex colour</span><input id="custom-color-hex" type="text" spellcheck="false" autocomplete="off" aria-describedby="custom-color-note"></label>` +
     `<p class="muted" id="custom-color-note">OK applies the colour. OK and Add also saves it in your annotation palettes for future use.</p>` +
     `<div class="dialog-actions"><button type="button" id="custom-color-cancel">Cancel</button><button type="submit" value="ok">OK</button><button type="submit" value="add" class="primary">OK and Add</button></div></form>`;
-  const picker = dialog.querySelector<HTMLInputElement>("#custom-color-picker")!;
   const hex = dialog.querySelector<HTMLInputElement>("#custom-color-hex")!;
-  picker.value = hex.value = normalizeColor(initial) ?? "#17201b";
-  picker.addEventListener("input", () => { hex.value = picker.value; hex.setCustomValidity(""); });
+  const mode = dialog.querySelector<HTMLSelectElement>("#custom-color-mode")!;
+  const channels = dialog.querySelector<HTMLElement>("#custom-color-channels")!;
+  const alpha = dialog.querySelector<HTMLInputElement>("#custom-color-alpha")!;
+  const alphaNumber = dialog.querySelector<HTMLInputElement>("#custom-color-alpha-number")!;
+  const preview = dialog.querySelector<HTMLElement>(".custom-color-preview span")!;
+  let color = normalizeColor(initial) ?? "#17201b";
+  let values: Channels;
+  let opacity = colorAlpha(color) * 100;
+  mode.value = readColorMode();
+  const update = () => {
+    hex.value = color;
+    hex.setCustomValidity("");
+    preview.style.background = color;
+    alpha.value = alphaNumber.value = String(Math.round(opacity));
+  };
+  const renderChannels = () => {
+    const system = mode.value as ColorMode;
+    values = colorChannels(color, system);
+    const labels = system === "rgb" ? ["Red", "Green", "Blue"] : ["Hue", "Saturation", system === "hsl" ? "Lightness" : "Value"];
+    channels.innerHTML = labels.map((label, i) => {
+      const max = system === "rgb" ? 255 : i === 0 ? 360 : 100;
+      const value = Math.round(values[i] * 10) / 10;
+      return `<label class="field"><span>${label}${system === "rgb" ? "" : i === 0 ? " (°)" : " (%)"}</span><span class="color-channel-row"><input type="range" min="0" max="${max}" step="${system === "rgb" ? 1 : 0.1}" value="${value}" data-channel="${i}" aria-label="${label}"><input type="number" min="0" max="${max}" step="${system === "rgb" ? 1 : 0.1}" value="${value}" data-channel="${i}" aria-label="${label} value"></span></label>`;
+    }).join("");
+  };
+  channels.addEventListener("input", e => {
+    const input = e.target as HTMLInputElement;
+    if (!input.hasAttribute("data-channel") || !Number.isFinite(input.valueAsNumber) || !input.validity.valid) return;
+    const index = Number(input.dataset.channel);
+    values[index] = input.valueAsNumber;
+    channels.querySelectorAll<HTMLInputElement>(`[data-channel="${index}"]`).forEach(other => { if (other !== input) other.value = input.value; });
+    color = channelsColor(values, mode.value as ColorMode, opacity / 100);
+    update();
+  });
+  mode.addEventListener("change", () => { rememberColorMode(mode.value as ColorMode); renderChannels(); });
+  for (const input of [alpha, alphaNumber]) input.addEventListener("input", () => {
+    if (!Number.isFinite(input.valueAsNumber) || !input.validity.valid) return;
+    opacity = input.valueAsNumber;
+    color = withAlpha(color, opacity / 100);
+    update();
+  });
   hex.addEventListener("input", () => {
     hex.setCustomValidity("");
-    const color = normalizeColor(hex.value);
-    if (color) picker.value = color;
+    const entered = normalizeColor(hex.value);
+    if (entered) {
+      color = entered;
+      opacity = colorAlpha(color) * 100;
+      preview.style.background = color;
+      alpha.value = alphaNumber.value = String(Math.round(opacity));
+      renderChannels();
+    }
   });
   dialog.querySelector("form")!.addEventListener("submit", (e) => {
     e.preventDefault();
     const color = normalizeColor(hex.value);
     if (!color) {
-      hex.setCustomValidity("Enter a hex colour such as #1565c0.");
+      hex.setCustomValidity("Enter a hex colour such as #1565c0 or #1565c080 (with opacity).");
       hex.reportValidity();
       return;
     }
@@ -101,6 +149,8 @@ export function showCustomColor(initial: string, accept: (color: string, save: b
   });
   dialog.querySelector("#custom-color-cancel")!.addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  update();
+  renderChannels();
   document.body.append(dialog);
   dialog.showModal();
   hex.focus();

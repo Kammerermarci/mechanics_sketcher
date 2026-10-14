@@ -4,12 +4,14 @@
 
 import {
   type Sketch, type Id, type Dimension, type DistanceDim, type AngleDim, type RadiusDim,
-  type Arc, type Line, type Curve, type Sym, type Support, type Frame, type CenterMark, type Balloon,
+  type Arc, type Line, type Curve, type Spline, type Sym, type Support, type Frame, type CenterMark, type Balloon,
   type Fill as FillSym, type FillGradient, type Hatch, type Datum, type Note, type Load, type LineLoad, type Moment, type AnyLoad, type LoadKind, type Diagram, type Trace,
   entity, point, arcRadius, arcAngles, isDimension, isNamed, geometryBox, geometryExtent,
 } from "./model";
 import { elementPaths, elementReach } from "./element";
-import { arrowColor, arrowHeadScale } from "./arrow-style";
+import { customSupportPrims } from "./custom-supports";
+import { arrowHeadScale } from "./arrow-style";
+import { arrowFoot } from "./arrow-foot";
 import { orderPrims } from "./z-order";
 import {
   type V, type Box, add, sub, mul, dot, norm, perp, mid, polar, dist, len, angleOf, wrap, inSweep,
@@ -20,6 +22,9 @@ import { labelTex } from "./math-labels";
 import { textSize, sizedText, type TextSize } from "./text-size";
 import { baseline, diagramShape, traceShape } from "./diagram";
 import { PLOT, PLOT_DASH } from "./plotmath";
+import { splineCubics } from "./splines";
+import { strokeColor } from "./stroke-colors";
+import { type Cubic, flattenCubic } from "./bezier";
 
 /** Sizes of annotations in annotation mm: what they measure on paper at a dimension size of 100%. 1 pt = 0.3515 mm. */
 export const PAPER = {
@@ -73,14 +78,14 @@ export const STROKE_MM: Record<StrokeStyle, number> = {
 /** One point, in mm. */
 export const PT_MM = 0.3515;
 /** How thick a curve is drawn when it has no thickness of its own, in points. */
-export function standardWeight(e: Curve): number {
+export function standardWeight(e: Curve | Spline): number {
   return Number((STROKE_MM[curveStroke(e)] / PT_MM).toFixed(2));
 }
 /** The stroke style a curve of the sketch is drawn in. */
-function curveStroke(e: Curve): StrokeStyle {
+function curveStroke(e: Curve | Spline): StrokeStyle {
   if (e.construction) return "construction";
-  if (e.type !== "circle" && e.arrow) return "arrow";
-  if (e.type !== "circle" && e.element) return "element";
+  if ((e.type === "line" || e.type === "arc") && e.arrow) return "arrow";
+  if ((e.type === "line" || e.type === "arc") && e.element) return "element";
   return e.centre ? "centreline" : "member";
 }
 /** Width a primitive is stroked with, in mm: its own, or that of its style. */
@@ -122,9 +127,10 @@ interface Base {
 export interface LinePrim extends Base { k: "line"; a: V; b: V; stroke: StrokeStyle; width?: number; dash?: number[]; arrowA?: boolean; arrowB?: boolean; head?: number }
 export interface CirclePrim extends Base { k: "circle"; c: V; r: number; stroke: StrokeStyle; width?: number; dash?: number[]; fill?: Fill }
 /** A closed outline. */
-export interface PolyPrim extends Base { k: "poly"; pts: V[]; stroke: StrokeStyle; fill?: Fill; dash?: undefined }
+export interface PolyPrim extends Base { k: "poly"; pts: V[]; stroke: StrokeStyle; width?: number; fill?: Fill; dash?: undefined }
 /** An open run of straight pieces: a plotted curve. `dash` is its pattern, as on and off lengths in mm. */
 export interface PathPrim extends Base { k: "path"; pts: V[]; stroke: StrokeStyle; width?: number; dash?: number[] }
+export interface BezierPrim extends Base { k: "bezier"; segments: Cubic[]; closed?: boolean; stroke: StrokeStyle; width?: number; dash?: number[] }
 /** Counter-clockwise from a0 to a1, with a1 > a0. */
 export interface ArcPrim extends Base { k: "arc"; c: V; r: number; a0: number; a1: number; stroke: StrokeStyle; width?: number; dash?: number[]; arrowA?: boolean; arrowB?: boolean; head?: number }
 /**
@@ -144,11 +150,12 @@ export type Outline =
   | { kind: "path"; start: V; segs: OutlineSeg[] };
 export type OutlineSeg =
   | { k: "L"; to: V }
+  | { k: "C"; c1: V; c2: V; to: V }
   /** An arc about c from angle a0 to a1, counter-clockwise when ccw. */
   | { k: "A"; to: V; c: V; r: number; a0: number; a1: number; ccw: boolean };
 /** A filled area with no outline of its own. Later outlines cut holes (even-odd). */
 export interface RegionPrim extends Base { k: "region"; outlines: Outline[]; color: string; gradient?: FillGradient }
-export type Prim = LinePrim | CirclePrim | PolyPrim | PathPrim | ArcPrim | TextPrim | RegionPrim;
+export type Prim = LinePrim | CirclePrim | PolyPrim | PathPrim | BezierPrim | ArcPrim | TextPrim | RegionPrim;
 
 /** Zero-width geometry stays in the model and hit testing, but paints no stroke. */
 export function invisibleStroke(p: Prim): boolean {
@@ -414,7 +421,7 @@ type CurveShape =
 
 function curveShape(sk: Sketch, id: Id): CurveShape | null {
   const e = entity(sk, id);
-  if (!e || e.type === "point") return null;
+  if (!e || e.type === "point" || e.type === "spline") return null;
   const xy = (pid: Id): V => { const p = point(sk, pid); return [p.x, p.y]; };
   if (e.type === "line") return { kind: "line", a: xy(e.p1), b: xy(e.p2) };
   if (e.type === "circle") return { kind: "round", c: xy(e.c), r: e.r, a0: 0, a1: TWO_PI, full: true };
@@ -511,6 +518,7 @@ function placer(at: V, angle: number): (p: V) => V {
 }
 
 function supportPrims(sk: Sketch, s: Support, mm: number): Prim[] {
+  if (s.style === "custom") return customSupportPrims(sk, s, mm);
   const base = { ref: s.id, layer: "sym" as const };
   // Supports have a size of their own: everything about one is drawn `k` times its standard size.
   const k = sk.supportScale ?? 1;
@@ -547,7 +555,7 @@ function supportPrims(sk: Sketch, s: Support, mm: number): Prim[] {
 }
 
 function framePrims(sk: Sketch, f: Frame, mm: number): Prim[] {
-  const base = { ref: f.id, layer: "sym" as const, ...(f.color && /^#[0-9a-f]{6}$/i.test(f.color) ? { ink: f.color } : {}) };
+  const base = { ref: f.id, layer: "sym" as const, ...(f.color && /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(f.color) ? { ink: f.color } : {}) };
   const o = mul(symbolPosition(sk, f), mm);
   const out: Prim[] = [];
   const axes: [number, string, number, string][] = [[f.angle, f.xLabel, f.xSize, "x"], [f.angle + Math.PI / 2, f.yLabel, f.ySize, "y"]];
@@ -645,7 +653,7 @@ function balloonPrims(sk: Sketch, s: Balloon, mm: number): Prim[] {
 
 /** A balloon whose text is centred at `centre`, with its leader to `anchor`, both in paper mm. */
 export function balloonShape(ref: Id, anchor: V, centre: V, s: Pick<Balloon, "text" | "end" | "frame" | "color" | "textScale">): Prim[] {
-  const base = { ref, layer: "sym" as const, ...(s.color && /^#[0-9a-f]{6}$/i.test(s.color) ? { ink: s.color } : {}) };
+  const base = { ref, layer: "sym" as const, ...(s.color && /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(s.color) ? { ink: s.color } : {}) };
   const frame = s.frame ?? "circle";
   const out: Prim[] = [];
   const far = dist(anchor, centre);
@@ -704,7 +712,7 @@ export function noteShape(ref: Id, at: V, typed: string, color?: string): Prim[]
   if (!typed.trim()) return [];
   const { latex, lines } = noteLatex(typed);
   const text: TextPrim = { ref, layer: "sym", k: "text", at, tex: noteTex(typed), anchor: "w", latex };
-  if (color && /^#[0-9a-f]{6}$/i.test(color)) text.ink = color;
+  if (color && /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(color)) text.ink = color;
   if (lines > 1) text.lines = lines;
   return [text];
 }
@@ -789,9 +797,9 @@ export function loadReach(sk: Sketch, s: AnyLoad): V[] {
 
 /** A colour thinned towards white, as a CSS hex colour: `share` of it is left. */
 export function tint(hex: string, share: number): string {
-  const v = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  const v = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(hex);
   if (!v) return "#eeeeee";
-  return "#" + v.slice(1).map((c) => Math.round(255 - (255 - parseInt(c, 16)) * share).toString(16).padStart(2, "0")).join("");
+  return "#" + v.slice(1, 4).map((c) => Math.round(255 - (255 - parseInt(c, 16)) * share).toString(16).padStart(2, "0")).join("") + (v[4] ?? "");
 }
 
 /** The shading of a spread load: the area between its line and its envelope, in a light tone of its colour. */
@@ -968,6 +976,12 @@ export function fillOutlines(sk: Sketch, f: FillSym, mm: number): Outline[] {
     if (r) out.push({ kind: "circle", c: r.c, r: r.r });
   };
   if (f.circle) circle(f.circle);
+  else if(f.curves.length===1 && entity(sk,f.curves[0])?.type==="spline") {
+    const spline=entity(sk,f.curves[0]);
+    if(spline?.type!=="spline"||!spline.closed||spline.construction||spline.centre)return [];
+    const cubics=splineCubics(sk,spline,mm);
+    out.push({kind:"path",start:cubics[0][0],segs:cubics.map((c)=>({k:"C",c1:c[1],c2:c[2],to:c[3]}))});
+  }
   else if (f.points.length >= 2) {
     const at = (i: number) => P(sk, f.points[i % f.points.length], mm);
     const segs: OutlineSeg[] = [];
@@ -999,6 +1013,10 @@ export function outlinePolygon(o: Outline): V[] {
   }
   const pts: V[] = [o.start];
   for (const seg of o.segs) {
+    if(seg.k==="C") {
+      const from=pts.at(-1)!;
+      pts.push(...flattenCubic([from,seg.c1,seg.c2,seg.to],0.002).slice(1,-1));
+    }
     if (seg.k === "A") {
       const sweep = seg.ccw ? wrap(seg.a1 - seg.a0) || TWO_PI : -(wrap(seg.a0 - seg.a1) || TWO_PI);
       const n = Math.max(2, Math.ceil(Math.abs(sweep) / (Math.PI / 30)));
@@ -1100,8 +1118,14 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
   for (const e of sk.entities) {
     if (e.type === "point") continue;
     if (e.construction && !opts.editor) continue;
+    if (e.type === "spline") {
+      out.push({ref:e.id,layer:"geom",k:"bezier",segments:splineCubics(sk,e,mm),closed:e.closed,
+        stroke:e.construction?"construction":e.centre?"centreline":"member",
+        ...(e.weight!==undefined?{width:e.weight*PT_MM}:{}),...(e.dashed&&!e.construction?{dash:DASHED}:{}),...(!e.construction&&strokeColor(e)?{ink:strokeColor(e)}:{})});
+      continue;
+    }
     const base: { ref: Id; layer: "geom"; stroke: StrokeStyle; width?: number; dash?: number[]; ink?: string } = { ref: e.id, layer: "geom", stroke: curveStroke(e) };
-    if (e.type !== "circle" && e.arrow && !e.construction) base.ink = arrowColor(e);
+    if (!e.construction) base.ink = strokeColor(e);
     if (e.weight !== undefined) base.width = e.weight * PT_MM;
     if (e.dashed && !e.construction) base.dash = DASHED;
     const named = isNamed(e) ? e : null;
@@ -1130,6 +1154,8 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
         if (arrow === "end" || arrow === "both") line.arrowB = true;
       }
       out.push(line);
+      const foot = arrowFoot(line, e.foot, PAPER.arrowWidth * head);
+      if (foot) out.push(foot);
       name();
     } else if (e.type === "circle") {
       out.push({ ...base, k: "circle", c: P(sk, e.c, mm), r: e.r * mm });
@@ -1142,6 +1168,8 @@ export function buildPrims(sk: Sketch, mm: number, opts: BuildOptions): Prim[] {
         if (arrow === "end" || arrow === "both") arc.arrowB = true;
       }
       out.push(arc);
+      const foot = arrowFoot(arc, e.foot, PAPER.arrowWidth * head);
+      if (foot) out.push(foot);
       name();
     }
   }
@@ -1262,6 +1290,11 @@ function insidePolygon(q: V, pts: V[]): boolean {
 /** Distance in mm from q to a primitive; 0 inside a text box or a filled shape. */
 export function primDistance(p: Prim, q: V): number {
   switch (p.k) {
+    case "bezier": {
+      let best=Infinity;
+      for(const c of p.segments) { const pts=flattenCubic(c); for(let i=1;i<pts.length;i++) best=Math.min(best,distToSegment(q,pts[i-1],pts[i])); }
+      return best;
+    }
     case "line": return distToSegment(q, p.a, p.b);
     case "circle": {
       const d = dist(q, p.c);

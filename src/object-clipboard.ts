@@ -66,7 +66,7 @@ export function readObjectClipboard(text: string): ObjectClipboard | null {
     const ids = new Set(sketch.entities.map((e) => e.id));
     if (ids.size !== sketch.entities.length) return null;
     for (const e of sketch.entities) {
-      if (!["point", "line", "circle", "arc"].includes(e.type)) return null;
+      if (!["point", "line", "circle", "arc", "spline"].includes(e.type)) return null;
       if (e.type === "point" ? !Number.isFinite(e.x) || !Number.isFinite(e.y) : !curvePoints(e).every((id) => ids.has(id))) return null;
     }
     if (!sketch.constraints.every((c) => !isLink(c) && constraintRefs(c).every((id) => ids.has(id)))) return null;
@@ -76,7 +76,7 @@ export function readObjectClipboard(text: string): ObjectClipboard | null {
   } catch { return null; }
 }
 
-const REFERENCE_KEYS = new Set(["id", "p1", "p2", "c", "a", "b", "p", "on", "l", "l1", "l2", "at", "o", "circle", "target", "plot", "points", "arcs", "curves", "holes"]);
+const REFERENCE_KEYS = new Set(["id", "p1", "p2", "c1", "c2", "c", "a", "b", "p", "on", "l", "l1", "l2", "at", "o", "circle", "target", "plot", "points", "arcs", "curves", "holes"]);
 function remap<T>(value: T, ids: Map<Id, Id>, key = ""): T {
   if (typeof value === "string") return (REFERENCE_KEYS.has(key) ? ids.get(value) ?? value : value) as T;
   if (Array.isArray(value)) return value.map((v) => remap(v, ids, key)) as T;

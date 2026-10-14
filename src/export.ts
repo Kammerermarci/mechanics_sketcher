@@ -11,8 +11,10 @@ import {
 import { type V, type Box, emptyBox, grow, boxIsEmpty, polar, wrap, TWO_PI } from "./geom";
 import { texEngine } from "./tex";
 import { latexAccents } from "./accents";
+import { svgColorOpacity, tikzOpacity } from "./color-channels";
 import { svgGradient, tikzGradient } from "./gradient-fill";
 import { outlinePath } from "./render";
+import { cubicBounds, cubicPath } from "./bezier";
 
 /**
  * The figure as primitives: no construction geometry, no hidden dimensions.
@@ -34,7 +36,9 @@ export function figureBounds(prims: Prim[]): Box {
       for (const o of p.outlines) for (const q of outlinePolygon(o)) grow(b, q);
     } else {
       const half = strokeWidth(p) / 2;
-      if (p.k === "line") {
+      if (p.k === "bezier") {
+        for(const c of p.segments) { const box=cubicBounds(c); grow(b,[box.x0,box.y0],half);grow(b,[box.x1,box.y1],half); }
+      } else if (p.k === "line") {
         grow(b, p.a, half);
         grow(b, p.b, half);
       } else if (p.k === "circle") grow(b, p.c, p.r + half);
@@ -103,7 +107,9 @@ export function primsToSvg(prims: Prim[], k = 1): string | null {
     const stroke = `stroke-width="${num(strokeWidth(p))}"` + (dash ? ` stroke-dasharray="${dash.map((d) => num(d)).join(" ")}"` : "") +
       (p.ink ? ` stroke="${p.ink}"` : "");
     const fill = (p.k === "circle" || p.k === "poly") && p.fill ? ` fill="${p.fill === "ink" ? p.color ?? "#000" : "#fff"}"` : "";
-    if (p.k === "line") {
+    if (p.k === "bezier") {
+      body.push(`<path d="${cubicPath(p.segments,M)}${p.closed?"Z":""}" ${stroke}/>`);
+    } else if (p.k === "line") {
       const [a, b] = strokedEnds(p).map(M);
       body.push(`<line x1="${num(a[0])}" y1="${num(a[1])}" x2="${num(b[0])}" y2="${num(b[1])}" ${stroke}/>`);
     } else if (p.k === "circle") {
@@ -125,7 +131,7 @@ export function primsToSvg(prims: Prim[], k = 1): string | null {
     }
   }
 
-  return (
+  return svgColorOpacity(
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     // The drawing is in annotation mm; the size on paper enlarges all of it by the dimension size.
     `<svg xmlns="http://www.w3.org/2000/svg" width="${num(w * k, 2)}mm" height="${num(h * k, 2)}mm" viewBox="0 0 ${num(w)} ${num(h)}">\n` +
@@ -149,7 +155,7 @@ const deg = (rad: number) => num((rad * 180) / Math.PI, 2);
 const co = (q: V) => `(${num(q[0], 2)},${num(q[1], 2)})`;
 
 export function tikzColor(hex: string): string {
-  const v = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  const v = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})(?:[0-9a-f]{2})?$/i.exec(hex);
   if (!v) return "black!15";
   return `{rgb,255:red,${parseInt(v[1], 16)};green,${parseInt(v[2], 16)};blue,${parseInt(v[3], 16)}}`;
 }
@@ -158,6 +164,7 @@ function tikzOutline(o: Outline): string {
   if (o.kind === "circle") return `${co(o.c)} circle[radius=${num(o.r, 2)}]`;
   let s = co(o.start);
   o.segs.forEach((seg, i) => {
+    if(seg.k==="C"){s+=` .. controls ${co(seg.c1)} and ${co(seg.c2)} .. ${co(seg.to)}`;return;}
     if (seg.k === "L") {
       // The last straight side is the one "cycle" draws.
       if (i < o.segs.length - 1) s += ` -- ${co(seg.to)}`;
@@ -238,7 +245,7 @@ export function tikzParts(prims: Prim[], k = 1): { styles: string[]; lines: stri
   const style = (p: { stroke: StrokeStyle; width?: number; ink?: string; dash?: number[] }): string =>
     p.stroke + (p.width === undefined ? "" : `, line width=${num((p.width / PT_MM) * k, 2)}pt`) +
     // An arrow tip takes the colour of its line.
-    (p.ink ? `, draw=${tikzColor(p.ink)}` : "") +
+    (p.ink ? `, draw=${tikzColor(p.ink)}${tikzOpacity(p.ink, "draw")}` : "") +
     (p.dash ? pattern(p.dash) : "") +
     (p.width === 0 ? ", draw=none" : "");
   const lines: string[] = [];
@@ -263,13 +270,13 @@ export function tikzParts(prims: Prim[], k = 1): { styles: string[]; lines: stri
     flush();
     if (p.k === "region") {
       const path = p.outlines.map(tikzOutline).join(" ");
-      lines.push(p.gradient ? tikzGradient(p.outlines, p.gradient, p.color, path) : `  \\fill[fill=${tikzColor(p.color)}, even odd rule] ${path};`);
+      lines.push(p.gradient ? tikzGradient(p.outlines, p.gradient, p.color, path) : `  \\fill[fill=${tikzColor(p.color)}${tikzOpacity(p.color, "fill")}, even odd rule] ${path};`);
     } else if (p.k === "text") {
       const where = (p.anchor === "c" ? "inner sep=0pt" : `label, anchor=${TIKZ_ANCHOR[p.anchor]}`) +
         (p.rot ? `, rotate=${deg(p.rot)}` : "") +
         // A node breaks its text into lines only once it is told how to align them.
         (p.lines ? ", align=left" : "") +
-        (p.ink ? `, text=${tikzColor(p.ink)}` : "") +
+        (p.ink ? `, text=${tikzColor(p.ink)}${tikzOpacity(p.ink, "text")}` : "") +
         (textSize(p) !== 1 ? `, scale=${num(textSize(p), 3)}` : "");
       if (p.anchor !== "c") needLabel = true;
       // A note is text with math in it, a label is math; LaTeX takes accented letters in text only.
@@ -284,13 +291,16 @@ export function tikzParts(prims: Prim[], k = 1): { styles: string[]; lines: stri
         bentTip = true;
       }
       lines.push(`  \\draw[${style(p)}${tips(p, k)}] ${co(polar(p.c, p.r, p.a0))} arc[start angle=${deg(p.a0)}, end angle=${deg(p.a1)}, radius=${num(p.r, 2)}];`);
+    } else if (p.k === "bezier") {
+      const shape = co(p.segments[0][0]) + p.segments.map((c)=>` .. controls ${co(c[1])} and ${co(c[2])} .. ${co(c[3])}`).join("");
+      lines.push(`  \\draw[${style(p)}] ${shape}${p.closed?" -- cycle":""};`);
     } else if (p.k === "path") {
       // A long curve is broken over lines of the file, so no line of it grows past what an editor shows.
       const rows: string[] = [];
       for (let i = 0; i < p.pts.length; i += 6) rows.push(p.pts.slice(i, i + 6).map(co).join(" -- "));
       lines.push(`  \\draw[${style(p)}] ${rows.join("\n    -- ")};`);
     } else {
-      const fill = p.fill ? `, fill=${p.fill === "ink" ? (p.color ? tikzColor(p.color) : "black") : "white"}` : "";
+      const fill = p.fill ? `, fill=${p.fill === "ink" ? (p.color ? tikzColor(p.color) + tikzOpacity(p.color, "fill") : "black") : "white"}` : "";
       const shape = p.k === "circle" ? `${co(p.c)} circle[radius=${num(p.r, 2)}]` : `${p.pts.map(co).join(" -- ")} -- cycle`;
       lines.push(`  \\draw[${style(p)}${fill}] ${shape};`);
     }

@@ -225,3 +225,104 @@ what changed and how to use it.
 - SVG, TikZ, and Copy TikZ proceed immediately without the Support countdown.
   Use the Export menu as usual. Restore the delay through `EXPORT_WAIT_SECONDS`
   in `src/config.ts`.
+
+## 2026-10-14 — Pendulum reference drawing
+
+- Added a clean pendulum sketch with a ceiling-mounted pivot, a shaded bob,
+  a dashed vertical reference, angle φ, and a downward gravity arrow g.
+  Choose **Open** and load `drawings/pendulum.json` to edit it. Its points are
+  fixed to preserve the layout; remove a point's **Fix point** constraint to
+  move it. SVG, PNG, and TikZ versions are included in `drawings/`.
+
+## 2026-10-14 — Custom filled support symbols
+
+- Pin, Roller, and Fixed now have style dropdowns like Arc. Open the arrow
+  beside a support tool and choose **Custom filled** to use the supplied SVG
+  design, including its grey fills and shaded ground. Choose **Classic** for
+  the original symbol. Each tool remembers its choice.
+- To change a support already on the drawing, select it and change **Style**.
+  Custom supports rotate and follow the support-size slider; saving, copying,
+  patterns, SVG export, and TikZ export preserve their style and fills.
+
+## 2026-10-14 — PDF export
+
+- Choose **Export → PDF** to save the current sketch or plot as a vector PDF.
+  The page fits the figure at the same physical size as SVG, including its
+  margin. Lines and outlined labels remain sharp when enlarged, with no
+  LaTeX installation or fonts required.
+- PDF uses the existing save dialog and suggested file names. Conversion
+  happens locally in the browser and is included in the standalone build.
+
+## 2026-10-14 — Color channel sliders and opacity
+
+- Open **Change colour → Another colour** to choose RGB, HSL or HSV. The
+  dialog reopens in the last system used, including after restarting the app.
+  Adjust channels with sliders or numeric inputs.
+- Use **Opacity** to choose transparency from 0% to 100%, with a checkerboard
+  preview. Hex input accepts an alpha channel, such as #1565c080. OK applies
+  the color; OK and Add also stores its opacity in the shared palette.
+- Opacity is retained in sketch files, gradients and SVG, PDF and TikZ exports.
+
+
+## 2026-10-14 — Continuous splines and closed-spline fills
+
+- Choose **Spline (J)** on the Sketch tab and click successive anchors to draw
+  one continuous curve. Click-drag anchors for smooth tangents, click without
+  dragging for corners, and press Enter or double-click to finish. Clicking
+  the first anchor closes the curve; Esc discards the unfinished preview.
+- Select a spline to drag its anchors and control handles. Moving an anchor
+  carries its adjacent handles. The panel can continue a finished spline,
+  insert a midpoint node without changing its shape, smooth or split a selected
+  interior node, close/open the curve, reverse it, and change its stroke.
+- **Join** connects two open splines at their nearest endpoints, bridging any
+  gap with a straight section. Select both first, or use Join to pick them.
+- Closed splines accept solid, linear-gradient and radial-gradient fills from
+  the Annotate tools, or **Fill closed spline** in the spline panel. Fills
+  follow curve edits and appear in SVG, TikZ and PDF; opening a curve hides
+  its fill until it is closed again.
+- Splines save/load, support Undo/Redo, copying and linked patterns, and export
+  as exact Bézier paths. Point constraints work on their anchors and handles;
+  Trim and curve-level constraints remain for lines, circles and arcs.
+
+## 2026-10-14 — Rotate a whole selection around a movable pivot
+
+- Click an already selected object again without dragging to show rotation
+  controls. Drag the crosshair to move the center of rotation, then drag the
+  round handle or the selection to rotate it. Shift snaps to 15-degree steps.
+- Click the selection again or press Esc to return to moving. A normal drag
+  continues to move selected objects until rotation mode is activated.
+  Double-click labels to edit their text.
+- Geometry, fills and holes, spline controls, attached symbols and gradient
+  endpoints rotate together; text stays upright. Constraints are preserved and
+  a blocked rotation leaves the selection at its last valid position.
+- Each rotation drag is one Undo step. Pivot movement does not edit the sketch;
+  Escape or a cancelled pointer gesture discards an unfinished rotation. The
+  camera stays fixed and rotation controls are omitted from exports.
+
+
+## 2026-10-14 — Colors for lines and curves
+
+- Select an ordinary line, circle, arc or spline and choose **Colour → Change
+  colour** in the side panel. Select several curves to recolor them together
+  in one Undo step. The shared palette supports custom colors and opacity.
+- Stroke colors are saved with the sketch and retained in copied/pasted objects,
+  patterns, trimmed lines, split splines, and SVG, TikZ and PDF exports.
+  Construction geometry keeps its usual editor colors and is omitted from exports.
+
+## 2026-10-14 — Footed arrows
+
+- Select a straight or curved arrow and enable **Tail foot** in the side panel
+  to add a short perpendicular bar at its unheaded end. On curved arrows the
+  bar is radial, perpendicular to the curve at the tail.
+- The foot follows arrow direction, color, opacity, thickness and head size.
+  It supports Undo/Redo, saving, copying and patterns, and appears in SVG,
+  TikZ and PDF exports. It is shown for arrows with a head at one end; Both
+  and None temporarily hide it while retaining the setting.
+
+## 2026-10-14 — Shared spline line-width selector
+
+- Selected splines now use the same **Line thickness** slider as lines, circles
+  and arcs: 0–3 pt in 0.1 pt steps, with live preview and double-click reset to
+  the standard thickness. Set 0 to hide the stroke while retaining the fill.
+- The slider works for multiple selected splines and when editing a spline node.
+  Slider changes retain the existing single-step Undo/Redo behavior.

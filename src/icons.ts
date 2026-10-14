@@ -4,6 +4,8 @@
 const dot = (x: number, y: number, r = 1.7) => `<circle cx="${x}" cy="${y}" r="${r}" fill="currentColor" stroke="none"/>`;
 
 export const ICONS: Record<string, string> = {
+  spline: `<path d="M3 15C4 1 16 19 17 5"/><path d="M3 15L4 3M17 5L16 17" stroke-dasharray="2 2"/>${dot(3,15)}${dot(17,5)}`,
+  "join-splines": `<path d="M2 15C2 6 7 6 10 10S18 14 18 5"/>${dot(10,10)}<path d="M6 2h8M10 0v4"/>`,
   copyobjects: `<rect x="7" y="7" width="10" height="10" rx="1"/><path d="M12 7V3H3v9h4"/>`,
   pasteobjects: `<path d="M6 4H3v13h14V4h-3"/><rect x="6" y="2" width="8" height="4" rx="1"/><path d="M6 10h8M6 13h6"/>`,
   select: `<path d="M5 3l10.5 7.2-4.6.9 2.6 5.2-2 1-2.6-5.2L5 15.6z" fill="currentColor" stroke="none"/>`,

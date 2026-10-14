@@ -3,13 +3,14 @@
 // or pattern holds every copied point where its original puts it.
 
 import {
-  type Sketch, type Id, type Curve, type Arc, type Sym, type Link, type Pair, type HalfPair, type ArrowEnds, type ElementLook,
+  type Sketch, type Id, type Curve, type Spline, type Arc, type Sym, type Link, type Pair, type HalfPair, type ArrowEnds, type ElementLook,
   ORIGIN, entity, point, curves, curvePoints, addPoint, addLine, addCircle, addArc, addSymbol, newId,
-  geometryBox,
+  geometryBox, splines,
 } from "./model";
 import { type V, add, sub, mul, dot, cross, norm, dist, boxIsEmpty } from "./geom";
 import { fillOutlines } from "./prims";
 import { gradientPoints, gradientPosition } from "./gradient-fill";
+import { addSpline } from "./splines";
 
 /** How a copy is placed: where points land, and what that does to directions. */
 interface Move {
@@ -54,7 +55,7 @@ function tolerance(sk: Sketch): number {
 function gather(sk: Sketch, picked: Iterable<Id>, skip: Id[] = []): Batch {
   const ids = new Set(picked);
   for (const id of skip) ids.delete(id);
-  const list = curves(sk).filter((c) => ids.has(c.id));
+  const list = [...curves(sk), ...splines(sk)].filter((c) => ids.has(c.id));
   const used = new Set<Id>();
   for (const c of list) curvePoints(c).forEach((p) => used.add(p));
   const lone = sk.entities.filter((e) => e.type === "point" && ids.has(e.id) && !used.has(e.id) && e.id !== ORIGIN).map((e) => e.id);
@@ -107,11 +108,11 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
   const lands = (id: Id, on: Id) => dist(move.at(xy(sk, id)), xy(sk, on)) < tol;
 
   // Curves that are their own image are left alone: one on the mirror line, or one that crosses it squarely.
-  const todo: Curve[] = [];
+  const todo: (Curve | Spline)[] = [];
   for (const id of src.curves) {
     const e = entity(sk, id);
     if (!e || e.type === "point") continue;
-    const own =
+    const own = e.type === "spline" ? curvePoints(e).every(stays) :
       e.type === "line" ? (stays(e.p1) && stays(e.p2)) || (lands(e.p1, e.p2) && lands(e.p2, e.p1))
       : e.type === "circle" ? stays(e.c)
       : stays(e.c) && ((stays(e.p1) && stays(e.p2)) || (move.flips && lands(e.p1, e.p2)));
@@ -136,8 +137,11 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
 
   const arcs: { from: Arc; to: Arc }[] = [];
   for (const e of todo) {
-    let made: Curve;
-    if (e.type === "line") {
+    let made: Curve | Spline;
+    if(e.type === "spline") {
+      const copy=addSpline(sk,e.segments.map((s)=>({p1:image(s.p1),c1:image(s.c1),c2:image(s.c2),p2:image(s.p2)})));
+      copy.closed=e.closed; made=copy;
+    } else if (e.type === "line") {
       const line = addLine(sk, image(e.p1), image(e.p2));
       if (e.arrow) line.arrow = e.arrow;
       if (e.element) {
@@ -175,10 +179,11 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
     if (e.centre) made.centre = true;
     if (e.dashed) made.dashed = true;
     if (e.weight !== undefined) made.weight = e.weight;
-    if (e.type !== "circle" && made.type !== "circle" && e.textScale !== undefined) made.textScale = e.textScale;
-    if (e.type !== "circle" && made.type !== "circle") {
-      if (e.color !== undefined) made.color = e.color;
+    if (e.color !== undefined) made.color = e.color;
+    if ((e.type === "line" || e.type === "arc") && (made.type === "line" || made.type === "arc") && e.textScale !== undefined) made.textScale = e.textScale;
+    if ((e.type === "line" || e.type === "arc") && (made.type === "line" || made.type === "arc")) {
       if (e.headScale !== undefined) made.headScale = e.headScale;
+      if (e.foot !== undefined) made.foot = e.foot;
     }
     cmap.set(e.id, made.id);
     out.curves.push(made.id);
@@ -228,7 +233,7 @@ function copyOnce(sk: Sketch, src: Batch, move: Move, link: Link, tol: number, s
     if (s.type === "support") {
       const at = pmap.get(s.at);
       // One support per joint: a point shared with the original keeps the one it has.
-      if (at && at !== s.at) made = addSymbol(sk, { type: "support", kind: s.kind, at, angle: move.flips ? move.angle(s.angle) + Math.PI : move.angle(s.angle) });
+      if (at && at !== s.at) made = addSymbol(sk, { type: "support", kind: s.kind, ...(s.style ? { style: s.style } : {}), at, angle: move.flips ? move.angle(s.angle) + Math.PI : move.angle(s.angle) });
     } else if (s.type === "datum") {
       const at = pmap.get(s.at);
       if (at && at !== s.at) {

@@ -8,7 +8,9 @@ describe("custom annotation palettes", () => {
     expect(normalizeColor(" #AbC ")).toBe("#aabbcc");
     expect(normalizeColor("12AB34")).toBe("#12ab34");
     expect(normalizeColor("red")).toBeNull();
-    expect(normalizeColor("#12345678")).toBeNull();
+    expect(normalizeColor("#12345678")).toBe("#12345678");
+    expect(normalizeColor("#AbC8")).toBe("#aabbcc88");
+    expect(normalizeColor("#123456ff")).toBe("#123456");
   });
   it("saves added colours for new sessions without duplicate swatches", () => {
     const stored = new Map<string, string>();
